@@ -5,11 +5,11 @@
 
 ## 背景
 
-系统在 Ubuntu 24.04 服务器上运行 Gazebo Harmonic，用相机、深度/激光和物理仿真驱动变电站巡检闭环。服务器没有本地桌面，普通操作员在 Windows 浏览器中使用 Web 平台；Gazebo GUI 不是日常可视化通道。仍须在没有 `DISPLAY` 的环境中产生可验收的渲染传感器数据。
+系统在 Ubuntu 24.04 服务器上运行 Gazebo Harmonic `gz-sim 8.x`（精确锁定见 `docs/VERSION_MATRIX.md`），用相机、深度/激光和物理仿真驱动变电站巡检闭环。服务器没有本地桌面，普通操作员在 Windows 浏览器中使用 Web 平台；Gazebo GUI 不是日常可视化通道。仍须在没有 `DISPLAY` 的环境中产生可验收的渲染传感器数据。
 
 ## 已考虑的方案
 
-1. **OGRE2/EGL 无头渲染（选择）。** 使用 Gazebo Harmonic 的服务器渲染路径，例如 `gz sim -s -r --headless-rendering substation_world.sdf`，项目 launch 提供等价的 `headless:=true`。
+1. **OGRE2/EGL 无头渲染（选择）。** 使用 Gazebo Harmonic `gz-sim 8.x` 的服务器渲染路径，例如 `gz sim -s -r --headless-rendering substation_world.sdf`，项目 launch 提供等价的 `headless:=true`。
 2. **安装 Ubuntu Desktop 或使用 Gazebo GUI。** 需要服务器图形桌面和显示会话，与无桌面服务器及浏览器日常入口冲突。
 3. **Xorg、Xvfb、VirtualGL 或 NoMachine 形成虚拟/远程显示栈。** 这些组件只是规避无头初始化问题的替代路径，均被项目约束禁止。
 

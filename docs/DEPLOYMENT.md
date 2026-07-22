@@ -2,7 +2,7 @@
 
 ## 1. 目标拓扑
 
-目标是单台 Ubuntu 24.04 服务器集中运行 ROS 2 Jazzy、Gazebo Harmonic、GPU 推理、SQLite、FastAPI、Next.js、Nginx 和开发诊断所需的 Foxglove Bridge。普通 Windows 操作员只访问 `http://ros-server/`。不在 Windows 安装项目运行时、ROS、Node.js 或项目源码。
+目标是单台 Ubuntu 24.04 服务器集中运行 ROS 2 Jazzy、Gazebo Harmonic（`gz-sim 8.x`；精确锁定见 `docs/VERSION_MATRIX.md`）、GPU 推理、SQLite、FastAPI、Next.js、Nginx 和开发诊断所需的 Foxglove Bridge。普通 Windows 操作员只访问 `http://ros-server/`。不在 Windows 安装项目运行时、ROS、Node.js 或项目源码。
 
 服务器保持无桌面：Gazebo 使用 OGRE2/EGL 纯无头渲染，标准命令等价于 `gz sim -s -r --headless-rendering substation_world.sdf`。不得安装或以 Ubuntu Desktop、Xorg、NoMachine、Xvfb 或 VirtualGL 作为图形或故障规避方案。
 
@@ -29,14 +29,14 @@
 
 | 服务 | systemd 单元 | 绑定 / 暴露 | 依赖与职责 |
 |---|---|---|---|
-| Gazebo 仿真 | `substation-gazebo.service` | 无 LAN 监听；ROS DDS 在服务器内 | 启动 Harmonic、OGRE2/EGL 无头世界与传感器 |
+| Gazebo 仿真 | `substation-gazebo.service` | 无 LAN 监听；ROS DDS 在服务器内 | 启动 Harmonic `gz-sim 8.x`、OGRE2/EGL 无头世界与传感器 |
 | ROS 核心 | `substation-core.service` | 无 LAN 监听；ROS DDS 在服务器内 | 描述、SLAM/Nav2、感知、数字孪生、风险、任务和报告 |
 | FastAPI Gateway | `substation-web-gateway.service` | 仅 `127.0.0.1:8000` | `rclpy`、REST、WebSocket、JPEG、SQLite 历史/报告索引与命令边界 |
 | Next.js 前端 | `substation-web-frontend.service` | 仅 `127.0.0.1:3000` | 生产 Web 应用；只调用 Nginx/Gateway 定义的 Web 接口 |
 | Nginx | `nginx.service` | LAN TCP/80，主机名 `ros-server` | 唯一普通操作员入口；代理 `/`、`/api/`、`/ws/` 到回环服务 |
-| Foxglove Bridge | `substation-foxglove-bridge.service` | 仅在开发诊断时按运维配置启用 | 非日常入口、非控制平面，未启用不阻塞系统 |
+| Foxglove Bridge | `substation-foxglove-bridge.service` | 仅在开发诊断时按运维访问控制启用；浏览器连接 Bridge 而非 DDS | 服务器侧读取 ROS 数据的独立只读诊断路径；不是普通操作员入口或产品控制平面，不能发布命令或 Topic，未启用不阻塞系统 |
 
-端口号、TLS 和鉴权等接口细节由 `docs/INTERFACES.md` 与 Nginx 配置冻结；本文件固定的安全边界是不变的：Gateway 和前端只能回环绑定，Nginx 才能对局域网提供服务。Nginx 代理失败时，不允许用浏览器直连 Gateway 或 ROS DDS 作为替代。
+端口号、TLS 和鉴权等接口细节由 `docs/INTERFACES.md` 与 Nginx 配置冻结；本文件固定的安全边界是不变的：产品 Gateway 和前端只能回环绑定，Nginx 才能对局域网提供产品 Web UI。产品 UI 的全部状态与控制都经 Gateway；Foxglove Web 是经服务器 Bridge 的独立只读开发诊断路径，浏览器不直连 DDS，也没有命令或 Topic 发布能力。Nginx 代理失败时，不允许用浏览器直连 Gateway 或 ROS DDS 作为替代。
 
 ## 4. 启动、停止与就绪顺序
 
@@ -48,7 +48,7 @@
 4. 启动 `substation-web-gateway.service`；确认回环健康/就绪检查、ROS 连接和 SQLite 可写。
 5. 启动 `substation-web-frontend.service`；确认其仅在回环地址响应。
 6. 启动或 reload `nginx.service`；从 LAN 访问 `http://ros-server/`，确认 `/api/` 与 `/ws/` 由 Nginx 代理。
-7. 需要排错时再启动 Foxglove Bridge；它不是前六步的前置条件。
+7. 需要排错时再启动 Foxglove Bridge；确认它只从服务器侧读取 ROS 数据、Foxglove Web 只读连接 Bridge 且不能发布命令或 Topic。它不是前六步的前置条件。
 
 按相反顺序停止外部入口、前端、Gateway、核心和 Gazebo。发生异常时，先保留 `/var/log/substation` 和 `/var/lib/substation` 证据，再停止会改变现场状态的服务。紧急停止不能等待前端、Nginx 或 Foxglove 恢复。
 

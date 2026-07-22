@@ -21,12 +21,12 @@
 2. 固定使用 Ubuntu 24.04、ROS 2 Jazzy 和 Gazebo Harmonic；禁止引入 ROS 1、Gazebo Classic 或其他 ROS 发行版。
 3. Gazebo 固定使用 OGRE2/EGL 纯无头模式；禁止安装 Ubuntu 桌面、Xorg、NoMachine、Xvfb 和 VirtualGL。
 4. Windows 普通使用者只访问 `http://ros-server/`；全部项目服务、源码、数据和运行证据位于 Ubuntu 服务器。
-5. 浏览器不得直连 ROS DDS 或发布 Topic；所有状态和命令必须经过 FastAPI ROS Web Gateway。
+5. 产品 Web UI 的全部状态读取和控制命令必须经过 FastAPI ROS Web Gateway；普通浏览器不得直连 ROS DDS 或发布 Topic。Foxglove Web 是通过服务器 Foxglove Bridge 提供的独立只读开发诊断路径，不是普通操作员 UI，不得发布命令或 Topic，浏览器不得直连 DDS。
 6. 仪表数据只使用 Gazebo 合成数据；不得重新加入外部仪表数据集。
 7. 安全检测、设备检测、缺陷分类和仪表读数必须保持独立模块；不得合并为未经评估的大模型。
 8. 不得自行升级 [VERSION_MATRIX](./docs/VERSION_MATRIX.md) 中的版本；版本变化必须先新增 ADR，并同步项目计划、锁文件和测试基线。
 9. 每个功能必须先有测试和验收条件；没有实际命令输出、日志或产物证据时不得标记完成。
-10. 每次任务结束必须更新 [PROJECT_STATUS](./docs/PROJECT_STATUS.md) 和 [HANDOFF](./docs/HANDOFF.md)，记录 commit、验证命令、结果和下一步。
+10. [PROJECT_STATUS](./docs/PROJECT_STATUS.md) 和 [HANDOFF](./docs/HANDOFF.md) 存在后，每次任务结束必须更新它们，记录 commit、验证命令、结果和下一步；Phase 0 文档引导期间由最终文档门槛任务集中创建和更新。
 11. 不修改原始公开数据；转换数据、训练产物、日志和 rosbag2 不直接提交 Git，仓库只保存 manifest、脚本和校验值。
 12. 发现规范冲突时停止相关实现，明确指出冲突并先更新权威文档；不得自行选择一种解释继续开发。
 
