@@ -4813,11 +4813,18 @@ fixture_root="/tmp/phase1-seal-fixture-$(python3 -c 'import uuid; print(uuid.uui
 case "$fixture_root" in /tmp/phase1-seal-fixture-*) ;; *) exit 2 ;; esac
 test ! -e "$fixture_root"
 install -d -m 0750 "$fixture_root/acceptance"
+installer_fixture_root="/tmp/phase1-installer-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+case "$installer_fixture_root" in /tmp/phase1-installer-fixture-*) ;; *) exit 2 ;; esac
+test ! -e "$installer_fixture_root"
+install -d -m 0700 "$installer_fixture_root"
 
 cleanup() {
   case "$fixture_root" in /tmp/phase1-seal-fixture-*) ;; *) return 1 ;; esac
   if test -e "$fixture_root"; then
     find "$fixture_root" -depth -delete
+  fi
+  if test -e "$installer_fixture_root"; then
+    find "$installer_fixture_root" -depth -delete
   fi
 }
 trap cleanup EXIT
@@ -4840,6 +4847,171 @@ snapshot_tree() {
     find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
   ) > "$output"
 }
+
+make_installer_case() {
+  local name="$1"
+  local case_root="$installer_fixture_root/$name"
+  local host_root="$case_root/root"
+  local evidence_dir="$case_root/evidence/01-environment.staging"
+  local fake_bin="$case_root/bin"
+  local logical_path live_path live_mode live_owner live_group
+  install -d -m 0700 \
+    "$fake_bin" "$evidence_dir" \
+    "$host_root/etc/apt/sources.list.d" \
+    "$host_root/etc/ros/rosdep/sources.list.d" \
+    "$host_root/etc/default" \
+    "$host_root/usr/share/keyrings" \
+    "$host_root/usr/sbin" \
+    "$host_root/opt/ros/jazzy" \
+    "$host_root/opt/substation/toolchains" \
+    "$host_root/var/lib/dpkg" \
+    "$host_root/var/lib/substation/evidence/acceptance/verifier-fixture/01-environment.staging" \
+    "$host_root/proc" \
+    "$host_root/sys/bus/pci/devices/0000:01:00.0"
+  chmod 0755 "$host_root/opt/substation" "$host_root/opt/substation/toolchains"
+  chmod 0750 \
+    "$host_root/var/lib/substation" \
+    "$host_root/var/lib/substation/evidence" \
+    "$host_root/var/lib/substation/evidence/acceptance" \
+    "$host_root/var/lib/substation/evidence/acceptance/verifier-fixture" \
+    "$host_root/var/lib/substation/evidence/acceptance/verifier-fixture/01-environment.staging"
+  cat > "$host_root/etc/os-release" <<'EOF'
+ID=ubuntu
+VERSION_ID="24.04"
+PRETTY_NAME="Ubuntu 24.04 LTS"
+EOF
+  printf '%s\n' 'MemTotal:       33554432 kB' > "$host_root/proc/meminfo"
+  printf '%s\n' 0x10de > "$host_root/sys/bus/pci/devices/0000:01:00.0/vendor"
+  cat > "$host_root/etc/apt/sources.list" <<'EOF'
+deb http://archive.ubuntu.com/ubuntu noble main universe
+EOF
+  cat > "$host_root/etc/apt/sources.list.d/ubuntu.sources" <<'EOF'
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu
+Suites: noble-updates noble-security
+Components: main universe
+EOF
+  printf '%s\n' 'ORIGINAL_POLICY' > "$host_root/usr/sbin/policy-rc.d"
+  chmod 0755 "$host_root/usr/sbin/policy-rc.d"
+  printf '%s\n' 'export ROS_DISTRO=jazzy' > "$host_root/opt/ros/jazzy/setup.bash"
+  python3 tests/environment/fixtures/fake_host_command.py init \
+    --state "$case_root/state.json" \
+    --operations "$case_root/operations.jsonl" \
+    --driver-ready 1
+  for command_name in sudo apt-get apt-cache dpkg-query systemctl ubuntu-drivers nvidia-smi curl locale-gen update-locale rosdep gz lspci findmnt; do
+    ln -s "$repo_root/tests/environment/fixtures/fake_host_command.py" "$fake_bin/$command_name"
+  done
+  PATH="$fake_bin:$PATH" \
+  SUBSTATION_INSTALL_TEST_ROOT="$host_root" \
+  SUBSTATION_AUDIT_TEST_ROOT="$host_root" \
+  FAKE_HOST_STATE="$case_root/state.json" \
+  FAKE_HOST_OPERATIONS="$case_root/operations.jsonl" \
+    bash scripts/install_host.sh --apply --evidence-dir "$evidence_dir" >/dev/null
+  printf 'path\texisted_before\tmode_before\towner_before\tgroup_before\tdevice\tinode\texpected_mode\texpected_owner\texpected_group\tcreated_by_task\n' \
+    > "$evidence_dir/storage-paths-before.tsv"
+  for logical_path in \
+    /var/lib/substation \
+    /var/lib/substation/evidence \
+    /var/lib/substation/evidence/acceptance \
+    /var/lib/substation/evidence/acceptance/verifier-fixture \
+    /var/lib/substation/evidence/acceptance/verifier-fixture/01-environment.staging \
+    /opt/substation \
+    /opt/substation/toolchains; do
+    live_path="$host_root$logical_path"
+    live_mode="$(stat -c '%a' "$live_path")"
+    live_owner="$(stat -c '%U' "$live_path")"
+    live_group="$(stat -c '%G' "$live_path")"
+    printf '%s\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\n' \
+      "$logical_path" "$live_mode" "$live_owner" "$live_group" \
+      "$(stat -c '%d' "$live_path")" "$(stat -c '%i' "$live_path")" \
+      "$live_mode" "$live_owner" "$live_group" \
+      >> "$evidence_dir/storage-paths-before.tsv"
+  done
+  printf 'path\texisted_before\ttarget_before\n/opt/substation/toolchains/node-current\t0\t-\n' \
+    > "$evidence_dir/node-current-before.tsv"
+  printf '%s\t%s\t%s\t%s\n' "$case_root" "$host_root" "$evidence_dir" "$fake_bin"
+}
+
+assert_failed_installer_evidence_run() {
+  local case_root="$1"
+  local host_root="$2"
+  local evidence_dir="$3"
+  local fake_bin="$4"
+  local run_id="$5"
+  local installer_expectation="$6"
+  shift 6
+  local staging final before after evidence_before operations_before rc
+  staging="$(create_staging "$run_id")"
+  final="$fixture_root/acceptance/$run_id/01-environment"
+  cp -a "$evidence_dir/." "$staging/"
+  evidence_before="$fixture_root/$run_id-evidence-before.sha256"
+  (
+    cd "$staging"
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) > "$evidence_before"
+  before="$fixture_root/$run_id-host-before.tsv"
+  after="$fixture_root/$run_id-host-after.tsv"
+  snapshot_tree "$host_root" "$before"
+  operations_before="$(wc -l < "$case_root/operations.jsonl")"
+  set +e
+  PATH="$fake_bin:$PATH" \
+  SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+  SUBSTATION_VERIFY_INSTALLER_EVIDENCE_TEST=1 \
+  SUBSTATION_VERIFY_INSTALLER_HOST_ROOT="$host_root" \
+  FAKE_HOST_STATE="$case_root/state.json" \
+  FAKE_HOST_OPERATIONS="$case_root/operations.jsonl" \
+    "$@" bash scripts/verify_environment.sh --evidence-dir "$final" \
+    > "$fixture_root/$run_id.log" 2>&1
+  rc=$?
+  set -e
+  test "$rc" -ne 0
+  test ! -e "$final"
+  test -d "$staging"
+  test ! -e "$staging/SHA256SUMS"
+  test -s "$staging/result.json"
+  python3 - "$staging/result.json" "$installer_expectation" <<'PY'
+import json
+import sys
+from pathlib import Path
+result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["status"] == "failed"
+if sys.argv[2] == "zero":
+    assert result["exit_codes"]["installer-evidence"] == 0
+else:
+    assert sys.argv[2] == "nonzero"
+    assert result["exit_codes"]["installer-evidence"] != 0
+assert result["exit_codes"]["verify_environment"] != 0
+PY
+  (
+    cd "$staging"
+    sha256sum -c "$evidence_before" >/dev/null
+  )
+  snapshot_tree "$host_root" "$after"
+  cmp "$before" "$after"
+  python3 - "$case_root/operations.jsonl" "$operations_before" <<'PY'
+import json
+import sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")][int(sys.argv[2]):]
+assert all(item["command"] == "apt-cache" and item["argv"][0] == "policy" for item in operations)
+PY
+}
+
+IFS=$'\t' read -r clean_case clean_root clean_evidence clean_bin < <(make_installer_case verifier-clean-control)
+assert_failed_installer_evidence_run "$clean_case" "$clean_root" "$clean_evidence" "$clean_bin" verifier-clean-control zero env
+
+IFS=$'\t' read -r state_case state_root state_evidence state_bin < <(make_installer_case verifier-state-tamper)
+printf 'started_at=$(touch %s)\n' "$state_case/source-executed" >> "$state_evidence/install-state.env"
+state_hash="$(sha256sum "$state_evidence/install-state.env")"
+assert_failed_installer_evidence_run "$state_case" "$state_root" "$state_evidence" "$state_bin" verifier-state-tamper nonzero env
+grep -Fq 'unsafe install-state line' "$fixture_root/verifier-state-tamper.log"
+test ! -e "$state_case/source-executed"
+test "$(sha256sum "$state_evidence/install-state.env")" = "$state_hash"
+
+IFS=$'\t' read -r origin_case origin_root origin_evidence origin_bin < <(make_installer_case verifier-origin-tamper)
+origin_hash="$(sha256sum "$origin_evidence/apt-changed-package-origins.tsv")"
+assert_failed_installer_evidence_run "$origin_case" "$origin_root" "$origin_evidence" "$origin_bin" verifier-origin-tamper nonzero env FAKE_REQUESTED_ORIGIN_FAILURE=1
+grep -Fq 'changed package origin is not allowed: nginx' "$fixture_root/verifier-origin-tamper.log"
+test "$(sha256sum "$origin_evidence/apt-changed-package-origins.tsv")" = "$origin_hash"
 
 success_run=seal-success
 success_staging="$(create_staging "$success_run")"
@@ -5320,7 +5492,8 @@ PY
   test "$capture_rc" -eq 0 || return "$capture_rc"
 }
 
-if test "$test_mode" -eq 1; then
+if test "$test_mode" -eq 1 \
+  && test "${SUBSTATION_VERIFY_INSTALLER_EVIDENCE_TEST:-0}" != 1; then
   fixture_check() {
     local requested_rc="${SUBSTATION_VERIFY_TEST_FAILURE:-0}"
     printf 'fixture-check: rc=%s\n' "$requested_rc"
@@ -5342,65 +5515,71 @@ Path(sys.argv[1]).write_text(
 PY
   measurements='{}'
 else
-  required_preexisting=(
-    storage-paths-before.tsv
-    documentation-gate.log
-    host-audit.json
-    install-host.log
-    install-state.env
-    install-complete.env
-    apt-candidates.tsv
-    apt-changed-package-origins.tsv
-    apt-policy-origins.json
-    apt-sources-before/inventory.tsv
-    apt-sources-after/inventory.tsv
-    policy-rc.d-state.tsv
-    managed-files-after.tsv
-    host-install-version-changes.tsv
-    ros-archive-key.sha256
-    gazebo-archive-key.sha256
-    dpkg-before.tsv
-    dpkg-after.tsv
-    ai-pip-freeze.txt
-    gateway-pip-freeze.txt
-    node-npm-versions.txt
-    node-current-before.tsv
-    resource-downloads.tsv
-    colcon-build.log
-    colcon-test.log
-    colcon-test-result.log
-    frontend-build.log
-  )
-  for relative_path in "${required_preexisting[@]}"; do
-    test -s "$staging_dir/$relative_path" || {
-      printf 'missing-preexisting-evidence: %s\n' "$relative_path" >&2
-      false
-    }
-  done
-  test -f "$staging_dir/host-install-new-packages.txt"
-  test "$(tail -n1 "$staging_dir/install-host.log")" = 'install-host: PASS'
-  grep -Fxq 'state=PASS' "$staging_dir/install-complete.env"
+  installer_host_root=/
+  if test "$test_mode" -eq 1; then
+    installer_host_root="${SUBSTATION_VERIFY_INSTALLER_HOST_ROOT:?}"
+  fi
+  if test "$test_mode" -eq 0; then
+    required_preexisting=(
+      storage-paths-before.tsv
+      documentation-gate.log
+      host-audit.json
+      install-host.log
+      install-state.env
+      install-complete.env
+      apt-candidates.tsv
+      apt-changed-package-origins.tsv
+      apt-policy-origins.json
+      apt-sources-before/inventory.tsv
+      apt-sources-after/inventory.tsv
+      policy-rc.d-state.tsv
+      managed-files-after.tsv
+      host-install-version-changes.tsv
+      ros-archive-key.sha256
+      gazebo-archive-key.sha256
+      dpkg-before.tsv
+      dpkg-after.tsv
+      ai-pip-freeze.txt
+      gateway-pip-freeze.txt
+      node-npm-versions.txt
+      node-current-before.tsv
+      resource-downloads.tsv
+      colcon-build.log
+      colcon-test.log
+      colcon-test-result.log
+      frontend-build.log
+    )
+    for relative_path in "${required_preexisting[@]}"; do
+      test -s "$staging_dir/$relative_path" || {
+        printf 'missing-preexisting-evidence: %s\n' "$relative_path" >&2
+        false
+      }
+    done
+    test -f "$staging_dir/host-install-new-packages.txt"
+    test "$(tail -n1 "$staging_dir/install-host.log")" = 'install-host: PASS'
+    grep -Fxq 'state=PASS' "$staging_dir/install-complete.env"
 
-  tracked_paths=(
-    scripts/capture_environment_lock.sh
-    scripts/verify_environment.sh
-    scripts/check_environment_seal.sh
-    tests/environment/test_verify_environment.sh
-    artifacts/environment/dpkg-packages.tsv
-    artifacts/environment/ai-pip-freeze.txt
-    artifacts/environment/gateway-pip-freeze.txt
-    artifacts/environment/node-npm-versions.txt
-    artifacts/environment/resource-downloads.tsv
-    artifacts/environment/SHA256SUMS
-  )
-  for path in "${tracked_paths[@]}"; do
-    git ls-files --error-unmatch "$path" >/dev/null
-    git diff --quiet HEAD -- "$path"
-  done
-  test -z "$(git status --porcelain=v1 --untracked-files=all -- "${tracked_paths[@]}")"
+    tracked_paths=(
+      scripts/capture_environment_lock.sh
+      scripts/verify_environment.sh
+      scripts/check_environment_seal.sh
+      tests/environment/test_verify_environment.sh
+      artifacts/environment/dpkg-packages.tsv
+      artifacts/environment/ai-pip-freeze.txt
+      artifacts/environment/gateway-pip-freeze.txt
+      artifacts/environment/node-npm-versions.txt
+      artifacts/environment/resource-downloads.tsv
+      artifacts/environment/SHA256SUMS
+    )
+    for path in "${tracked_paths[@]}"; do
+      git ls-files --error-unmatch "$path" >/dev/null
+      git diff --quiet HEAD -- "$path"
+    done
+    test -z "$(git status --porcelain=v1 --untracked-files=all -- "${tracked_paths[@]}")"
+  fi
 
   verify_installer_evidence() {
-    python3 - "$staging_dir" <<'PY'
+    python3 - "$staging_dir" "$installer_host_root" <<'PY'
 import csv
 import datetime
 import hashlib
@@ -5411,6 +5590,20 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+host_root = Path(sys.argv[2])
+
+def host_path(logical):
+    logical = Path(logical)
+    assert logical.is_absolute()
+    return logical if host_root == Path("/") else host_root / logical.relative_to("/")
+
+def logical_path(path):
+    return (
+        path.as_posix()
+        if host_root == Path("/")
+        else "/" + path.relative_to(host_root).as_posix()
+    )
+
 before_path = root / "apt-sources-before/inventory.tsv"
 after_path = root / "apt-sources-after/inventory.tsv"
 managed_path = root / "managed-files-after.tsv"
@@ -5472,8 +5665,8 @@ for row in before:
         assert row["mode"] == row["sha256"] == row["backup_file"] == "-"
 
 current_sources = []
-source_list = Path("/etc/apt/sources.list")
-source_dir = Path("/etc/apt/sources.list.d")
+source_list = host_path("/etc/apt/sources.list")
+source_dir = host_path("/etc/apt/sources.list.d")
 candidates = [source_list]
 for pattern in ("*.list", "*.sources"):
     candidates.extend(source_dir.glob(pattern))
@@ -5484,13 +5677,13 @@ for path in candidates:
         continue
     assert path.is_file(), f"apt source is not a regular file: {path}"
     current_sources.append(path)
-current_source_names = {path.as_posix() for path in current_sources}
+current_source_names = {logical_path(path) for path in current_sources}
 with after_path.open(encoding="utf-8", newline="") as handle:
     after = list(csv.DictReader(handle, delimiter="\t"))
 assert len({row["source_path"] for row in after}) == len(after)
 assert {row["source_path"] for row in after} == current_source_names
 for row in after:
-    path = Path(row["source_path"])
+    path = host_path(row["source_path"])
     assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
     assert f"{path.stat().st_mode & 0o777:o}" == row["mode"]
 
@@ -5498,7 +5691,7 @@ with managed_path.open(encoding="utf-8", newline="") as handle:
     managed = list(csv.DictReader(handle, delimiter="\t"))
 assert {row["source_path"] for row in managed} == managed_expected
 for row in managed:
-    path = Path(row["source_path"])
+    path = host_path(row["source_path"])
     if row["existed_after"] == "1":
         assert path.is_file()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
@@ -5514,7 +5707,7 @@ assert len(policy) == 1
 assert policy[0]["path"] == "/usr/sbin/policy-rc.d"
 assert policy[0]["restored"] == "1"
 policy_before = before_by_path["/usr/sbin/policy-rc.d"]
-policy_live = Path("/usr/sbin/policy-rc.d")
+policy_live = host_path("/usr/sbin/policy-rc.d")
 if policy_before["existed"] == "1":
     assert policy_live.is_file()
     assert hashlib.sha256(policy_live.read_bytes()).hexdigest() == policy_before["sha256"]
@@ -5631,7 +5824,11 @@ for row in changed_origin_rows:
         )
     })
     allowed = allowed_origins_for(package)
-    assert origins and set(origins) <= allowed
+    if not origins or not set(origins) <= allowed:
+        raise AssertionError(
+            f"changed package origin is not allowed: {package}: "
+            f"{','.join(origins) if origins else '-'}"
+        )
     assert row["allowed_origins"].split(",") == sorted(allowed)
     assert row["origins"].split(",") == origins
 
@@ -5641,7 +5838,7 @@ with (root / "storage-paths-before.tsv").open(
     storage_rows = list(csv.DictReader(handle, delimiter="\t"))
 assert storage_rows
 for row in storage_rows:
-    path = Path(row["path"])
+    path = host_path(row["path"])
     assert path.is_dir() and not path.is_symlink()
     assert (path.stat().st_mode & 0o777) == int(row["expected_mode"], 8)
     assert path.owner() == row["expected_owner"]
@@ -5652,10 +5849,18 @@ with (root / "node-current-before.tsv").open(
 ) as handle:
     node_rows = list(csv.DictReader(handle, delimiter="\t"))
 assert len(node_rows) == 1
-assert node_rows[0]["path"] == "/opt/substation/toolchains/node-current"
+assert logical_path(host_path(node_rows[0]["path"])) == \
+    "/opt/substation/toolchains/node-current"
 PY
     printf '%s\n' 'installer-evidence: PASS'
   }
+
+  if test "$test_mode" -eq 1; then
+    run_recorded installer-evidence installer-evidence.log -- \
+      verify_installer_evidence
+    printf '%s\n' 'installer evidence negative fixture unexpectedly passed' >&2
+    false
+  fi
 
   verify_tracked_lock() {
     dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort \
