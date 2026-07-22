@@ -50,7 +50,7 @@
 | `scripts/verify_documentation_gate.sh` | Re-run the Phase 0 document gate without changing the host. |
 | `scripts/init_phase1_run.sh` | Create one acceptance run directory after the document gate passes and write ignored `.phase1-run.env`. |
 | `scripts/audit_host.sh` | Read-only OS, architecture, GPU, driver, memory, disk, forbidden-package, and session audit. |
-| `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, validate locked candidates before installing them, preserve write-once before/after evidence across a reboot resume, install the approved package set and recommended NVIDIA driver when required, and leave services stopped. |
+| `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, validate every requested and changed package candidate/origin, preserve write-once before/after evidence across a reboot resume, install the approved package set and recommended NVIDIA driver when required, and leave services stopped. |
 | `scripts/rollback_host.sh` | Validate recorded backups/current state, simulate the exact package rollback transaction, then restore only recorded packages, apt sources, service state, and task-created files after explicit run-id confirmation. |
 | `scripts/download_phase1_resources.sh` | Download and verify Node.js 24.18.0 and YOLO11n v8.4.0 into controlled server storage. |
 | `scripts/verify_phase1_resources.sh` | Read-only checksum/metadata verification of the already locked Node and YOLO resources; it has no network or repair path. |
@@ -117,7 +117,7 @@
 
 ### Required final evidence files
 
-The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDENCE_FINAL`: `acceptance_run_id.txt`, `documentation-gate.log`, `documentation-gate-final.log`, `storage-paths-before.tsv`, `host-audit.json`, `host-audit-final.json`, `install-host.log`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-policy-origins.json`, `apt-sources-before/inventory.tsv`, `apt-sources-after/inventory.tsv`, `policy-rc.d-state.tsv`, `managed-files-after.tsv`, `host-install-version-changes.tsv`, `ros-archive-key.sha256`, `gazebo-archive-key.sha256`, `dpkg-before.tsv`, `dpkg-after.tsv`, `environment.json`, `dpkg-packages.tsv`, `ai-pip-freeze.txt`, `gateway-pip-freeze.txt`, `node-npm-versions.txt`, `node-current-before.tsv`, `resource-downloads.tsv`, `gpu.txt`, `egl.log`, `forbidden-packages.txt`, `disk-memory.txt`, `service-state.txt`, `colcon-build.log`, `colcon-test.log`, `colcon-test-result.log`, `colcon-build-final.log`, `colcon-test-final.log`, `colcon-test-result-final.log`, `frontend-build.log`, `frontend-build-final.log`, per-command logs and JSON metadata under `commands/`, `result.json`, and `SHA256SUMS`. `host-install-new-packages.txt` is also mandatory but may be empty on an already-provisioned compliant host. If a reboot occurred, `install-resume.env` is mandatory and remains as immutable history. The recursive checksum includes every file under nested directories such as `apt-sources-before/` and `commands/`.
+The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDENCE_FINAL`: `acceptance_run_id.txt`, `documentation-gate.log`, `documentation-gate-final.log`, `storage-paths-before.tsv`, `host-audit.json`, `host-audit-final.json`, `install-host.log`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `apt-sources-before/inventory.tsv`, `apt-sources-after/inventory.tsv`, `policy-rc.d-state.tsv`, `managed-files-after.tsv`, `host-install-version-changes.tsv`, `ros-archive-key.sha256`, `gazebo-archive-key.sha256`, `dpkg-before.tsv`, `dpkg-after.tsv`, `environment.json`, `dpkg-packages.tsv`, `ai-pip-freeze.txt`, `gateway-pip-freeze.txt`, `node-npm-versions.txt`, `node-current-before.tsv`, `resource-downloads.tsv`, `gpu.txt`, `egl.log`, `forbidden-packages.txt`, `disk-memory.txt`, `service-state.txt`, `colcon-build.log`, `colcon-test.log`, `colcon-test-result.log`, `colcon-build-final.log`, `colcon-test-final.log`, `colcon-test-result-final.log`, `frontend-build.log`, `frontend-build-final.log`, per-command logs and JSON metadata under `commands/`, `result.json`, and `SHA256SUMS`. `host-install-new-packages.txt` is also mandatory but may be empty on an already-provisioned compliant host. If a reboot occurred, `install-resume.env` is mandatory and remains as immutable history. The recursive checksum includes every file under nested directories such as `apt-sources-before/` and `commands/`.
 
 ## Execution Rules for Every Task
 
@@ -471,13 +471,14 @@ Expected: one commit containing only the five listed paths.
 ### Task 2: Read-Only Host Audit
 
 **Files:**
+- Create: `config/environment/apt-packages.txt`
 - Create: `config/environment/forbidden-packages.regex`
 - Create: `scripts/audit_host.sh`
 - Create: `tests/environment/test_audit_host.sh`
 
 **Interfaces:**
 - Consumes: `/etc/os-release`, `/proc/meminfo`, all apt source files (`sources.list`, `*.list`, and deb822 `*.sources`), `apt-cache policy`, `dpkg-query`, independent filesystem/mount statistics for the repository, `/var/lib/substation`, and `/opt/substation`, plus GPU/driver probes.
-- Produces: JSON containing source hashes/URIs/suites/components, per-locked-package candidate origins, three independent disk/mount records, forbidden installed packages/sources, and `$PHASE1_EVIDENCE_ROOT/host-audit.json`. `--preflight` allows missing not-yet-added official ROS/Gazebo candidates; the default enforcement mode requires every locked origin and final driver floor.
+- Produces: JSON containing source hashes/URIs/suites/components, an exact enabled-source URI allowlist result, candidate/origin records for every requested package, three independent disk/mount records, generic non-Jazzy ROS rejection, forbidden installed/requested packages, and `$PHASE1_EVIDENCE_ROOT/host-audit.json`. `--preflight` allows only missing not-yet-added official ROS/Gazebo candidates; wrong origins, Noble PPAs/vendors, non-Jazzy ROS names, and missing Ubuntu candidates remain hard failures. Default enforcement additionally requires the final driver floor.
 
 - [ ] **Step 1: Write the failing audit test**
 
@@ -491,6 +492,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 test -x scripts/audit_host.sh
+test -s config/environment/apt-packages.txt
 test -f config/environment/forbidden-packages.regex
 
 fixture_id="phase1-audit-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
@@ -533,7 +535,7 @@ cat > "$fixture_root/bin/dpkg-query" <<'SH'
 #!/usr/bin/bash
 printf 'ii \tros-jazzy-ros-base\nii \tnginx\n'
 if test "${FAKE_DPKG_FORBIDDEN-0}" = 1; then
-  printf 'ii \txserver-xorg-core\nii \tros-noetic-ros-base\nii \tgazebo11\n'
+  printf 'ii \txserver-xorg-core\nii \tros-noetic-ros-base\nii \tros-kilted-ros-base\nii \tros-eloquent-desktop\nii \tgazebo11\n'
 fi
 SH
 cat > "$fixture_root/bin/apt-cache" <<'SH'
@@ -545,29 +547,37 @@ if test -z "$package"; then
   exit 0
 fi
 if test "${FAKE_APT_POLICY_MODE-}" = missing; then
-  printf '%s\n' '  Candidate: (none)'
-  exit 0
+  case "$package" in
+    ros-jazzy-*|gz-harmonic)
+      printf '%s\n' '  Candidate: (none)'
+      exit 0
+      ;;
+  esac
 fi
+expected=1.0-1noble
+origin=http://archive.ubuntu.com/ubuntu
 case "$package" in
-  gz-harmonic)
-    printf '%s\n' '  Candidate: 8.9.0-1~noble' '     8.9.0-1~noble 500' '        500 http://packages.osrfoundation.org/gazebo/ubuntu-stable noble/main amd64 Packages'
-    ;;
-  *)
-    expected=1.0.23-1
+  gz-harmonic) expected=8.9.0-1~noble; origin=http://packages.osrfoundation.org/gazebo/ubuntu-stable ;;
+  ros-jazzy-*)
+    expected=1.0.23-1-1noble.20260701
     case "$package" in
-      ros-jazzy-navigation2|ros-jazzy-nav2-bringup) expected=1.3.12-1 ;;
-      ros-jazzy-slam-toolbox) expected=2.8.5-1 ;;
-      ros-jazzy-turtlebot3) expected=2.3.6-1 ;;
-      ros-jazzy-turtlebot3-simulations) expected=2.3.7-1 ;;
+      ros-jazzy-navigation2|ros-jazzy-nav2-bringup) expected=1.3.12-1-1noble.20260701 ;;
+      ros-jazzy-slam-toolbox) expected=2.8.5-1-1noble.20260701 ;;
+      ros-jazzy-turtlebot3) expected=2.3.6-1-1noble.20260701 ;;
+      ros-jazzy-turtlebot3-simulations) expected=2.3.7-1-1noble.20260701 ;;
     esac
-    if test "${FAKE_APT_POLICY_MODE-}" = wrong && test "$package" = ros-jazzy-ros-gz; then
-      expected=9.9.9-1
-    fi
-    printf '  Candidate: %s-1noble.20260701\n' "$expected"
-    printf '     %s-1noble.20260701 500\n' "$expected"
-    printf '%s\n' '        500 http://packages.ros.org/ros2/ubuntu noble/main amd64 Packages'
+    origin=http://packages.ros.org/ros2/ubuntu
     ;;
 esac
+if test "${FAKE_APT_POLICY_MODE-}" = wrong && test "$package" = ros-jazzy-ros-gz; then
+  expected=9.9.9-1
+fi
+if test "${FAKE_APT_POLICY_MODE-}" = foreign && test "$package" = nginx; then
+  origin=https://ppa.launchpadcontent.net/vendor/project/ubuntu
+fi
+printf '  Candidate: %s\n' "$expected"
+printf '     %s 500\n' "$expected"
+printf '        500 %s noble/main amd64 Packages\n' "$origin"
 SH
 cat > "$fixture_root/bin/nvidia-smi" <<'SH'
 #!/usr/bin/bash
@@ -617,6 +627,15 @@ wrong_policy_rc=$?
 set -e
 test "$wrong_policy_rc" -ne 0
 
+set +e
+PATH="$fixture_root/bin:$PATH" \
+FAKE_APT_POLICY_MODE=foreign \
+SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" \
+bash scripts/audit_host.sh --preflight >/dev/null
+foreign_policy_rc=$?
+set -e
+test "$foreign_policy_rc" -ne 0
+
 ln -s ubuntu.sources "$fixture_root/etc/apt/sources.list.d/active-symlink.sources"
 set +e
 PATH="$fixture_root/bin:$PATH" \
@@ -627,12 +646,24 @@ set -e
 test "$symlink_source_rc" -ne 0
 unlink -- "$fixture_root/etc/apt/sources.list.d/active-symlink.sources"
 
+printf '%s\n' 'deb https://ppa.launchpadcontent.net/vendor/project/ubuntu noble main' > "$fixture_root/etc/apt/sources.list.d/noble-ppa.list"
+printf '%s\n' 'deb https://vendor.example.invalid/ubuntu noble main' > "$fixture_root/etc/apt/sources.list.d/noble-vendor.list"
+bad_uri_json="$(PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
+python3 -c 'import json,sys; data=json.load(sys.stdin); reasons=[item["reason"] for item in data["forbidden_apt_sources"]]; assert sum("not allowlisted" in reason for reason in reasons) >= 2' <<<"$bad_uri_json"
+set +e
+PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --preflight >/dev/null
+bad_uri_rc=$?
+set -e
+test "$bad_uri_rc" -ne 0
+unlink -- "$fixture_root/etc/apt/sources.list.d/noble-ppa.list"
+unlink -- "$fixture_root/etc/apt/sources.list.d/noble-vendor.list"
+
 printf '%s\n' 'deb http://packages.ros.org/ros/ubuntu focal main' >> "$fixture_root/etc/apt/sources.list"
 bad_source_json="$(PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
-python3 -c 'import json,sys; data=json.load(sys.stdin); assert any("ROS 1" in item["reason"] for item in data["forbidden_apt_sources"])' <<<"$bad_source_json"
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert any(item["reason"] == "apt source URI is not allowlisted: http://packages.ros.org/ros/ubuntu" for item in data["forbidden_apt_sources"])' <<<"$bad_source_json"
 
 forbidden_json="$(PATH="$fixture_root/bin:$PATH" FAKE_DPKG_FORBIDDEN=1 SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
-python3 -c 'import json,sys; data=json.load(sys.stdin); assert {"xserver-xorg-core", "ros-noetic-ros-base", "gazebo11"} <= set(data["forbidden_packages"])' <<<"$forbidden_json"
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert {"xserver-xorg-core", "ros-noetic-ros-base", "ros-kilted-ros-base", "ros-eloquent-desktop", "gazebo11"} <= set(data["forbidden_packages"])' <<<"$forbidden_json"
 ! rg -n 'sudo|apt-get|apt install|systemctl|curl|wget|tee /etc' scripts/audit_host.sh
 
 trap - EXIT
@@ -647,9 +678,50 @@ chmod +x tests/environment/test_audit_host.sh
 bash tests/environment/test_audit_host.sh
 ```
 
-Expected: exit nonzero because `scripts/audit_host.sh` and the forbidden-package policy do not exist.
+Expected: exit nonzero because the package request set, `scripts/audit_host.sh`, and the forbidden-package policy do not exist.
 
-- [ ] **Step 2: Add the exact forbidden-package policy**
+- [ ] **Step 2: Add the exact package request and forbidden-package policies**
+
+Create `config/environment/apt-packages.txt` with this exact content, already sorted by byte order:
+
+```text
+build-essential
+ca-certificates
+cmake
+curl
+git
+git-lfs
+gnupg
+gz-harmonic
+jq
+libegl1
+locales
+mesa-utils
+nginx
+pciutils
+pkg-config
+python3-colcon-common-extensions
+python3-pip
+python3-rosdep
+python3-vcstool
+python3-venv
+ros-jazzy-foxglove-bridge
+ros-jazzy-nav2-bringup
+ros-jazzy-navigation2
+ros-jazzy-robot-state-publisher
+ros-jazzy-ros-base
+ros-jazzy-ros-gz
+ros-jazzy-slam-toolbox
+ros-jazzy-turtlebot3
+ros-jazzy-turtlebot3-simulations
+ros-jazzy-vision-msgs
+ros-jazzy-xacro
+shellcheck
+software-properties-common
+sqlite3
+ubuntu-drivers-common
+yamllint
+```
 
 Create `config/environment/forbidden-packages.regex` with this exact content:
 
@@ -659,7 +731,7 @@ Create `config/environment/forbidden-packages.regex` with this exact content:
 ^(xorg|xserver-xorg.*|xserver-common|x11-common|xinit)$
 ^(gdm3|sddm|lightdm|xdm)$
 ^(nomachine|xvfb|virtualgl)$
-^(ros-(noetic|melodic|kinetic|foxy|galactic|humble|iron|rolling)-.*)$
+^ros-(?!jazzy-)[a-z0-9]+-.*$
 ^(ros-jazzy-(desktop|desktop-full))$
 ^(gazebo|gazebo[0-9]+|gazebo-classic|libgazebo.*)$
 ```
@@ -704,7 +776,6 @@ import subprocess
 import hashlib
 from email.parser import Parser
 from pathlib import Path
-from urllib.parse import urlparse
 
 repo = Path(os.environ["PHASE1_AUDIT_REPO_ROOT"])
 mode = os.environ["PHASE1_AUDIT_MODE"]
@@ -768,7 +839,16 @@ patterns = [
     for line in (repo / "config/environment/forbidden-packages.regex").read_text(encoding="utf-8").splitlines()
     if line
 ]
-forbidden = sorted({name for name in installed_packages if any(pattern.fullmatch(name) for pattern in patterns)})
+requested_packages = [
+    line
+    for line in (repo / "config/environment/apt-packages.txt").read_text(encoding="utf-8").splitlines()
+    if line
+]
+forbidden = sorted({
+    name
+    for name in installed_packages + requested_packages
+    if any(pattern.fullmatch(name) for pattern in patterns)
+})
 
 def source_files():
     candidates = [rooted("/etc/apt/sources.list")]
@@ -797,6 +877,8 @@ for source_path in source_files():
             if not paragraph.strip():
                 continue
             fields = Parser().parsestr(paragraph)
+            if fields.get("Enabled", "yes").strip().lower() == "no":
+                continue
             for source_type in fields.get("Types", "").split():
                 for uri in fields.get("URIs", "").split():
                     for suite in fields.get("Suites", "").split():
@@ -814,39 +896,69 @@ for source_path in source_files():
             uri, suite, *components = tokens
             apt_sources.append({"path": relative, "format": "list", "entry": line_number, "type": source_type, "uri": uri.rstrip("/"), "suite": suite, "components": components, "sha256": digest})
 
+allowed_source_uris = {
+    "http://archive.ubuntu.com/ubuntu",
+    "https://archive.ubuntu.com/ubuntu",
+    "http://security.ubuntu.com/ubuntu",
+    "https://security.ubuntu.com/ubuntu",
+    "http://packages.ros.org/ros2/ubuntu",
+    "https://packages.ros.org/ros2/ubuntu",
+    "http://packages.osrfoundation.org/gazebo/ubuntu-stable",
+    "https://packages.osrfoundation.org/gazebo/ubuntu-stable",
+}
 forbidden_apt_sources = []
 for entry in apt_sources:
     uri = entry["uri"]
     suite = entry["suite"]
-    if "packages.ros.org/ros/ubuntu" in uri:
-        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": "ROS 1 apt source is forbidden"})
-    if "packages.ros.org" in uri and "/ros2/" not in uri:
-        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": "non-ROS2 packages.ros.org source is forbidden"})
+    if entry["type"] not in {"deb", "deb-src"}:
+        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"unsupported apt source type: {entry['type']}"})
+    if uri not in allowed_source_uris:
+        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"apt source URI is not allowlisted: {uri}"})
     if not (suite == "noble" or suite.startswith("noble-")):
         forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"non-Noble suite is forbidden: {suite}"})
 
-locked_packages = {
-    "ros-jazzy-ros-gz": ("1.0.23-1", "packages.ros.org"),
-    "ros-jazzy-navigation2": ("1.3.12-1", "packages.ros.org"),
-    "ros-jazzy-nav2-bringup": ("1.3.12-1", "packages.ros.org"),
-    "ros-jazzy-slam-toolbox": ("2.8.5-1", "packages.ros.org"),
-    "ros-jazzy-turtlebot3": ("2.3.6-1", "packages.ros.org"),
-    "ros-jazzy-turtlebot3-simulations": ("2.3.7-1", "packages.ros.org"),
-    "gz-harmonic": (None, "packages.osrfoundation.org"),
+locked_upstream = {
+    "ros-jazzy-ros-gz": "1.0.23-1",
+    "ros-jazzy-navigation2": "1.3.12-1",
+    "ros-jazzy-nav2-bringup": "1.3.12-1",
+    "ros-jazzy-slam-toolbox": "2.8.5-1",
+    "ros-jazzy-turtlebot3": "2.3.6-1",
+    "ros-jazzy-turtlebot3-simulations": "2.3.7-1",
 }
+
+ubuntu_origins = {
+    "http://archive.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu",
+    "http://security.ubuntu.com/ubuntu", "https://security.ubuntu.com/ubuntu",
+}
+ros_origins = {
+    "http://packages.ros.org/ros2/ubuntu", "https://packages.ros.org/ros2/ubuntu",
+}
+gazebo_origins = {
+    "http://packages.osrfoundation.org/gazebo/ubuntu-stable",
+    "https://packages.osrfoundation.org/gazebo/ubuntu-stable",
+}
+
+def allowed_origins_for(package):
+    if package.startswith("ros-jazzy-"):
+        return ros_origins
+    if re.match(r"^(gz-|libgz-|sdformat|libsdformat|ignition-|libignition-)", package):
+        return gazebo_origins
+    return ubuntu_origins
+
 apt_policy = {}
-for package, (expected, allowed_host) in locked_packages.items():
+for package in requested_packages:
+    expected = locked_upstream.get(package)
+    allowed_origins = allowed_origins_for(package)
     completed = subprocess.run(["apt-cache", "policy", package], check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     candidate_match = re.search(r"^\s*Candidate:\s*(\S+)", completed.stdout, re.MULTILINE)
     origins = sorted({
         match.group(1).rstrip("/")
         for match in re.finditer(r"^\s*\d+\s+(https?://\S+)\s+\S+\s+\S+\s+Packages$", completed.stdout, re.MULTILINE)
     })
-    origin_hosts = sorted({urlparse(origin).hostname for origin in origins})
     candidate = candidate_match.group(1) if candidate_match else None
     candidate_ok = candidate not in {None, "(none)"} and (expected is None or candidate == expected or (candidate.startswith(expected) and not candidate[len(expected):len(expected)+1].isdigit()))
-    origin_ok = bool(origin_hosts) and set(origin_hosts) == {allowed_host}
-    apt_policy[package] = {"candidate": candidate, "expected_upstream": expected, "allowed_origin_host": allowed_host, "origins": origins, "origin_hosts": origin_hosts, "candidate_ok": candidate_ok, "origin_ok": origin_ok, "raw": completed.stdout}
+    origin_ok = bool(origins) and set(origins) <= allowed_origins
+    apt_policy[package] = {"candidate": candidate, "expected_upstream": expected, "allowed_origins": sorted(allowed_origins), "origins": origins, "candidate_ok": candidate_ok, "origin_ok": origin_ok, "raw": completed.stdout}
 
 gpu_present = any(
     vendor.read_text(encoding="utf-8").strip().lower() == "0x10de"
@@ -879,7 +991,10 @@ driver_meets_floor = driver_version is not None and version_tuple(driver_version
 def apt_policy_acceptable(item):
     if mode == "report-only":
         return True
-    if mode == "preflight" and item["candidate"] in {None, "(none)"}:
+    if mode == "preflight" and item["candidate"] in {None, "(none)"} and (
+        item["allowed_origins"] == sorted(ros_origins)
+        or item["allowed_origins"] == sorted(gazebo_origins)
+    ):
         return True
     return item["candidate_ok"] and item["origin_ok"]
 
@@ -891,7 +1006,7 @@ checks = {
     "nvidia_gpu_present": gpu_present,
     "no_forbidden_packages": not forbidden,
     "no_forbidden_apt_sources": not forbidden_apt_sources,
-    "locked_package_candidates_and_origins": all(apt_policy_acceptable(item) for item in apt_policy.values()),
+    "requested_package_candidates_and_origins": all(apt_policy_acceptable(item) for item in apt_policy.values()),
     "driver_floor_for_final_enforcement": mode != "enforce" or driver_meets_floor,
     "operator_user_substation": root != Path("/") or current_user == "substation",
     "repository_path_matches_deployment": root != Path("/") or str(repo) == "/home/substation/substation-inspection-digital-twin",
@@ -933,13 +1048,14 @@ PY
 
 ```bash
 chmod +x scripts/audit_host.sh tests/environment/test_audit_host.sh
+LC_ALL=C sort -c config/environment/apt-packages.txt
 bash tests/environment/test_audit_host.sh
 source .phase1-run.env
 bash scripts/audit_host.sh --preflight | tee "$PHASE1_EVIDENCE_ROOT/host-audit.json"
 test "${PIPESTATUS[0]}" -eq 0
 ```
 
-Expected test final line: `audit-host-test: PASS`. Expected preflight JSON: `"status": "passed"`, Ubuntu `24.04`, architecture `x86_64`, user `substation`, repository `/home/substation/substation-inspection-digital-twin`, at least `17179869184` memory bytes, independently recorded repository, `/var/lib/substation`, and `/opt/substation` mounts each with at least `85899345920` free bytes, an NVIDIA GPU, empty forbidden package/source arrays, complete hashes and parsed entries for every active apt source file, and a policy record for every locked package. Missing official ROS/Gazebo candidates or a below-floor driver may be corrected by Task 3 in preflight mode; wrong origins, wrong candidates, forbidden sources/packages, or capacity failures are hard stops. Task 10 reruns the default enforcement mode, which requires the final driver and every locked candidate/origin.
+Expected test final line: `audit-host-test: PASS`. Expected preflight JSON: `"status": "passed"`, Ubuntu `24.04`, architecture `x86_64`, user `substation`, repository `/home/substation/substation-inspection-digital-twin`, at least `17179869184` memory bytes, independently recorded repository, `/var/lib/substation`, and `/opt/substation` mounts each with at least `85899345920` free bytes, an NVIDIA GPU, empty forbidden package/source arrays, complete hashes and parsed entries for every active apt source file, and a policy record for every requested package. Every enabled URI is exactly an official Ubuntu archive/security, ROS 2, or Gazebo URI. Missing official ROS/Gazebo candidates or a below-floor driver may be corrected by Task 3 in preflight mode; a missing Ubuntu candidate, PPA/vendor URI, wrong origin/candidate, non-Jazzy ROS name, forbidden package, or capacity failure is a hard stop. Task 10 reruns default enforcement, which requires the final driver and every requested candidate/origin.
 
 If enforcement fails, stop before Task 3. The JSON is the evidence; do not "fix" a capacity or GPU failure by weakening thresholds.
 
@@ -950,19 +1066,18 @@ Safe rollback: this task has no host mutation. Revert only its tracked commit; p
 - [ ] **Step 5: Commit Task 2**
 
 ```bash
-git add config/environment/forbidden-packages.regex scripts/audit_host.sh tests/environment/test_audit_host.sh
+git add config/environment/apt-packages.txt config/environment/forbidden-packages.regex scripts/audit_host.sh tests/environment/test_audit_host.sh
 git diff --cached --check
 git commit -m "feat: add read only host audit"
 ```
 
-Expected: one commit containing only the three listed paths.
+Expected: one commit containing only the four listed paths.
 
 ---
 
 ### Task 3: Official Apt, ROS 2 Jazzy, Gazebo Harmonic, and NVIDIA Installer
 
 **Files:**
-- Create: `config/environment/apt-packages.txt`
 - Create: `scripts/install_host.sh`
 - Create: `scripts/rollback_host.sh`
 - Create: `tests/environment/fixtures/fake_host_command.py`
@@ -970,8 +1085,8 @@ Expected: one commit containing only the three listed paths.
 - Modify conditionally: `docs/HANDOFF.md` only when an NVIDIA driver change requires a reboot, once immediately before reboot and once immediately after successful resume
 
 **Interfaces:**
-- Consumes: a passing preflight host audit, Ubuntu Noble official repositories with `universe` already enabled, `packages.ros.org`, `packages.osrfoundation.org`, and `ubuntu-drivers`.
-- Produces: installed approved Debian packages, locked candidate plus origin evidence, write-once backups for every active `sources.list`, `*.list`, and deb822 `*.sources` file and every file it mutates, temporary `policy-rc.d` service suppression with exact restoration, stopped/disabled Nginx, initialized rosdep, a resumable reboot boundary, and `scripts/rollback_host.sh` whose apply path always passes the recorded simulation first. A guarded temporary-root seam plus PATH-injected fake commands exercises the same state machine before any real `sudo` mutation.
+- Consumes: the exact Task 2 `config/environment/apt-packages.txt`, a passing preflight host audit, Ubuntu Noble official repositories with `universe` already enabled, `packages.ros.org`, `packages.osrfoundation.org`, and `ubuntu-drivers`.
+- Produces: installed approved Debian packages, exact allowlisted-origin evidence for every requested and changed package, write-once backups for every active `sources.list`, `*.list`, and deb822 `*.sources` file and every file it mutates, temporary `policy-rc.d` service suppression with exact restoration, stopped/disabled Nginx, initialized rosdep, a resumable reboot boundary, and `scripts/rollback_host.sh` whose apply path always passes strict inert-data state parsing and the recorded simulation before mutation. A guarded temporary-root seam plus PATH-injected fake commands exercises the same state machine before any real `sudo` mutation.
 
 - [ ] **Step 1: Write the failing installer contract test**
 
@@ -998,12 +1113,12 @@ grep -Fx 'gz-harmonic' <<<"$plan"
 grep -Fx 'ros-jazzy-foxglove-bridge' <<<"$plan"
 ! grep -E 'ros-.*-desktop|ubuntu-desktop|xorg|xserver-xorg|nomachine|xvfb|virtualgl|nvidia-cuda-toolkit' <<<"$plan"
 test "$(LC_ALL=C sort config/environment/apt-packages.txt | uniq -d | wc -l)" -eq 0
-rg -F $'ros-jazzy-ros-gz\t1.0.23-1' scripts/install_host.sh
-rg -F $'ros-jazzy-navigation2\t1.3.12-1' scripts/install_host.sh
-rg -F $'ros-jazzy-nav2-bringup\t1.3.12-1' scripts/install_host.sh
-rg -F $'ros-jazzy-slam-toolbox\t2.8.5-1' scripts/install_host.sh
-rg -F $'ros-jazzy-turtlebot3\t2.3.6-1' scripts/install_host.sh
-rg -F $'ros-jazzy-turtlebot3-simulations\t2.3.7-1' scripts/install_host.sh
+rg -F '"ros-jazzy-ros-gz": "1.0.23-1"' scripts/install_host.sh
+rg -F '"ros-jazzy-navigation2": "1.3.12-1"' scripts/install_host.sh
+rg -F '"ros-jazzy-nav2-bringup": "1.3.12-1"' scripts/install_host.sh
+rg -F '"ros-jazzy-slam-toolbox": "2.8.5-1"' scripts/install_host.sh
+rg -F '"ros-jazzy-turtlebot3": "2.3.6-1"' scripts/install_host.sh
+rg -F '"ros-jazzy-turtlebot3-simulations": "2.3.7-1"' scripts/install_host.sh
 rg -F 'install-resume.env' scripts/install_host.sh
 rg -F 'install-complete.env' scripts/install_host.sh
 rg -F 'host-install-version-changes.tsv' scripts/install_host.sh
@@ -1093,6 +1208,20 @@ grep -Fq $'/etc/apt/sources.list\t1\t' "$success_evidence/apt-sources-before/inv
 grep -Fq $'/etc/apt/sources.list.d/ubuntu.sources\t1\t' "$success_evidence/apt-sources-before/inventory.tsv"
 grep -Fxq 'ORIGINAL_POLICY' "$success_root/usr/sbin/policy-rc.d"
 test -s "$success_evidence/apt-policy-origins.json"
+python3 - "$success_evidence/apt-candidates.tsv" config/environment/apt-packages.txt "$success_evidence/host-install-version-changes.tsv" "$success_evidence/apt-changed-package-origins.tsv" <<'PY'
+import csv, sys
+from pathlib import Path
+candidate_path, requested_path, changes_path, changed_origin_path = map(Path, sys.argv[1:])
+with candidate_path.open(encoding="utf-8", newline="") as handle:
+    candidates = list(csv.DictReader(handle, delimiter="\t"))
+requested = [line for line in requested_path.read_text(encoding="utf-8").splitlines() if line]
+assert [row["package"] for row in candidates] == requested
+with changes_path.open(encoding="utf-8", newline="") as handle:
+    changes = list(csv.DictReader(handle, delimiter="\t"))
+with changed_origin_path.open(encoding="utf-8", newline="") as handle:
+    changed_origins = list(csv.DictReader(handle, delimiter="\t"))
+assert [row["package"] for row in changed_origins] == [row["package"] for row in changes]
+PY
 python3 - "$success_case/operations.jsonl" <<'PY'
 import json, sys
 operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
@@ -1119,6 +1248,30 @@ operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 target_installs = [item for item in operations if item["command"] == "apt-get" and "install" in item["argv"] and "ros-jazzy-ros-base" in item["argv"]]
 assert target_installs == []
 PY
+
+IFS=$'\t' read -r requested_origin_case requested_origin_root requested_origin_evidence requested_origin_bin < <(make_case requested-origin-failure 1)
+set +e
+run_case_install "$requested_origin_case" "$requested_origin_root" "$requested_origin_evidence" "$requested_origin_bin" env FAKE_REQUESTED_ORIGIN_FAILURE=1
+requested_origin_rc=$?
+set -e
+test "$requested_origin_rc" -ne 0
+test ! -e "$requested_origin_evidence/install-state.env"
+
+for source_kind in ppa vendor; do
+  IFS=$'\t' read -r source_case source_root source_evidence source_bin < <(make_case "noble-$source_kind-source" 1)
+  if test "$source_kind" = ppa; then
+    source_uri=https://ppa.launchpadcontent.net/vendor/project/ubuntu
+  else
+    source_uri=https://vendor.example.invalid/ubuntu
+  fi
+  printf 'deb %s noble main\n' "$source_uri" > "$source_root/etc/apt/sources.list.d/foreign.list"
+  set +e
+  run_case_install "$source_case" "$source_root" "$source_evidence" "$source_bin" env
+  source_rc=$?
+  set -e
+  test "$source_rc" -ne 0
+  test ! -e "$source_evidence/install-state.env"
+done
 
 IFS=$'\t' read -r symlink_case symlink_root symlink_evidence symlink_bin < <(make_case apt-source-symlink 1)
 ln -s ubuntu.sources "$symlink_root/etc/apt/sources.list.d/active-symlink.sources"
@@ -1213,6 +1366,37 @@ tamper_rc=$?
 set -e
 test "$tamper_rc" -ne 0
 test ! -e "$tamper_evidence/install-complete.env"
+
+IFS=$'\t' read -r changed_origin_case changed_origin_root changed_origin_evidence changed_origin_bin < <(make_case changed-origin-failure 1)
+set +e
+run_case_install "$changed_origin_case" "$changed_origin_root" "$changed_origin_evidence" "$changed_origin_bin" env FAKE_CHANGED_ORIGIN_FAILURE=1
+changed_origin_rc=$?
+set -e
+test "$changed_origin_rc" -ne 0
+test ! -e "$changed_origin_evidence/install-complete.env"
+
+IFS=$'\t' read -r state_case state_root state_evidence state_bin < <(make_case rollback-state-tamper 1)
+run_case_install "$state_case" "$state_root" "$state_evidence" "$state_bin" env
+state_operations_before="$(wc -l < "$state_case/operations.jsonl")"
+printf 'started_at=$(touch %s)\n' "$state_case/source-executed" >> "$state_evidence/install-state.env"
+set +e
+PATH="$state_bin:$PATH" \
+SUBSTATION_INSTALL_TEST_ROOT="$state_root" \
+FAKE_HOST_STATE="$state_case/state.json" \
+FAKE_HOST_OPERATIONS="$state_case/operations.jsonl" \
+bash scripts/rollback_host.sh --apply --evidence-dir "$state_evidence" --confirm-run-id "$(basename "$(dirname "$state_evidence")")"
+state_tamper_rc=$?
+set -e
+test "$state_tamper_rc" -ne 0
+test ! -e "$state_case/source-executed"
+python3 - "$state_case/operations.jsonl" "$state_operations_before" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")][int(sys.argv[2]):]
+for item in operations:
+    argv = item["argv"]
+    assert not (item["command"] == "apt-get" and any(action in argv for action in {"install", "remove"}) and "--simulate" not in argv and "-s" not in argv)
+    assert not (item["command"] == "systemctl" and any(action in argv for action in {"start", "stop", "enable", "disable", "mask", "unmask"}))
+PY
 
 IFS=$'\t' read -r nginx_case nginx_root nginx_evidence nginx_bin < <(make_case nginx-absence-rollback 1)
 run_case_install "$nginx_case" "$nginx_root" "$nginx_evidence" "$nginx_bin" env
@@ -1343,6 +1527,8 @@ def apt_get(argv, state):
                 policy = Path(os.environ["SUBSTATION_INSTALL_TEST_ROOT"]) / "usr/sbin/policy-rc.d"
                 if not policy.is_file() or "exit 101" not in policy.read_text(encoding="utf-8"):
                     state["nginx_active"] = True
+        if os.environ.get("FAKE_CHANGED_ORIGIN_FAILURE") == "1":
+            state["packages"]["foreign-dependency"] = "1.0-1noble"
         save_state(state)
         return 0
     if action == "remove":
@@ -1371,10 +1557,17 @@ def apt_cache(argv, state):
         candidate = "9.9.9-1"
     print(f"  Candidate: {candidate}")
     print(f"     {candidate} 500")
-    if package == "gz-harmonic":
-        print("        500 http://packages.osrfoundation.org/gazebo/ubuntu-stable noble/main amd64 Packages")
+    if package.startswith("ros-jazzy-"):
+        origin = "http://packages.ros.org/ros2/ubuntu"
+    elif package == "gz-harmonic" or package.startswith(("gz-", "libgz-", "sdformat", "libsdformat")):
+        origin = "http://packages.osrfoundation.org/gazebo/ubuntu-stable"
     else:
-        print("        500 http://packages.ros.org/ros2/ubuntu noble/main amd64 Packages")
+        origin = "http://archive.ubuntu.com/ubuntu"
+    if os.environ.get("FAKE_REQUESTED_ORIGIN_FAILURE") == "1" and package == "nginx":
+        origin = "https://ppa.launchpadcontent.net/vendor/project/ubuntu"
+    if os.environ.get("FAKE_CHANGED_ORIGIN_FAILURE") == "1" and package == "foreign-dependency":
+        origin = "https://vendor.example.invalid/ubuntu"
+    print(f"        500 {origin} noble/main amd64 Packages")
     return 0
 
 
@@ -1504,50 +1697,19 @@ chmod +x tests/environment/test_install_host.sh
 bash tests/environment/test_install_host.sh
 ```
 
-Expected: exit nonzero because the package list and installer do not exist.
+Expected: exit nonzero because `scripts/install_host.sh`, `scripts/rollback_host.sh`, and the fake-host fixture do not exist; the Task 2 package list is already present and sorted.
 
-- [ ] **Step 2: Add the exact explicit package request set**
+- [ ] **Step 2: Verify the inherited exact package request set**
 
-Create `config/environment/apt-packages.txt` with this exact content, already sorted by byte order:
-
-```text
-build-essential
-ca-certificates
-cmake
-curl
-git
-git-lfs
-gnupg
-gz-harmonic
-jq
-libegl1
-locales
-mesa-utils
-nginx
-pciutils
-pkg-config
-python3-colcon-common-extensions
-python3-pip
-python3-rosdep
-python3-venv
-python3-vcstool
-ros-jazzy-foxglove-bridge
-ros-jazzy-nav2-bringup
-ros-jazzy-navigation2
-ros-jazzy-robot-state-publisher
-ros-jazzy-ros-base
-ros-jazzy-ros-gz
-ros-jazzy-slam-toolbox
-ros-jazzy-turtlebot3
-ros-jazzy-turtlebot3-simulations
-ros-jazzy-vision-msgs
-ros-jazzy-xacro
-shellcheck
-software-properties-common
-sqlite3
-ubuntu-drivers-common
-yamllint
+```bash
+test -s config/environment/apt-packages.txt
+LC_ALL=C sort -c config/environment/apt-packages.txt
+test "$(uniq -d config/environment/apt-packages.txt | wc -l)" -eq 0
+! awk '/^ros-/ && $0 !~ /^ros-jazzy-/ {print NR ":" $0; found=1} END {exit found ? 0 : 1}' config/environment/apt-packages.txt
+! rg -n '^(ros-jazzy-(desktop|desktop-full)|ubuntu-desktop|xorg|xserver-xorg.*|nomachine|xvfb|virtualgl|nvidia-cuda-toolkit)$' config/environment/apt-packages.txt
 ```
+
+Expected: all commands exit 0; Task 3 consumes the exact tracked request set already reviewed and committed by Task 2 and does not redefine or restage it.
 
 - [ ] **Step 3: Implement the plan/apply installer**
 
@@ -1610,6 +1772,7 @@ after_packages="$evidence_dir/dpkg-after.tsv"
 new_packages="$evidence_dir/host-install-new-packages.txt"
 version_changes="$evidence_dir/host-install-version-changes.tsv"
 candidate_file="$evidence_dir/apt-candidates.tsv"
+changed_origin_file="$evidence_dir/apt-changed-package-origins.tsv"
 managed_after="$evidence_dir/managed-files-after.tsv"
 apt_sources_after="$evidence_dir/apt-sources-after"
 policy_state="$evidence_dir/policy-rc.d-state.tsv"
@@ -1752,6 +1915,119 @@ require_upstream_version() {
   esac
 }
 
+capture_package_policy() {
+  local input_path="$1"
+  local input_kind="$2"
+  local output_path="$3"
+  python3 - "$input_path" "$input_kind" "$output_path" <<'PY'
+import csv
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+input_path = Path(sys.argv[1])
+input_kind = sys.argv[2]
+output_path = Path(sys.argv[3])
+locked_upstream = {
+    "ros-jazzy-ros-gz": "1.0.23-1",
+    "ros-jazzy-navigation2": "1.3.12-1",
+    "ros-jazzy-nav2-bringup": "1.3.12-1",
+    "ros-jazzy-slam-toolbox": "2.8.5-1",
+    "ros-jazzy-turtlebot3": "2.3.6-1",
+    "ros-jazzy-turtlebot3-simulations": "2.3.7-1",
+}
+ubuntu_origins = {
+    "http://archive.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu",
+    "http://security.ubuntu.com/ubuntu", "https://security.ubuntu.com/ubuntu",
+}
+ros_origins = {
+    "http://packages.ros.org/ros2/ubuntu", "https://packages.ros.org/ros2/ubuntu",
+}
+gazebo_origins = {
+    "http://packages.osrfoundation.org/gazebo/ubuntu-stable",
+    "https://packages.osrfoundation.org/gazebo/ubuntu-stable",
+}
+
+def allowed_origins_for(package):
+    if package.startswith("ros-jazzy-"):
+        return ros_origins
+    if re.match(r"^(gz-|libgz-|sdformat|libsdformat|ignition-|libignition-)", package):
+        return gazebo_origins
+    return ubuntu_origins
+
+if input_kind == "requested":
+    packages = [line for line in input_path.read_text(encoding="utf-8").splitlines() if line]
+elif input_kind == "changed":
+    with input_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        assert reader.fieldnames == ["package", "before_version", "after_version", "change"]
+        changed_rows = list(reader)
+    if any(row["change"] == "removed" for row in changed_rows):
+        raise SystemExit("package removal during installation is forbidden")
+    packages = [row["package"] for row in changed_rows]
+else:
+    raise SystemExit(f"unknown policy input kind: {input_kind}")
+if packages != sorted(set(packages)):
+    raise SystemExit("package policy input must be sorted and unique")
+
+rows = []
+for package in packages:
+    if package.startswith("ros-") and not package.startswith("ros-jazzy-"):
+        raise SystemExit(f"non-Jazzy ROS package is forbidden: {package}")
+    if re.fullmatch(r"ros-jazzy-(desktop|desktop-full)", package):
+        raise SystemExit(f"Jazzy desktop metapackage is forbidden: {package}")
+    completed = subprocess.run(
+        ["apt-cache", "policy", package],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    candidate_match = re.search(r"^\s*Candidate:\s*(\S+)", completed.stdout, re.MULTILINE)
+    candidate = candidate_match.group(1) if candidate_match else None
+    if candidate in {None, "(none)"}:
+        raise SystemExit(f"missing candidate for package: {package}")
+    expected = locked_upstream.get(package)
+    if expected is not None and not (
+        candidate == expected
+        or (
+            candidate.startswith(expected)
+            and len(candidate) > len(expected)
+            and not candidate[len(expected)].isdigit()
+        )
+    ):
+        raise SystemExit(
+            f"candidate-version-mismatch: {package} expected {expected} got {candidate}"
+        )
+    origins = sorted({
+        match.group(1).rstrip("/")
+        for match in re.finditer(
+            r"^\s*\d+\s+(https?://\S+)\s+\S+\s+\S+\s+Packages$",
+            completed.stdout,
+            re.MULTILINE,
+        )
+    })
+    allowed = allowed_origins_for(package)
+    if not origins or not set(origins) <= allowed:
+        raise SystemExit(
+            f"package origin is not allowed: {package}: {','.join(origins) or '(none)'}"
+        )
+    rows.append((
+        package,
+        expected or "-",
+        candidate,
+        ",".join(sorted(allowed)),
+        ",".join(origins),
+    ))
+
+with output_path.open("w", encoding="utf-8", newline="") as handle:
+    writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+    writer.writerow(("package", "expected_upstream", "candidate", "allowed_origins", "origins"))
+    writer.writerows(rows)
+PY
+}
+
 validate_installed_stack() {
   driver_is_ready
   source "$(host_path /opt/ros/jazzy/setup.bash)"
@@ -1774,6 +2050,7 @@ capture_after_state() {
   test ! -e "$after_packages"
   test ! -e "$new_packages"
   test ! -e "$version_changes"
+  test ! -e "$changed_origin_file"
   test ! -e "$managed_after"
   capture_work="$(mktemp --tmpdir=/tmp)"
   dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > "$capture_work"
@@ -1818,6 +2095,11 @@ with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer.writerow((package, old or "-", new or "-", change))
 PY
   install -m 0640 "$capture_work" "$version_changes"
+  unlink -- "$capture_work"
+
+  capture_work="$(mktemp --tmpdir=/tmp)"
+  capture_package_policy "$version_changes" changed "$capture_work"
+  install -m 0640 "$capture_work" "$changed_origin_file"
   unlink -- "$capture_work"
 
   capture_work="$(mktemp --tmpdir=/tmp)"
@@ -1949,6 +2231,7 @@ verify_completed_state() {
   test -s "$after_packages"
   test -f "$new_packages"
   test -s "$version_changes"
+  test -s "$changed_origin_file"
   test -s "$managed_after"
   test -s "$apt_sources_after/inventory.tsv"
   test -s "$policy_state"
@@ -1960,6 +2243,14 @@ verify_completed_state() {
   fi
   verify_managed_evidence
   validate_installed_stack
+  capture_work="$(mktemp --tmpdir=/tmp)"
+  capture_package_policy config/environment/apt-packages.txt requested "$capture_work"
+  cmp "$candidate_file" "$capture_work"
+  unlink -- "$capture_work"
+  capture_work="$(mktemp --tmpdir=/tmp)"
+  capture_package_policy "$version_changes" changed "$capture_work"
+  cmp "$changed_origin_file" "$capture_work"
+  unlink -- "$capture_work"
   capture_work="$(mktemp --tmpdir=/tmp)"
   dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > "$capture_work"
   cmp "$after_packages" "$capture_work"
@@ -1986,10 +2277,16 @@ if test -s "$resume_marker"; then
   test ! -e "$after_packages"
   test ! -e "$new_packages"
   test ! -e "$version_changes"
+  test ! -e "$changed_origin_file"
   test ! -e "$managed_after"
   test ! -e "$apt_sources_after"
   verify_backup_inventory
   grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$policy_state"
+  capture_work="$(mktemp --tmpdir=/tmp)"
+  capture_package_policy config/environment/apt-packages.txt requested "$capture_work"
+  cmp "$candidate_file" "$capture_work"
+  unlink -- "$capture_work"
+  capture_work=
   driver_is_ready || {
     printf '%s\n' 'rebooted NVIDIA driver is absent or below 560.35.05' >&2
     exit 1
@@ -2013,6 +2310,7 @@ for initial_artifact in \
   "$after_packages" \
   "$new_packages" \
   "$version_changes" \
+  "$changed_origin_file" \
   "$managed_after" \
   "$apt_sources_after"; do
   if test -e "$initial_artifact"; then
@@ -2113,47 +2411,27 @@ run_privileged install -m 0644 "$list_work" "$(host_path /etc/apt/sources.list.d
 
 run_privileged apt-get update
 capture_work="$(mktemp --tmpdir=/tmp)"
-printf 'package\texpected_upstream\tcandidate\torigin\n' > "$capture_work"
-while IFS=$'\t' read -r package expected; do
-  policy_output="$(apt-cache policy "$package")"
-  candidate="$(awk '$1 == "Candidate:" {print $2; exit}' <<<"$policy_output")"
-  origin="$(awk '/^[[:space:]]*[0-9]+[[:space:]]+https?:\/\// {print $2}' <<<"$policy_output" | LC_ALL=C sort -u)"
-  test -n "$candidate"
-  test "$candidate" != '(none)'
-  case "$candidate" in
-    "$expected"|"$expected"[!0-9]*) ;;
-    *)
-      printf 'candidate-version-mismatch: %s expected %s got %s\n' \
-        "$package" "$expected" "$candidate" >&2
-      exit 1
-      ;;
-  esac
-  test "$origin" = http://packages.ros.org/ros2/ubuntu
-  printf '%s\t%s\t%s\t%s\n' "$package" "$expected" "$candidate" "$origin" >> "$capture_work"
-done <<'VERSIONS'
-ros-jazzy-ros-gz	1.0.23-1
-ros-jazzy-navigation2	1.3.12-1
-ros-jazzy-nav2-bringup	1.3.12-1
-ros-jazzy-slam-toolbox	2.8.5-1
-ros-jazzy-turtlebot3	2.3.6-1
-ros-jazzy-turtlebot3-simulations	2.3.7-1
-VERSIONS
+capture_package_policy config/environment/apt-packages.txt requested "$capture_work"
 install -m 0640 "$capture_work" "$candidate_file"
 unlink -- "$capture_work"
 capture_work=
 
 bash scripts/audit_host.sh --report-only > "$evidence_dir/apt-policy-origins.json"
-python3 - "$evidence_dir/apt-policy-origins.json" <<'PY'
+python3 - "$evidence_dir/apt-policy-origins.json" config/environment/apt-packages.txt <<'PY'
 import json
 import sys
 from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-locked = {key: value for key, value in data["apt_policy"].items() if key != "gz-harmonic"}
-assert locked
-assert all(item["candidate_ok"] and item["origin_ok"] for item in locked.values())
-gz = data["apt_policy"]["gz-harmonic"]
-assert gz["candidate_ok"] and gz["origin_ok"]
+requested = {
+    line
+    for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+    if line
+}
+assert set(data["apt_policy"]) == requested
+assert not data["forbidden_apt_sources"]
+assert not data["forbidden_packages"]
+assert all(item["candidate_ok"] and item["origin_ok"] for item in data["apt_policy"].values())
 PY
 
 mapfile -t requested_packages < config/environment/apt-packages.txt
@@ -2196,7 +2474,7 @@ cleanup
 printf '%s\n' 'install-host: PASS'
 ```
 
-The installer has three explicit states. A first run creates `install-state.env`, `dpkg-before.tsv`, `apt-sources-before/`, key hashes, and `apt-candidates.tsv` exactly once before the corresponding mutations; the state file also records Nginx's original unit, active, and enabled states. A `REBOOT_REQUIRED` run leaves `install-resume.env` and exits 20 without creating after-state evidence. The resume path skips repository setup and every package installation command, validates the rebooted driver, creates `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, and `install-complete.env`, then finishes. The managed-file verifier checks every original backup against its recorded SHA-256 and checks the live after-state against its own mode and SHA-256. A completed rerun writes no evidence and compares the live package and managed-file sets with the captured after-state before printing `PASS`. Any partial state without a valid resume or complete marker fails closed for operator review. The script never installs a desktop metapackage, starts a project service, or exposes a port; Nginx is explicitly disabled and stopped after package installation.
+The installer has three explicit states. A first run creates `install-state.env`, `dpkg-before.tsv`, `apt-sources-before/`, key hashes, and `apt-candidates.tsv` exactly once before the corresponding mutations; the candidate file covers every requested package and accepts only the package-family-specific official Ubuntu, ROS 2, or Gazebo origins. The state file records Nginx's original unit, active, and enabled states but is later treated only as inert data. A `REBOOT_REQUIRED` run leaves `install-resume.env` and exits 20 without creating after-state evidence. The resume path skips repository setup and every package installation command, validates the rebooted driver, creates `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `apt-changed-package-origins.tsv`, `managed-files-after.tsv`, and `install-complete.env`, then finishes. Every added or version-changed package receives the same exact origin validation; an unexpected removal or origin fails closed. The managed-file verifier checks every original backup against its recorded SHA-256 and checks the live after-state against its own mode and SHA-256. A completed rerun writes no evidence and compares the live package and managed-file sets with the captured after-state before printing `PASS`. Any partial state without a valid resume or complete marker fails closed for operator review. The script never installs a desktop metapackage, starts a project service, or exposes a port; Nginx is explicitly disabled and stopped after package installation.
 
 - [ ] **Step 4: Implement simulation-gated exact rollback**
 
@@ -2251,6 +2529,65 @@ for required in "$state_file" "$before_packages" "$changes" "$before_inventory" 
 done
 test -f "$additions"
 grep -Fxq 'state=PASS' "$evidence_dir/install-complete.env"
+
+state_values="$(python3 - "$state_file" <<'PY'
+import datetime
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected_keys = {
+    "state",
+    "universe_present_before",
+    "nginx_unit_present_before",
+    "nginx_active_before",
+    "nginx_enabled_before",
+    "started_at",
+}
+values = {}
+for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    if not re.fullmatch(r"[a-z_]+=[A-Za-z0-9_.:+-]+", line):
+        raise SystemExit(f"unsafe install-state line {line_number}")
+    key, value = line.split("=", 1)
+    if key in values:
+        raise SystemExit(f"duplicate install-state key: {key}")
+    values[key] = value
+if set(values) != expected_keys:
+    raise SystemExit(
+        f"install-state keys changed: missing={sorted(expected_keys - set(values))}, "
+        f"extra={sorted(set(values) - expected_keys)}"
+    )
+if values["state"] != "INITIAL_INSTALL_STARTED":
+    raise SystemExit("invalid install-state state")
+if values["universe_present_before"] != "1":
+    raise SystemExit("install-state must record universe present")
+if values["nginx_unit_present_before"] not in {"0", "1"}:
+    raise SystemExit("invalid nginx unit presence")
+if values["nginx_unit_present_before"] == "0":
+    if values["nginx_active_before"] != "absent" or values["nginx_enabled_before"] != "absent":
+        raise SystemExit("absent nginx unit has inconsistent state")
+else:
+    if values["nginx_active_before"] not in {"active", "inactive"}:
+        raise SystemExit("invalid nginx active state")
+    if values["nginx_enabled_before"] not in {"enabled", "disabled", "masked"}:
+        raise SystemExit("invalid nginx enabled state")
+try:
+    datetime.datetime.strptime(values["started_at"], "%Y-%m-%dT%H:%M:%SZ")
+except ValueError as error:
+    raise SystemExit("invalid install-state UTC timestamp") from error
+print("\t".join(values[key] for key in (
+    "state",
+    "universe_present_before",
+    "nginx_unit_present_before",
+    "nginx_active_before",
+    "nginx_enabled_before",
+    "started_at",
+)))
+PY
+)"
+IFS=$'\t' read -r install_state universe_present_before nginx_unit_present_before nginx_active_before nginx_enabled_before install_started_at <<<"$state_values"
+install_state_validated=1
 
 python3 - "$before_inventory" "$after_inventory" "$managed_after" "${test_root:-/}" <<'PY'
 import csv
@@ -2349,7 +2686,7 @@ while IFS=$'\t' read -r source_path existed_before mode_before sha_before backup
   fi
 done < "$before_inventory"
 
-source "$state_file"
+test "$install_state_validated" -eq 1
 if test "$nginx_unit_present_before" = 1; then
   case "$nginx_enabled_before" in
     enabled) run_privileged systemctl enable nginx.service ;;
@@ -2387,7 +2724,7 @@ PY
 printf '%s\n' 'rollback-host-apply: PASS'
 ```
 
-The rollback `--apply` path invokes the same strict simulation internally before any package or file mutation. The simulation output may name only the exact recorded restore/remove package sets; extra apt dependency changes fail. Current live files and every backup are hash/mode validated before application. Only the seven explicitly owned created paths may be unlinked; every existing `sources.list`, `.list`, and deb822 `.sources` file is restored byte-for-byte with its recorded mode.
+The rollback `--plan` and `--apply` paths first parse `install-state.env` as inert data with an exact key set, single-occurrence enforcement, a shell-inert value grammar, allowed enums, UTC timestamp validation, and Nginx cross-field constraints. Neither path sources the file. The `--apply` path then invokes the same strict simulation internally before any package or file mutation. The simulation output may name only the exact recorded restore/remove package sets; extra apt dependency changes fail. Current live files and every backup are hash/mode validated before application. Only the seven explicitly owned created paths may be unlinked; every existing `sources.list`, `.list`, and deb822 `.sources` file is restored byte-for-byte with its recorded mode.
 
 - [ ] **Step 5: Run behavioral tests before the host mutation**
 
@@ -2397,7 +2734,7 @@ bash tests/environment/test_install_host.sh
 LC_ALL=C sort -c config/environment/apt-packages.txt
 ```
 
-Expected: `install-host-test: PASS`; the fake-host scenarios prove fresh success, candidate failure before target install, reboot/resume without repeat mutation, completed read-only rerun, partial-state refusal, backup tamper refusal, temporary service suppression restoration, and simulation-gated package/source rollback. No `sudo` command touches the real host during this test.
+Expected: `install-host-test: PASS`; the fake-host scenarios prove fresh success, all-requested-package candidate/origin coverage, Noble PPA and vendor-source rejection, changed-package origin rejection, candidate failure before target install, reboot/resume without repeat mutation, completed read-only rerun, partial-state refusal, backup tamper refusal, tampered `install-state.env` rejection before any fake mutation or shell evaluation, temporary service suppression restoration, and simulation-gated package/source rollback. No `sudo` command touches the real host during this test.
 
 - [ ] **Step 6: Apply the installer and handle the explicit reboot boundary**
 
@@ -2419,7 +2756,7 @@ Expected without a driver change: final line `install-host: PASS`, exit 0. Expec
 If exit 20 occurs, do not reboot until the installer commit and a reboot handoff commit both exist. Run:
 
 ```bash
-git add config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
+git add scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
 git diff --cached --check
 git commit -m "feat: install locked ros and gazebo baseline"
 install_commit="$(git rev-parse HEAD)"
@@ -2494,6 +2831,7 @@ dpkg --compare-versions "$driver_version" ge 560.35.05
 test -s "$PHASE1_EVIDENCE_ROOT/dpkg-before.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/dpkg-after.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/apt-candidates.tsv"
+test -s "$PHASE1_EVIDENCE_ROOT/apt-changed-package-origins.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/apt-policy-origins.json"
 test -s "$PHASE1_EVIDENCE_ROOT/apt-sources-before/inventory.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/apt-sources-after/inventory.tsv"
@@ -2506,7 +2844,7 @@ grep -Fx 'state=PASS' "$PHASE1_EVIDENCE_ROOT/install-complete.env"
 
 Expected: every command exits 0; ROS is Jazzy, `ros_gz` upstream is 1.0.23-1, Navigation2 is 1.3.12-1, SLAM Toolbox is 2.8.5-1, TurtleBot3 core and simulation expose 2.3.6-1 and 2.3.7-1 respectively, Gazebo major is 8, and the driver meets the floor. Full Ubuntu package revisions are captured for review later; they are not silently normalized away.
 
-Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, optional historical `install-resume.env`, `apt-candidates.tsv`, `apt-policy-origins.json`, `policy-rc.d-state.tsv`, key SHA files, and the complete before/after apt-source inventories below `$PHASE1_EVIDENCE_ROOT/apt-sources-before` and `apt-sources-after`.
+Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, optional historical `install-resume.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `policy-rc.d-state.tsv`, key SHA files, and the complete before/after apt-source inventories below `$PHASE1_EVIDENCE_ROOT/apt-sources-before` and `apt-sources-after`.
 
 Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$PHASE1_EVIDENCE_ROOT"`. Review the exact simulated package set, then run `bash scripts/rollback_host.sh --apply --evidence-dir "$PHASE1_EVIDENCE_ROOT" --confirm-run-id "$PHASE1_RUN_ID"`. The numbered details below explain that script's recorded transaction; do not execute individual snippets as a substitute for its validation gate.
 
@@ -2564,20 +2902,18 @@ Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$
    done < "$PHASE1_EVIDENCE_ROOT/apt-sources-before/inventory.tsv"
    ```
 
-5. Restore the original Nginx state recorded in `install-state.env`. If `nginx_unit_present_before=0`, confirm the unit disappears with the newly added packages. Otherwise restore only the recorded `enabled`/`disabled`/`masked` and `active`/`inactive` combination; any other recorded state requires operator review rather than normalization:
+5. Restore the original Nginx state recorded in `install-state.env`. The canonical rollback first parses this file strictly as inert data, requiring the exact six-key schema, one occurrence per key, a safe value grammar, allowed enums, a valid UTC timestamp, and consistent absent/present Nginx fields; it never sources the file. If `nginx_unit_present_before=0`, confirm the unit disappears with the newly added packages. Otherwise restore only the validated `enabled`/`disabled`/`masked` and `active`/`inactive` combination; any other recorded state requires operator review rather than normalization:
 
    ```bash
-   source "$PHASE1_EVIDENCE_ROOT/install-state.env"
+   test "$install_state_validated" -eq 1
    if test "$nginx_unit_present_before" = 0; then
      ! systemctl list-unit-files --type=service --no-legend nginx.service 2>/dev/null \
        | grep -q '^nginx\.service'
    else
      case "$nginx_enabled_before" in
-       enabled) sudo systemctl unmask nginx.service; sudo systemctl enable nginx.service ;;
-       enabled-runtime) sudo systemctl unmask --runtime nginx.service; sudo systemctl enable --runtime nginx.service ;;
-       disabled) sudo systemctl unmask nginx.service; sudo systemctl disable nginx.service ;;
+       enabled) sudo systemctl enable nginx.service ;;
+       disabled) sudo systemctl disable nginx.service ;;
        masked) sudo systemctl mask nginx.service ;;
-       masked-runtime) sudo systemctl mask --runtime nginx.service ;;
        *) printf 'unsupported recorded nginx enabled state: %s\n' "$nginx_enabled_before" >&2; false ;;
      esac
      case "$nginx_active_before" in
@@ -2594,9 +2930,9 @@ Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$
 - [ ] **Step 8: Commit Task 3**
 
 ```bash
-if ! git log -1 --format=%s -- config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py \
+if ! git log -1 --format=%s -- scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py \
   | grep -Fxq 'feat: install locked ros and gazebo baseline'; then
-  git add config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
+  git add scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
   git diff --cached --check
   git commit -m "feat: install locked ros and gazebo baseline"
 fi
@@ -4454,7 +4790,7 @@ Expected: the SDF fixture is small text; no rendered image or Gazebo log is comm
 **Interfaces:**
 - Consumes: all Task 1–9 scripts, locks, toolchains, downloads, tests, the approved installed host, the existing unsealed `$PHASE1_EVIDENCE_ROOT`, and the absent `$PHASE1_EVIDENCE_FINAL`.
 - Produces: the one-shot Phase 1 acceptance entry point `bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"`, a reviewed tracked environment lock, an atomically published immutable `$PHASE1_EVIDENCE_FINAL`, and the read-only sealed-evidence checker `bash scripts/check_environment_seal.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"`.
-- Invariant: the canonical verifier derives the staging sibling by appending `.staging` to its final-target argument. It refuses an existing final target, a missing staging directory, any pre-existing staging `SHA256SUMS`, or any prior `commands/`, `environment.json`, or `result.json`. It never downloads, repairs, installs, compiles locks, calls an environment setup script, or runs `npm ci`.
+- Invariant: the canonical verifier derives the staging sibling by appending `.staging` to its final-target argument. It refuses an existing final target, a missing staging directory, any pre-existing staging `SHA256SUMS`, or any prior `commands/`, `environment.json`, or `result.json`. Before sealing, it strictly parses `install-state.env` as inert six-key data and revalidates the exact requested/changed package-origin evidence. It never downloads, repairs, installs, compiles locks, calls an environment setup script, or runs `npm ci`.
 
 - [ ] **Step 1: Write the failing synthetic seal behavior test**
 
@@ -4469,6 +4805,9 @@ cd "$repo_root"
 
 test -x scripts/verify_environment.sh
 test -x scripts/check_environment_seal.sh
+rg -F 'unsafe install-state line' scripts/verify_environment.sh
+! rg -n 'source .*install-state|source "\$state_file"' \
+  scripts/verify_environment.sh scripts/rollback_host.sh
 
 fixture_root="/tmp/phase1-seal-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
 case "$fixture_root" in /tmp/phase1-seal-fixture-*) ;; *) exit 2 ;; esac
@@ -5011,6 +5350,7 @@ else
     install-state.env
     install-complete.env
     apt-candidates.tsv
+    apt-changed-package-origins.tsv
     apt-policy-origins.json
     apt-sources-before/inventory.tsv
     apt-sources-after/inventory.tsv
@@ -5062,8 +5402,11 @@ else
   verify_installer_evidence() {
     python3 - "$staging_dir" <<'PY'
 import csv
+import datetime
 import hashlib
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -5072,6 +5415,36 @@ before_path = root / "apt-sources-before/inventory.tsv"
 after_path = root / "apt-sources-after/inventory.tsv"
 managed_path = root / "managed-files-after.tsv"
 policy_path = root / "policy-rc.d-state.tsv"
+
+state_path = root / "install-state.env"
+expected_state_keys = {
+    "state",
+    "universe_present_before",
+    "nginx_unit_present_before",
+    "nginx_active_before",
+    "nginx_enabled_before",
+    "started_at",
+}
+state_values = {}
+for line_number, line in enumerate(
+    state_path.read_text(encoding="utf-8").splitlines(), 1
+):
+    if not re.fullmatch(r"[a-z_]+=[A-Za-z0-9_.:+-]+", line):
+        raise AssertionError(f"unsafe install-state line {line_number}")
+    key, value = line.split("=", 1)
+    assert key not in state_values, f"duplicate install-state key: {key}"
+    state_values[key] = value
+assert set(state_values) == expected_state_keys
+assert state_values["state"] == "INITIAL_INSTALL_STARTED"
+assert state_values["universe_present_before"] == "1"
+assert state_values["nginx_unit_present_before"] in {"0", "1"}
+if state_values["nginx_unit_present_before"] == "0":
+    assert state_values["nginx_active_before"] == "absent"
+    assert state_values["nginx_enabled_before"] == "absent"
+else:
+    assert state_values["nginx_active_before"] in {"active", "inactive"}
+    assert state_values["nginx_enabled_before"] in {"enabled", "disabled", "masked"}
+datetime.datetime.strptime(state_values["started_at"], "%Y-%m-%dT%H:%M:%SZ")
 
 with before_path.open(encoding="utf-8", newline="") as handle:
     before = list(csv.DictReader(handle, delimiter="\t"))
@@ -5150,11 +5523,31 @@ else:
     assert not policy_live.exists()
 
 audit = json.loads((root / "apt-policy-origins.json").read_text(encoding="utf-8"))
-assert audit["apt_policy"]
+requested = [
+    line
+    for line in Path("config/environment/apt-packages.txt").read_text(encoding="utf-8").splitlines()
+    if line
+]
+assert set(audit["apt_policy"]) == set(requested)
+assert not audit["forbidden_packages"]
+assert not audit["forbidden_apt_sources"]
 assert all(
     item["candidate_ok"] and item["origin_ok"]
     for item in audit["apt_policy"].values()
 )
+with (root / "apt-candidates.tsv").open(encoding="utf-8", newline="") as handle:
+    candidate_reader = csv.DictReader(handle, delimiter="\t")
+    assert candidate_reader.fieldnames == [
+        "package", "expected_upstream", "candidate", "allowed_origins", "origins"
+    ]
+    candidate_rows = list(candidate_reader)
+assert [row["package"] for row in candidate_rows] == requested
+for row in candidate_rows:
+    policy = audit["apt_policy"][row["package"]]
+    assert row["expected_upstream"] == (policy["expected_upstream"] or "-")
+    assert row["candidate"] == policy["candidate"]
+    assert row["allowed_origins"].split(",") == policy["allowed_origins"]
+    assert row["origins"].split(",") == policy["origins"]
 
 def versions(path):
     rows = {}
@@ -5182,11 +5575,65 @@ with (root / "host-install-version-changes.tsv").open(
 ) as handle:
     actual_changes = list(csv.DictReader(handle, delimiter="\t"))
 assert actual_changes == expected_changes
+assert not any(row["change"] == "removed" for row in actual_changes)
 assert (root / "host-install-new-packages.txt").read_text(
     encoding="utf-8"
 ).splitlines() == [
     row["package"] for row in expected_changes if row["change"] == "added"
 ]
+
+ubuntu_origins = {
+    "http://archive.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu",
+    "http://security.ubuntu.com/ubuntu", "https://security.ubuntu.com/ubuntu",
+}
+ros_origins = {
+    "http://packages.ros.org/ros2/ubuntu", "https://packages.ros.org/ros2/ubuntu",
+}
+gazebo_origins = {
+    "http://packages.osrfoundation.org/gazebo/ubuntu-stable",
+    "https://packages.osrfoundation.org/gazebo/ubuntu-stable",
+}
+def allowed_origins_for(package):
+    if package.startswith("ros-jazzy-"):
+        return ros_origins
+    if re.match(r"^(gz-|libgz-|sdformat|libsdformat|ignition-|libignition-)", package):
+        return gazebo_origins
+    return ubuntu_origins
+
+with (root / "apt-changed-package-origins.tsv").open(
+    encoding="utf-8", newline=""
+) as handle:
+    changed_reader = csv.DictReader(handle, delimiter="\t")
+    assert changed_reader.fieldnames == [
+        "package", "expected_upstream", "candidate", "allowed_origins", "origins"
+    ]
+    changed_origin_rows = list(changed_reader)
+assert [row["package"] for row in changed_origin_rows] == [
+    row["package"] for row in expected_changes
+]
+for row in changed_origin_rows:
+    package = row["package"]
+    completed = subprocess.run(
+        ["apt-cache", "policy", package],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    candidate_match = re.search(r"^\s*Candidate:\s*(\S+)", completed.stdout, re.MULTILINE)
+    assert candidate_match and candidate_match.group(1) == row["candidate"]
+    origins = sorted({
+        match.group(1).rstrip("/")
+        for match in re.finditer(
+            r"^\s*\d+\s+(https?://\S+)\s+\S+\s+\S+\s+Packages$",
+            completed.stdout,
+            re.MULTILINE,
+        )
+    })
+    allowed = allowed_origins_for(package)
+    assert origins and set(origins) <= allowed
+    assert row["allowed_origins"].split(",") == sorted(allowed)
+    assert row["origins"].split(",") == origins
 
 with (root / "storage-paths-before.tsv").open(
     encoding="utf-8", newline=""
@@ -5462,6 +5909,7 @@ if test "$test_mode" -eq 0; then
     install-state.env
     install-complete.env
     apt-candidates.tsv
+    apt-changed-package-origins.tsv
     apt-policy-origins.json
     apt-sources-before/inventory.tsv
     apt-sources-after/inventory.tsv
