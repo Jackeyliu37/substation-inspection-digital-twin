@@ -26,6 +26,9 @@
 - Do not modify original public data. Do not commit raw/derived datasets, weights, virtual environments, `node_modules`, ROS build/install/log trees, acceptance evidence, service logs, or rosbag2.
 - Tests precede implementation in every task. A test is first run against the missing or incomplete implementation and must fail for the stated reason; after the minimal implementation it must pass.
 - Initial host snapshots and source backups are write-once, and the complete evidence tree becomes immutable after its final recursive `SHA256SUMS` is published. Rollback preserves `/var/lib/substation/evidence`; it reverts tracked code or restores only explicitly recorded files/packages.
+- Tasks 1-9 write only to the fresh unsealed sibling `01-environment.staging`. Task 10 refuses any staging or final target that already contains `SHA256SUMS`, writes the checksum as its last staging mutation, and atomically renames the directory to `01-environment`. A sealed directory is read-only forever; retries use a new acceptance run.
+- Verification is read-only with respect to installed packages, apt sources, persistent resources, toolchains, and virtual environments. In particular, the consolidated verifier invokes the checksum-only resource verifier and never invokes a downloader, installer, lock compiler, `npm install`, or environment setup script.
+- Existing storage parents, virtual environments, toolchains, symlinks, apt sources, service-suppression files, and content-addressed resource directories are foreign unless their exact metadata or task-owned provenance marker proves compatibility. Refuse incompatible state; never recursively change ownership or permissions on an existing directory.
 - Never remove packages with automatic dependency cleanup. Package rollback may remove only package names recorded as newly installed by `scripts/install_host.sh`, using `apt-get remove --no-auto-remove` after human review.
 - Do not overwrite existing virtual environments, toolchains, manifests, repository files, or apt source/key files. Refuse, back up to the active evidence directory, or move the exact owned path to a timestamped quarantine name.
 - Any version mismatch, missing SHA-256, forbidden package, capacity below 80 GiB free or 16 GiB memory, failed CUDA check, failed colcon command, failed frontend build, or failed EGL probe is a hard failure.
@@ -48,16 +51,20 @@
 | `scripts/init_phase1_run.sh` | Create one acceptance run directory after the document gate passes and write ignored `.phase1-run.env`. |
 | `scripts/audit_host.sh` | Read-only OS, architecture, GPU, driver, memory, disk, forbidden-package, and session audit. |
 | `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, validate locked candidates before installing them, preserve write-once before/after evidence across a reboot resume, install the approved package set and recommended NVIDIA driver when required, and leave services stopped. |
+| `scripts/rollback_host.sh` | Validate recorded backups/current state, simulate the exact package rollback transaction, then restore only recorded packages, apt sources, service state, and task-created files after explicit run-id confirmation. |
 | `scripts/download_phase1_resources.sh` | Download and verify Node.js 24.18.0 and YOLO11n v8.4.0 into controlled server storage. |
+| `scripts/verify_phase1_resources.sh` | Read-only checksum/metadata verification of the already locked Node and YOLO resources; it has no network or repair path. |
 | `scripts/setup_ros_workspace.sh` | Source Jazzy and run the canonical colcon build/test/test-result baseline. |
 | `scripts/compile_requirements.sh` | Resolve one Python input file to a fully hashed lock with a short-lived pinned `pip-tools` resolver environment. |
+| `scripts/lib/venv_provenance.py` | Write or verify task-owned virtual-environment provenance against kind, Python/system-site state, and exact lock SHA before any environment mutation. |
 | `scripts/setup_python_env.sh` | Create `.venv`, install the AI lock with `--require-hashes`, and prove the locked CUDA stack. |
 | `scripts/setup_gateway_env.sh` | Create `.venv-web`, install the Gateway lock with `--require-hashes`, and prove `rclpy` plus locked Web packages. |
 | `scripts/write_frontend_manifest.py` | Write the exact frontend dependency manifest while taking the npm version only from Node.js 24.18.0. |
 | `scripts/setup_web_env.sh` | Install the verified Node toolchain under `/opt/substation/toolchains`, generate `package-lock.json`, run `npm ci`, and run the production build. |
 | `scripts/smoke_headless_egl.sh` | Launch a minimal Gazebo camera world with `DISPLAY` removed and prove a rendered RGB frame arrives through Gazebo Transport. |
 | `scripts/capture_environment_lock.sh` | Capture the reviewed Debian/Python/npm/resource environment into tracked text manifests and a stable SHA-256 file. |
-| `scripts/verify_environment.sh` | Canonical Phase 1 acceptance entry point with per-command logs/metadata and recursive evidence checksum required by `docs/TEST_ACCEPTANCE.md`. |
+| `scripts/verify_environment.sh` | One-shot Phase 1 acceptance entry point that verifies the committed implementation, writes the final recursive checksum as the last staging mutation, and atomically publishes immutable evidence. |
+| `scripts/check_environment_seal.sh` | Read-only recursive checksum and result-schema validation for an already sealed Phase 1 evidence directory. |
 | `requirements.in` / `requirements.lock` | Exact AI direct requirements and fully resolved hash-locked dependency graph. |
 | `requirements-web.in` / `requirements-web.lock` | Exact Gateway direct requirements and fully resolved hash-locked dependency graph. |
 | `ros2_ws/src/.gitkeep` | Preserve the Phase 1 ROS source root without inventing a package outside the project plan. |
@@ -70,13 +77,14 @@
 | `tests/environment/test_documentation_gate.sh` | Documentation gate contract test. |
 | `tests/environment/test_audit_host.sh` | Read-only audit output and no-mutation contract test. |
 | `tests/environment/test_install_host.sh` | Installer plan, package allowlist, forbidden stack, and idempotency contract test. |
+| `tests/environment/fixtures/fake_host_command.py` | PATH-injected fake apt, dpkg, systemctl, NVIDIA, sudo, and network command implementation used only against a guarded temporary filesystem root. |
 | `tests/environment/test_phase1_resources.sh` | Resource source identity, checksum capture, and Git-exclusion contract test. |
 | `tests/environment/test_ros_workspace.sh` | Jazzy sourcing and canonical empty-workspace colcon contract test. |
 | `tests/environment/test_ai_environment.sh` | AI lock, version, CUDA, and system-site-packages contract test. |
 | `tests/environment/test_gateway_environment.sh` | Gateway lock, exact versions, and `rclpy` contract test. |
 | `tests/environment/test_web_environment.sh` | Node/npm ownership, exact direct versions, lockfile v3, `npm ci`, and build contract test. |
 | `tests/environment/test_headless_egl.sh` | EGL smoke script and sensor-frame contract test. |
-| `tests/environment/test_verify_environment.sh` | Consolidated verifier outputs, schema, checksum, and failure-closed contract test. |
+| `tests/environment/test_verify_environment.sh` | Guarded synthetic fresh-seal, existing-final refusal, and failed-unsealed-staging behavior test. |
 | `tests/environment/fixtures/headless_camera.sdf` | Minimal Harmonic SDF world containing one OGRE2-rendered RGB camera. |
 | `artifacts/environment/dpkg-packages.tsv` | Reviewed full Debian package/version snapshot used as the rebuild lock. |
 | `artifacts/environment/ai-pip-freeze.txt` | Reviewed AI environment freeze. |
@@ -96,32 +104,35 @@
 
 | Path | Contents and ownership |
 |---|---|
-| `.phase1-run.env` | Ignored shell exports for the active `PHASE1_RUN_ID` and `PHASE1_EVIDENCE_ROOT`; contains no secret. |
+| `.phase1-run.env` | Ignored shell exports for `PHASE1_RUN_ID`, the active unsealed `PHASE1_EVIDENCE_ROOT` staging path, and `PHASE1_EVIDENCE_FINAL`; contains no secret. |
 | `.venv`, `.venv-web` | Local Python environments; ignored and never deployed as source. |
 | `build/`, `install/`, `log/` | ROS workspace outputs; ignored. |
 | `web/frontend/node_modules/`, `web/frontend/.next/` | npm install and Next.js build outputs; ignored. |
 | `/opt/substation/toolchains/node-v24.18.0` | Verified immutable Node.js toolchain; root-owned, world-readable. |
 | `/opt/substation/toolchains/node-current` | Symlink to the verified 24.18.0 toolchain. |
 | `/var/lib/substation/downloads/node/24.18.0/` | Node tarball and official checksum list. |
-| `/var/lib/substation/models/base/$YOLO_BASE_SHA256/` | YOLO11n base weight and source metadata, keyed by its actual SHA-256. |
-| `/var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment/` | Gate, audit, install, resource, colcon, Python, npm, GPU, EGL, JSON result, and checksum evidence. |
+| `/var/lib/substation/models/base/$YOLO_BASE_SHA256/` | YOLO11n base weight, `.substation-resource.json`, and `source.json`, keyed by its actual SHA-256 and installed atomically as one owned leaf. |
+| `/var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging/` | Fresh unsealed working evidence used by Tasks 1-10; it must not contain `SHA256SUMS` before the final seal operation. |
+| `/var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment/` | Atomically published immutable Phase 1 evidence after Task 10 writes `SHA256SUMS`; it is never reused or repaired. |
 
 ### Required final evidence files
 
-The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDENCE_ROOT`: `acceptance_run_id.txt`, `documentation-gate.log`, `host-audit.json`, `install-host.log`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-sources-before/inventory.tsv`, `managed-files-after.tsv`, `host-install-version-changes.tsv`, `ros-archive-key.sha256`, `gazebo-archive-key.sha256`, `dpkg-before.tsv`, `dpkg-after.tsv`, `environment.json`, `dpkg-packages.tsv`, `ai-pip-freeze.txt`, `gateway-pip-freeze.txt`, `node-npm-versions.txt`, `resource-downloads.tsv`, `gpu.txt`, `egl.log`, `forbidden-packages.txt`, `disk-memory.txt`, `colcon-build.log`, `colcon-test.log`, `colcon-test-result.log`, `frontend-build.log`, per-command logs and JSON metadata under `commands/`, `result.json`, and `SHA256SUMS`. `host-install-new-packages.txt` is also mandatory but may be empty on an already-provisioned compliant host. If a reboot occurred, `install-resume.env` is mandatory and remains as immutable history. The recursive checksum includes every file under nested directories such as `apt-sources-before/` and `commands/`.
+The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDENCE_FINAL`: `acceptance_run_id.txt`, `documentation-gate.log`, `documentation-gate-final.log`, `storage-paths-before.tsv`, `host-audit.json`, `host-audit-final.json`, `install-host.log`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-policy-origins.json`, `apt-sources-before/inventory.tsv`, `apt-sources-after/inventory.tsv`, `policy-rc.d-state.tsv`, `managed-files-after.tsv`, `host-install-version-changes.tsv`, `ros-archive-key.sha256`, `gazebo-archive-key.sha256`, `dpkg-before.tsv`, `dpkg-after.tsv`, `environment.json`, `dpkg-packages.tsv`, `ai-pip-freeze.txt`, `gateway-pip-freeze.txt`, `node-npm-versions.txt`, `node-current-before.tsv`, `resource-downloads.tsv`, `gpu.txt`, `egl.log`, `forbidden-packages.txt`, `disk-memory.txt`, `service-state.txt`, `colcon-build.log`, `colcon-test.log`, `colcon-test-result.log`, `colcon-build-final.log`, `colcon-test-final.log`, `colcon-test-result-final.log`, `frontend-build.log`, `frontend-build-final.log`, per-command logs and JSON metadata under `commands/`, `result.json`, and `SHA256SUMS`. `host-install-new-packages.txt` is also mandatory but may be empty on an already-provisioned compliant host. If a reboot occurred, `install-resume.env` is mandatory and remains as immutable history. The recursive checksum includes every file under nested directories such as `apt-sources-before/` and `commands/`.
 
 ## Execution Rules for Every Task
 
 1. Work from the repository root returned by `git rev-parse --show-toplevel`; do not hard-code the current developer's home directory into scripts or manifests.
 2. Before editing, run `git status --short` and preserve unrelated changes. Stage only the paths listed by the current task.
 3. Use `apply_patch` for tracked text changes. Machine-generated lock files are created only by the exact resolver commands in this plan and then reviewed with `git diff --check` and focused validators.
-4. After Task 1 initializes the run, every command that writes runtime evidence begins with:
+4. After Task 1 initializes the run and before Task 10 publishes the seal, every command that writes runtime evidence begins with:
 
    ```bash
    source .phase1-run.env
    test -n "$PHASE1_RUN_ID"
    test -d "$PHASE1_EVIDENCE_ROOT"
    ```
+
+   After Task 10 succeeds, `$PHASE1_EVIDENCE_ROOT` no longer exists. Task 11 reads only `$PHASE1_EVIDENCE_FINAL` and invokes only `scripts/check_environment_seal.sh`; it never reruns the one-shot verifier.
 
 5. Each test command is piped through `tee` only to the exact current evidence file. `PIPESTATUS[0]` is checked when the tested command's exit status matters.
 6. Each task ends with its focused verification and one focused commit. Do not combine task commits.
@@ -140,7 +151,7 @@ The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDEN
 
 **Interfaces:**
 - Consumes: all Phase 0 authority documents, tracked Git state, `docs/PROJECT_STATUS.md`, and `docs/HANDOFF.md`.
-- Produces: `bash scripts/verify_documentation_gate.sh`, ignored `.phase1-run.env`, and `$PHASE1_EVIDENCE_ROOT/documentation-gate.log`.
+- Produces: `bash scripts/verify_documentation_gate.sh`, ignored `.phase1-run.env`, a fresh `$PHASE1_EVIDENCE_ROOT` ending in `01-environment.staging`, an absent `$PHASE1_EVIDENCE_FINAL` ending in `01-environment`, and write-once storage-parent metadata.
 
 - [ ] **Step 1: Write the failing documentation-gate test**
 
@@ -209,7 +220,7 @@ environment_require_command() {
 environment_require_evidence_dir() {
   local evidence_dir="$1"
   case "$evidence_dir" in
-    /var/lib/substation/evidence/acceptance/*/01-environment) ;;
+    /var/lib/substation/evidence/acceptance/*/01-environment.staging) ;;
     *)
       printf 'invalid-evidence-dir: %s\n' "$evidence_dir" >&2
       return 1
@@ -219,6 +230,54 @@ environment_require_evidence_dir() {
     printf 'missing-evidence-dir: %s\n' "$evidence_dir" >&2
     return 1
   }
+}
+
+environment_require_final_evidence_target() {
+  local evidence_dir="$1"
+  case "$evidence_dir" in
+    /var/lib/substation/evidence/acceptance/*/01-environment) ;;
+    *)
+      printf 'invalid-final-evidence-target: %s\n' "$evidence_dir" >&2
+      return 1
+      ;;
+  esac
+}
+
+environment_prepare_owned_directory() {
+  local manifest="$1"
+  local path="$2"
+  local expected_mode="$3"
+  local expected_owner="$4"
+  local expected_group="$5"
+  local parent actual_mode actual_owner actual_group device inode
+  expected_mode="${expected_mode#0}"
+  test "${path#/}" != "$path"
+  test "$path" != /
+  if test -L "$path"; then
+    printf 'refusing-symlink-directory: %s\n' "$path" >&2
+    return 1
+  fi
+  if test -e "$path"; then
+    test -d "$path"
+    actual_mode="$(stat -c '%a' "$path")"
+    actual_owner="$(stat -c '%U' "$path")"
+    actual_group="$(stat -c '%G' "$path")"
+    device="$(stat -c '%d' "$path")"
+    inode="$(stat -c '%i' "$path")"
+    printf '%s\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\n' \
+      "$path" "$actual_mode" "$actual_owner" "$actual_group" "$device" "$inode" \
+      "$expected_mode" "$expected_owner" "$expected_group" >> "$manifest"
+    test "$actual_mode" = "$expected_mode"
+    test "$actual_owner" = "$expected_owner"
+    test "$actual_group" = "$expected_group"
+    return
+  fi
+  parent="$(dirname -- "$path")"
+  test -d "$parent"
+  test ! -L "$parent"
+  printf '%s\t0\t-\t-\t-\t-\t-\t%s\t%s\t%s\t1\n' \
+    "$path" "$expected_mode" "$expected_owner" "$expected_group" >> "$manifest"
+  sudo install -d -m "$expected_mode" -o "$expected_owner" -g "$expected_group" "$path"
 }
 
 environment_sha256() {
@@ -316,6 +375,7 @@ grep -Fxq 'documentation-gate: PASS' "$gate_log"
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+source scripts/lib/environment_common.sh
 test "$(id -un)" = substation
 test "$repo_root" = /home/substation/substation-inspection-digital-twin
 test ! -e .phase1-run.env || {
@@ -324,16 +384,29 @@ test ! -e .phase1-run.env || {
 }
 
 phase1_run_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-phase1_evidence_root="/var/lib/substation/evidence/acceptance/${phase1_run_id}/01-environment"
+phase1_acceptance_root="/var/lib/substation/evidence/acceptance/${phase1_run_id}"
+phase1_evidence_root="$phase1_acceptance_root/01-environment.staging"
+phase1_evidence_final="$phase1_acceptance_root/01-environment"
 operator_user="$(id -un)"
 operator_group="$(id -gn)"
 
-sudo install -d -m 0750 -o "$operator_user" -g "$operator_group" \
-  /var/lib/substation \
-  /var/lib/substation/evidence \
-  /var/lib/substation/evidence/acceptance \
-  "/var/lib/substation/evidence/acceptance/${phase1_run_id}" \
-  "$phase1_evidence_root"
+test ! -e "$phase1_evidence_final"
+metadata_work="$(mktemp --tmpdir=/tmp)"
+cleanup() {
+  test ! -e "$metadata_work" || unlink -- "$metadata_work"
+}
+trap cleanup EXIT
+printf 'path\texisted_before\tmode_before\towner_before\tgroup_before\tdevice\tinode\texpected_mode\texpected_owner\texpected_group\tcreated_by_task\n' > "$metadata_work"
+environment_prepare_owned_directory "$metadata_work" /var/lib/substation 0750 "$operator_user" "$operator_group"
+environment_prepare_owned_directory "$metadata_work" /var/lib/substation/evidence 0750 "$operator_user" "$operator_group"
+environment_prepare_owned_directory "$metadata_work" /var/lib/substation/evidence/acceptance 0750 "$operator_user" "$operator_group"
+environment_prepare_owned_directory "$metadata_work" "$phase1_acceptance_root" 0750 "$operator_user" "$operator_group"
+environment_prepare_owned_directory "$metadata_work" "$phase1_evidence_root" 0750 "$operator_user" "$operator_group"
+environment_prepare_owned_directory "$metadata_work" /opt/substation 0755 root root
+environment_prepare_owned_directory "$metadata_work" /opt/substation/toolchains 0755 root root
+install -m 0640 "$metadata_work" "$phase1_evidence_root/storage-paths-before.tsv"
+unlink -- "$metadata_work"
+metadata_work=
 install -m 0640 "$gate_log" "$phase1_evidence_root/documentation-gate.log"
 printf '%s\n' "$phase1_run_id" > "$phase1_evidence_root/acceptance_run_id.txt"
 git rev-parse HEAD > "$phase1_evidence_root/git_commit_at_start.txt"
@@ -341,9 +414,14 @@ git rev-parse HEAD > "$phase1_evidence_root/git_commit_at_start.txt"
 umask 077
 printf 'export PHASE1_RUN_ID=%q\n' "$phase1_run_id" > .phase1-run.env
 printf 'export PHASE1_EVIDENCE_ROOT=%q\n' "$phase1_evidence_root" >> .phase1-run.env
+printf 'export PHASE1_EVIDENCE_FINAL=%q\n' "$phase1_evidence_final" >> .phase1-run.env
 
 printf 'PHASE1_RUN_ID=%s\n' "$phase1_run_id"
 printf 'PHASE1_EVIDENCE_ROOT=%s\n' "$phase1_evidence_root"
+printf 'PHASE1_EVIDENCE_FINAL=%s\n' "$phase1_evidence_final"
+
+trap - EXIT
+cleanup
 ```
 
 Run:
@@ -356,9 +434,11 @@ bash scripts/init_phase1_run.sh --gate-log "$gate_log"
 unlink -- "$gate_log"
 source .phase1-run.env
 test -f "$PHASE1_EVIDENCE_ROOT/documentation-gate.log"
+test -s "$PHASE1_EVIDENCE_ROOT/storage-paths-before.tsv"
+test ! -e "$PHASE1_EVIDENCE_FINAL"
 ```
 
-Expected: the validator prints exactly `documentation-gate: PASS` as its final line; initialization prints a UUID and an evidence path ending in `/01-environment`; the copied gate log is non-empty.
+Expected: the validator prints exactly `documentation-gate: PASS` as its final line; initialization prints a UUID, a staging path ending in `/01-environment.staging`, and a final path ending in `/01-environment`; the copied gate log and storage metadata are non-empty. Existing storage directories are accepted only with the exact recorded owner/group/mode; missing leaves are created one at a time. No existing directory is recursively chmodded or chowned.
 
 - [ ] **Step 5: Re-run the test and record Task 1 evidence**
 
@@ -396,8 +476,8 @@ Expected: one commit containing only the five listed paths.
 - Create: `tests/environment/test_audit_host.sh`
 
 **Interfaces:**
-- Consumes: `/etc/os-release`, `/proc/meminfo`, repository filesystem statistics, `dpkg-query`, `lspci` when present, and `nvidia-smi` when present.
-- Produces: JSON on stdout, exit 0 only for a compliant host in enforcement mode, and `$PHASE1_EVIDENCE_ROOT/host-audit.json`.
+- Consumes: `/etc/os-release`, `/proc/meminfo`, all apt source files (`sources.list`, `*.list`, and deb822 `*.sources`), `apt-cache policy`, `dpkg-query`, independent filesystem/mount statistics for the repository, `/var/lib/substation`, and `/opt/substation`, plus GPU/driver probes.
+- Produces: JSON containing source hashes/URIs/suites/components, per-locked-package candidate origins, three independent disk/mount records, forbidden installed packages/sources, and `$PHASE1_EVIDENCE_ROOT/host-audit.json`. `--preflight` allows missing not-yet-added official ROS/Gazebo candidates; the default enforcement mode requires every locked origin and final driver floor.
 
 - [ ] **Step 1: Write the failing audit test**
 
@@ -412,16 +492,152 @@ cd "$repo_root"
 
 test -x scripts/audit_host.sh
 test -f config/environment/forbidden-packages.regex
-audit_json="$(bash scripts/audit_host.sh --report-only)"
+
+fixture_id="phase1-audit-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+fixture_root="/tmp/$fixture_id"
+case "$fixture_root" in /tmp/phase1-audit-fixture-*) ;; *) exit 1 ;; esac
+test ! -e "$fixture_root"
+install -d -m 0700 \
+  "$fixture_root/bin" \
+  "$fixture_root/etc/apt/sources.list.d" \
+  "$fixture_root/proc" \
+  "$fixture_root/sys/bus/pci/devices/0000:01:00.0" \
+  "$fixture_root/var/lib/substation" \
+  "$fixture_root/opt/substation"
+cleanup() {
+  case "$fixture_root" in /tmp/phase1-audit-fixture-*) find "$fixture_root" -depth -delete ;; *) return 1 ;; esac
+}
+trap cleanup EXIT
+
+cat > "$fixture_root/etc/os-release" <<'EOF'
+ID=ubuntu
+VERSION_ID="24.04"
+PRETTY_NAME="Ubuntu 24.04 LTS"
+EOF
+cat > "$fixture_root/proc/meminfo" <<'EOF'
+MemTotal:       33554432 kB
+EOF
+printf '%s\n' 0x10de > "$fixture_root/sys/bus/pci/devices/0000:01:00.0/vendor"
+cat > "$fixture_root/etc/apt/sources.list" <<'EOF'
+deb http://archive.ubuntu.com/ubuntu noble main universe
+deb http://security.ubuntu.com/ubuntu noble-security main universe
+EOF
+cat > "$fixture_root/etc/apt/sources.list.d/ubuntu.sources" <<'EOF'
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu
+Suites: noble-updates noble-backports
+Components: main universe
+EOF
+
+cat > "$fixture_root/bin/dpkg-query" <<'SH'
+#!/usr/bin/bash
+printf 'ii \tros-jazzy-ros-base\nii \tnginx\n'
+if test "${FAKE_DPKG_FORBIDDEN-0}" = 1; then
+  printf 'ii \txserver-xorg-core\nii \tros-noetic-ros-base\nii \tgazebo11\n'
+fi
+SH
+cat > "$fixture_root/bin/apt-cache" <<'SH'
+#!/usr/bin/bash
+test "${1-}" = policy
+package="${2-}"
+if test -z "$package"; then
+  printf '%s\n' '500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages'
+  exit 0
+fi
+if test "${FAKE_APT_POLICY_MODE-}" = missing; then
+  printf '%s\n' '  Candidate: (none)'
+  exit 0
+fi
+case "$package" in
+  gz-harmonic)
+    printf '%s\n' '  Candidate: 8.9.0-1~noble' '     8.9.0-1~noble 500' '        500 http://packages.osrfoundation.org/gazebo/ubuntu-stable noble/main amd64 Packages'
+    ;;
+  *)
+    expected=1.0.23-1
+    case "$package" in
+      ros-jazzy-navigation2|ros-jazzy-nav2-bringup) expected=1.3.12-1 ;;
+      ros-jazzy-slam-toolbox) expected=2.8.5-1 ;;
+      ros-jazzy-turtlebot3) expected=2.3.6-1 ;;
+      ros-jazzy-turtlebot3-simulations) expected=2.3.7-1 ;;
+    esac
+    if test "${FAKE_APT_POLICY_MODE-}" = wrong && test "$package" = ros-jazzy-ros-gz; then
+      expected=9.9.9-1
+    fi
+    printf '  Candidate: %s-1noble.20260701\n' "$expected"
+    printf '     %s-1noble.20260701 500\n' "$expected"
+    printf '%s\n' '        500 http://packages.ros.org/ros2/ubuntu noble/main amd64 Packages'
+    ;;
+esac
+SH
+cat > "$fixture_root/bin/nvidia-smi" <<'SH'
+#!/usr/bin/bash
+printf '%s\n' 'NVIDIA RTX 3060 Ti, 560.35.05'
+SH
+cat > "$fixture_root/bin/lspci" <<'SH'
+#!/usr/bin/bash
+printf '%s\n' '01:00.0 VGA compatible controller: NVIDIA Corporation Device'
+SH
+cat > "$fixture_root/bin/findmnt" <<'SH'
+#!/usr/bin/bash
+target="${*: -1}"
+printf '{"filesystems":[{"target":"%s","source":"fixture-%s","fstype":"ext4"}]}\n' "$target" "$(basename "$target")"
+SH
+chmod 0750 "$fixture_root/bin/"*
+
+audit_json="$(
+  PATH="$fixture_root/bin:$PATH" \
+  SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" \
+  bash scripts/audit_host.sh --report-only
+)"
 python3 -c '
 import json, sys
 data = json.load(sys.stdin)
-required = {"schema_version", "status", "os", "architecture", "memory_bytes", "disk_free_bytes", "gpu", "forbidden_packages", "checks"}
+required = {"schema_version", "status", "os", "architecture", "memory_bytes", "disk_free_bytes", "disks", "apt_sources", "apt_policy", "gpu", "forbidden_packages", "forbidden_apt_sources", "checks"}
 assert required <= data.keys()
-assert data["schema_version"] == 1
-assert isinstance(data["forbidden_packages"], list)
+assert {item["path"] for item in data["disks"]} == {"repository", "/var/lib/substation", "/opt/substation"}
+assert data["disk_free_bytes"] == min(item["free_bytes"] for item in data["disks"])
+assert {item["format"] for item in data["apt_sources"]} == {"list", "deb822"}
+assert {item["suite"] for item in data["apt_sources"]} >= {"noble", "noble-security", "noble-updates", "noble-backports"}
+assert data["apt_policy"]["ros-jazzy-ros-gz"]["origins"] == ["http://packages.ros.org/ros2/ubuntu"]
+assert data["apt_policy"]["gz-harmonic"]["origins"] == ["http://packages.osrfoundation.org/gazebo/ubuntu-stable"]
+assert data["forbidden_packages"] == []
+assert data["forbidden_apt_sources"] == []
 ' <<<"$audit_json"
+
+PATH="$fixture_root/bin:$PATH" \
+FAKE_APT_POLICY_MODE=missing \
+SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" \
+bash scripts/audit_host.sh --preflight >/dev/null
+set +e
+PATH="$fixture_root/bin:$PATH" \
+FAKE_APT_POLICY_MODE=wrong \
+SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" \
+bash scripts/audit_host.sh --preflight >/dev/null
+wrong_policy_rc=$?
+set -e
+test "$wrong_policy_rc" -ne 0
+
+ln -s ubuntu.sources "$fixture_root/etc/apt/sources.list.d/active-symlink.sources"
+set +e
+PATH="$fixture_root/bin:$PATH" \
+SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" \
+bash scripts/audit_host.sh --report-only >/dev/null
+symlink_source_rc=$?
+set -e
+test "$symlink_source_rc" -ne 0
+unlink -- "$fixture_root/etc/apt/sources.list.d/active-symlink.sources"
+
+printf '%s\n' 'deb http://packages.ros.org/ros/ubuntu focal main' >> "$fixture_root/etc/apt/sources.list"
+bad_source_json="$(PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert any("ROS 1" in item["reason"] for item in data["forbidden_apt_sources"])' <<<"$bad_source_json"
+
+forbidden_json="$(PATH="$fixture_root/bin:$PATH" FAKE_DPKG_FORBIDDEN=1 SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert {"xserver-xorg-core", "ros-noetic-ros-base", "gazebo11"} <= set(data["forbidden_packages"])' <<<"$forbidden_json"
 ! rg -n 'sudo|apt-get|apt install|systemctl|curl|wget|tee /etc' scripts/audit_host.sh
+
+trap - EXIT
+cleanup
+printf '%s\n' 'audit-host-test: PASS'
 ```
 
 Run:
@@ -439,10 +655,13 @@ Create `config/environment/forbidden-packages.regex` with this exact content:
 
 ```text
 ^(ubuntu-desktop|ubuntu-desktop-minimal|kubuntu-desktop|xubuntu-desktop|lubuntu-desktop|ubuntu-unity-desktop)$
-^(gnome-shell|plasma-desktop|kde-plasma-desktop)$
-^(xorg|xserver-xorg|xserver-xorg-core|xserver-xorg-video-all)$
-^(gdm3|sddm|lightdm)$
+^(gnome-shell|gnome-session|plasma-desktop|kde-plasma-desktop)$
+^(xorg|xserver-xorg.*|xserver-common|x11-common|xinit)$
+^(gdm3|sddm|lightdm|xdm)$
 ^(nomachine|xvfb|virtualgl)$
+^(ros-(noetic|melodic|kinetic|foxy|galactic|humble|iron|rolling)-.*)$
+^(ros-jazzy-(desktop|desktop-full))$
+^(gazebo|gazebo[0-9]+|gazebo-classic|libgazebo.*)$
 ```
 
 - [ ] **Step 3: Implement the audit in Python embedded by a read-only Bash entry point**
@@ -456,14 +675,22 @@ set -euo pipefail
 mode=enforce
 if test "$#" -eq 1 && test "$1" = --report-only; then
   mode=report-only
+elif test "$#" -eq 1 && test "$1" = --preflight; then
+  mode=preflight
 elif test "$#" -ne 0; then
-  printf '%s\n' 'usage: bash scripts/audit_host.sh [--report-only]' >&2
+  printf '%s\n' 'usage: bash scripts/audit_host.sh [--report-only|--preflight]' >&2
   exit 2
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 export PHASE1_AUDIT_REPO_ROOT="$repo_root"
 export PHASE1_AUDIT_MODE="$mode"
+audit_root="${SUBSTATION_AUDIT_TEST_ROOT:-/}"
+if test "$audit_root" != /; then
+  case "$audit_root" in /tmp/phase1-audit-fixture-*|/tmp/phase1-installer-fixture-*/root) ;; *) printf 'invalid-audit-test-root: %s\n' "$audit_root" >&2; exit 2 ;; esac
+  test -d "$audit_root"
+fi
+export PHASE1_AUDIT_ROOT="$audit_root"
 
 python3 - <<'PY'
 import json
@@ -471,25 +698,59 @@ import os
 import platform
 import pwd
 import re
+import shlex
 import shutil
 import subprocess
+import hashlib
+from email.parser import Parser
 from pathlib import Path
+from urllib.parse import urlparse
 
 repo = Path(os.environ["PHASE1_AUDIT_REPO_ROOT"])
 mode = os.environ["PHASE1_AUDIT_MODE"]
+root = Path(os.environ["PHASE1_AUDIT_ROOT"])
+
+def rooted(path):
+    path = Path(path)
+    return path if root == Path("/") else root / path.relative_to("/")
 
 os_release = {}
-for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+for line in rooted("/etc/os-release").read_text(encoding="utf-8").splitlines():
     if "=" in line:
         key, value = line.split("=", 1)
         os_release[key] = value.strip().strip('"')
 
 meminfo = {}
-for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+for line in rooted("/proc/meminfo").read_text(encoding="utf-8").splitlines():
     key, value = line.split(":", 1)
     meminfo[key] = int(value.strip().split()[0]) * 1024
 
-disk_free = shutil.disk_usage(repo).free
+disk_probes = []
+probe_paths = {
+    "repository": repo,
+    "/var/lib/substation": rooted("/var/lib/substation"),
+    "/opt/substation": rooted("/opt/substation"),
+}
+for label, probe in probe_paths.items():
+    usage = shutil.disk_usage(probe)
+    free_bytes = 160 * 1024**3 if root != Path("/") else usage.free
+    mount = subprocess.run(
+        ["findmnt", "--json", "--target", str(probe), "--output", "TARGET,SOURCE,FSTYPE"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    filesystem = json.loads(mount.stdout)["filesystems"][0]
+    disk_probes.append({
+        "path": label,
+        "probe_path": str(probe),
+        "mount_target": filesystem["target"],
+        "mount_source": filesystem["source"],
+        "filesystem_type": filesystem["fstype"],
+        "free_bytes": free_bytes,
+        "required_free_bytes": 80 * 1024**3,
+        "meets_floor": free_bytes >= 80 * 1024**3,
+    })
 dpkg = subprocess.run(
     ["dpkg-query", "-W", "-f=${db:Status-Abbrev}\\t${binary:Package}\\n"],
     check=True,
@@ -509,9 +770,87 @@ patterns = [
 ]
 forbidden = sorted({name for name in installed_packages if any(pattern.fullmatch(name) for pattern in patterns)})
 
+def source_files():
+    candidates = [rooted("/etc/apt/sources.list")]
+    source_dir = rooted("/etc/apt/sources.list.d")
+    if source_dir.is_dir():
+        candidates.extend(sorted(source_dir.glob("*.list")))
+        candidates.extend(sorted(source_dir.glob("*.sources")))
+    result = []
+    for path in candidates:
+        if path.is_symlink():
+            raise SystemExit(f"apt source symlink is forbidden: {path}")
+        if not path.exists():
+            continue
+        if not path.is_file():
+            raise SystemExit(f"apt source is not a regular file: {path}")
+        result.append(path)
+    return result
+
+apt_sources = []
+for source_path in source_files():
+    relative = "/" + str(source_path.relative_to(root)) if root != Path("/") else str(source_path)
+    digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    if source_path.suffix == ".sources":
+        paragraphs = re.split(r"\n\s*\n", source_path.read_text(encoding="utf-8"))
+        for paragraph_index, paragraph in enumerate(paragraphs, 1):
+            if not paragraph.strip():
+                continue
+            fields = Parser().parsestr(paragraph)
+            for source_type in fields.get("Types", "").split():
+                for uri in fields.get("URIs", "").split():
+                    for suite in fields.get("Suites", "").split():
+                        apt_sources.append({"path": relative, "format": "deb822", "entry": paragraph_index, "type": source_type, "uri": uri.rstrip("/"), "suite": suite, "components": fields.get("Components", "").split(), "sha256": digest})
+    else:
+        for line_number, line in enumerate(source_path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            tokens = shlex.split(stripped)
+            source_type = tokens.pop(0)
+            if tokens and tokens[0].startswith("["):
+                while tokens and not tokens.pop(0).endswith("]"):
+                    pass
+            uri, suite, *components = tokens
+            apt_sources.append({"path": relative, "format": "list", "entry": line_number, "type": source_type, "uri": uri.rstrip("/"), "suite": suite, "components": components, "sha256": digest})
+
+forbidden_apt_sources = []
+for entry in apt_sources:
+    uri = entry["uri"]
+    suite = entry["suite"]
+    if "packages.ros.org/ros/ubuntu" in uri:
+        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": "ROS 1 apt source is forbidden"})
+    if "packages.ros.org" in uri and "/ros2/" not in uri:
+        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": "non-ROS2 packages.ros.org source is forbidden"})
+    if not (suite == "noble" or suite.startswith("noble-")):
+        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"non-Noble suite is forbidden: {suite}"})
+
+locked_packages = {
+    "ros-jazzy-ros-gz": ("1.0.23-1", "packages.ros.org"),
+    "ros-jazzy-navigation2": ("1.3.12-1", "packages.ros.org"),
+    "ros-jazzy-nav2-bringup": ("1.3.12-1", "packages.ros.org"),
+    "ros-jazzy-slam-toolbox": ("2.8.5-1", "packages.ros.org"),
+    "ros-jazzy-turtlebot3": ("2.3.6-1", "packages.ros.org"),
+    "ros-jazzy-turtlebot3-simulations": ("2.3.7-1", "packages.ros.org"),
+    "gz-harmonic": (None, "packages.osrfoundation.org"),
+}
+apt_policy = {}
+for package, (expected, allowed_host) in locked_packages.items():
+    completed = subprocess.run(["apt-cache", "policy", package], check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    candidate_match = re.search(r"^\s*Candidate:\s*(\S+)", completed.stdout, re.MULTILINE)
+    origins = sorted({
+        match.group(1).rstrip("/")
+        for match in re.finditer(r"^\s*\d+\s+(https?://\S+)\s+\S+\s+\S+\s+Packages$", completed.stdout, re.MULTILINE)
+    })
+    origin_hosts = sorted({urlparse(origin).hostname for origin in origins})
+    candidate = candidate_match.group(1) if candidate_match else None
+    candidate_ok = candidate not in {None, "(none)"} and (expected is None or candidate == expected or (candidate.startswith(expected) and not candidate[len(expected):len(expected)+1].isdigit()))
+    origin_ok = bool(origin_hosts) and set(origin_hosts) == {allowed_host}
+    apt_policy[package] = {"candidate": candidate, "expected_upstream": expected, "allowed_origin_host": allowed_host, "origins": origins, "origin_hosts": origin_hosts, "candidate_ok": candidate_ok, "origin_ok": origin_ok, "raw": completed.stdout}
+
 gpu_present = any(
     vendor.read_text(encoding="utf-8").strip().lower() == "0x10de"
-    for vendor in Path("/sys/bus/pci/devices").glob("*/vendor")
+    for vendor in rooted("/sys/bus/pci/devices").glob("*/vendor")
 )
 if shutil.which("lspci"):
     lspci = subprocess.run(["lspci", "-nn"], check=True, text=True, stdout=subprocess.PIPE).stdout
@@ -537,15 +876,25 @@ def version_tuple(value):
 
 current_user = pwd.getpwuid(os.getuid()).pw_name
 driver_meets_floor = driver_version is not None and version_tuple(driver_version) >= version_tuple("560.35.05")
+def apt_policy_acceptable(item):
+    if mode == "report-only":
+        return True
+    if mode == "preflight" and item["candidate"] in {None, "(none)"}:
+        return True
+    return item["candidate_ok"] and item["origin_ok"]
+
 checks = {
     "ubuntu_24_04": os_release.get("ID") == "ubuntu" and os_release.get("VERSION_ID") == "24.04",
     "architecture_x86_64": platform.machine() == "x86_64",
     "memory_at_least_16_gib": meminfo.get("MemTotal", 0) >= 16 * 1024**3,
-    "disk_at_least_80_gib": disk_free >= 80 * 1024**3,
+    "all_three_storage_paths_at_least_80_gib": all(item["meets_floor"] for item in disk_probes),
     "nvidia_gpu_present": gpu_present,
     "no_forbidden_packages": not forbidden,
-    "operator_user_substation": current_user == "substation",
-    "repository_path_matches_deployment": str(repo) == "/home/substation/substation-inspection-digital-twin",
+    "no_forbidden_apt_sources": not forbidden_apt_sources,
+    "locked_package_candidates_and_origins": all(apt_policy_acceptable(item) for item in apt_policy.values()),
+    "driver_floor_for_final_enforcement": mode != "enforce" or driver_meets_floor,
+    "operator_user_substation": root != Path("/") or current_user == "substation",
+    "repository_path_matches_deployment": root != Path("/") or str(repo) == "/home/substation/substation-inspection-digital-twin",
 }
 
 status = "passed" if all(checks.values()) else "failed"
@@ -555,7 +904,8 @@ document = {
     "os": {"id": os_release.get("ID"), "version_id": os_release.get("VERSION_ID"), "pretty_name": os_release.get("PRETTY_NAME")},
     "architecture": platform.machine(),
     "memory_bytes": meminfo.get("MemTotal", 0),
-    "disk_free_bytes": disk_free,
+    "disk_free_bytes": min(item["free_bytes"] for item in disk_probes),
+    "disks": disk_probes,
     "repository": str(repo),
     "user": current_user,
     "display_set": "DISPLAY" in os.environ,
@@ -568,10 +918,13 @@ document = {
         "driver_install_required": not driver_meets_floor,
     },
     "forbidden_packages": forbidden,
+    "forbidden_apt_sources": forbidden_apt_sources,
+    "apt_sources": apt_sources,
+    "apt_policy": apt_policy,
     "checks": checks,
 }
 print(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2))
-if mode == "enforce" and status != "passed":
+if mode != "report-only" and status != "passed":
     raise SystemExit(1)
 PY
 ```
@@ -582,11 +935,11 @@ PY
 chmod +x scripts/audit_host.sh tests/environment/test_audit_host.sh
 bash tests/environment/test_audit_host.sh
 source .phase1-run.env
-bash scripts/audit_host.sh | tee "$PHASE1_EVIDENCE_ROOT/host-audit.json"
+bash scripts/audit_host.sh --preflight | tee "$PHASE1_EVIDENCE_ROOT/host-audit.json"
 test "${PIPESTATUS[0]}" -eq 0
 ```
 
-Expected test output: none and exit 0. Expected enforced JSON: `"status": "passed"`, Ubuntu `24.04`, architecture `x86_64`, user `substation`, repository `/home/substation/substation-inspection-digital-twin`, at least `17179869184` memory bytes, at least `85899345920` free bytes, an NVIDIA GPU, and an empty forbidden package array. `gpu.driver_install_required` is true when the driver is absent or below `560.35.05`; Task 3 is allowed to correct that installable gap, while Task 10 enforces the final floor.
+Expected test final line: `audit-host-test: PASS`. Expected preflight JSON: `"status": "passed"`, Ubuntu `24.04`, architecture `x86_64`, user `substation`, repository `/home/substation/substation-inspection-digital-twin`, at least `17179869184` memory bytes, independently recorded repository, `/var/lib/substation`, and `/opt/substation` mounts each with at least `85899345920` free bytes, an NVIDIA GPU, empty forbidden package/source arrays, complete hashes and parsed entries for every active apt source file, and a policy record for every locked package. Missing official ROS/Gazebo candidates or a below-floor driver may be corrected by Task 3 in preflight mode; wrong origins, wrong candidates, forbidden sources/packages, or capacity failures are hard stops. Task 10 reruns the default enforcement mode, which requires the final driver and every locked candidate/origin.
 
 If enforcement fails, stop before Task 3. The JSON is the evidence; do not "fix" a capacity or GPU failure by weakening thresholds.
 
@@ -611,12 +964,14 @@ Expected: one commit containing only the three listed paths.
 **Files:**
 - Create: `config/environment/apt-packages.txt`
 - Create: `scripts/install_host.sh`
+- Create: `scripts/rollback_host.sh`
+- Create: `tests/environment/fixtures/fake_host_command.py`
 - Create: `tests/environment/test_install_host.sh`
 - Modify conditionally: `docs/HANDOFF.md` only when an NVIDIA driver change requires a reboot, once immediately before reboot and once immediately after successful resume
 
 **Interfaces:**
-- Consumes: a passing enforced host audit, Ubuntu Noble official repositories, `packages.ros.org`, `packages.osrfoundation.org`, and `ubuntu-drivers`.
-- Produces: installed approved Debian packages, locked-candidate evidence, write-once source/key backups and package snapshots under `$PHASE1_EVIDENCE_ROOT`, stopped Nginx, initialized rosdep, and an explicit resumable reboot boundary when required.
+- Consumes: a passing preflight host audit, Ubuntu Noble official repositories with `universe` already enabled, `packages.ros.org`, `packages.osrfoundation.org`, and `ubuntu-drivers`.
+- Produces: installed approved Debian packages, locked candidate plus origin evidence, write-once backups for every active `sources.list`, `*.list`, and deb822 `*.sources` file and every file it mutates, temporary `policy-rc.d` service suppression with exact restoration, stopped/disabled Nginx, initialized rosdep, a resumable reboot boundary, and `scripts/rollback_host.sh` whose apply path always passes the recorded simulation first. A guarded temporary-root seam plus PATH-injected fake commands exercises the same state machine before any real `sudo` mutation.
 
 - [ ] **Step 1: Write the failing installer contract test**
 
@@ -654,7 +1009,492 @@ rg -F 'install-complete.env' scripts/install_host.sh
 rg -F 'host-install-version-changes.tsv' scripts/install_host.sh
 rg -F 'managed-files-after.tsv' scripts/install_host.sh
 rg -F 'nginx_unit_present_before=' scripts/install_host.sh
-rg -F $'source_path\texisted\tmode\tsha256\tbackup_file' scripts/install_host.sh
+rg -F 'source_path\texisted\tmode\tsha256\tbackup_file' scripts/install_host.sh
+
+test -x scripts/rollback_host.sh
+test -x tests/environment/fixtures/fake_host_command.py
+fixture_root="/tmp/phase1-installer-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+case "$fixture_root" in /tmp/phase1-installer-fixture-*) ;; *) exit 1 ;; esac
+test ! -e "$fixture_root"
+install -d -m 0700 "$fixture_root"
+cleanup() {
+  case "$fixture_root" in /tmp/phase1-installer-fixture-*) find "$fixture_root" -depth -delete ;; *) return 1 ;; esac
+}
+trap cleanup EXIT
+
+make_case() {
+  local name="$1"
+  local driver_ready="$2"
+  local case_root="$fixture_root/$name"
+  local host_root="$case_root/root"
+  local evidence_dir="$case_root/evidence/01-environment.staging"
+  local fake_bin="$case_root/bin"
+  install -d -m 0700 \
+    "$fake_bin" \
+    "$evidence_dir" \
+    "$host_root/etc/apt/sources.list.d" \
+    "$host_root/etc/ros/rosdep/sources.list.d" \
+    "$host_root/etc/default" \
+    "$host_root/usr/share/keyrings" \
+    "$host_root/usr/sbin" \
+    "$host_root/opt/ros/jazzy" \
+    "$host_root/opt/substation" \
+    "$host_root/var/lib/dpkg" \
+    "$host_root/var/lib/substation" \
+    "$host_root/proc" \
+    "$host_root/sys/bus/pci/devices/0000:01:00.0"
+  cat > "$host_root/etc/os-release" <<'EOF'
+ID=ubuntu
+VERSION_ID="24.04"
+PRETTY_NAME="Ubuntu 24.04 LTS"
+EOF
+  printf '%s\n' 'MemTotal:       33554432 kB' > "$host_root/proc/meminfo"
+  printf '%s\n' 0x10de > "$host_root/sys/bus/pci/devices/0000:01:00.0/vendor"
+  cat > "$host_root/etc/apt/sources.list" <<'EOF'
+deb http://archive.ubuntu.com/ubuntu noble main universe
+EOF
+  cat > "$host_root/etc/apt/sources.list.d/ubuntu.sources" <<'EOF'
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu
+Suites: noble-updates noble-security
+Components: main universe
+EOF
+  printf '%s\n' 'ORIGINAL_POLICY' > "$host_root/usr/sbin/policy-rc.d"
+  chmod 0755 "$host_root/usr/sbin/policy-rc.d"
+  printf '%s\n' 'export ROS_DISTRO=jazzy' > "$host_root/opt/ros/jazzy/setup.bash"
+  python3 tests/environment/fixtures/fake_host_command.py init \
+    --state "$case_root/state.json" \
+    --operations "$case_root/operations.jsonl" \
+    --driver-ready "$driver_ready"
+  for command_name in sudo apt-get apt-cache dpkg-query systemctl ubuntu-drivers nvidia-smi curl locale-gen update-locale rosdep gz lspci findmnt; do
+    ln -s "$repo_root/tests/environment/fixtures/fake_host_command.py" "$fake_bin/$command_name"
+  done
+  printf '%s\t%s\t%s\t%s\n' "$case_root" "$host_root" "$evidence_dir" "$fake_bin"
+}
+
+run_case_install() {
+  local case_root="$1"
+  local host_root="$2"
+  local evidence_dir="$3"
+  local fake_bin="$4"
+  shift 4
+  PATH="$fake_bin:$PATH" \
+  SUBSTATION_INSTALL_TEST_ROOT="$host_root" \
+  SUBSTATION_AUDIT_TEST_ROOT="$host_root" \
+  FAKE_HOST_STATE="$case_root/state.json" \
+  FAKE_HOST_OPERATIONS="$case_root/operations.jsonl" \
+  "$@" bash scripts/install_host.sh --apply --evidence-dir "$evidence_dir"
+}
+
+IFS=$'\t' read -r success_case success_root success_evidence success_bin < <(make_case fresh-success 1)
+run_case_install "$success_case" "$success_root" "$success_evidence" "$success_bin" env
+grep -Fxq 'state=PASS' "$success_evidence/install-complete.env"
+grep -Fq $'/etc/apt/sources.list\t1\t' "$success_evidence/apt-sources-before/inventory.tsv"
+grep -Fq $'/etc/apt/sources.list.d/ubuntu.sources\t1\t' "$success_evidence/apt-sources-before/inventory.tsv"
+grep -Fxq 'ORIGINAL_POLICY' "$success_root/usr/sbin/policy-rc.d"
+test -s "$success_evidence/apt-policy-origins.json"
+python3 - "$success_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+assert any(item["command"] == "apt-get" and "install" in item["argv"] for item in operations)
+assert not any(item["command"] == "systemctl" and "start" in item["argv"] for item in operations)
+assert any(item["command"] == "systemctl" and "disable" in item["argv"] and "--now" in item["argv"] for item in operations)
+PY
+
+IFS=$'\t' read -r candidate_case candidate_root candidate_evidence candidate_bin < <(make_case candidate-failure 1)
+set +e
+run_case_install "$candidate_case" "$candidate_root" "$candidate_evidence" "$candidate_bin" env FAKE_CANDIDATE_FAILURE=1
+candidate_rc=$?
+set -e
+test "$candidate_rc" -ne 0
+test ! -e "$candidate_evidence/install-complete.env"
+test ! -e "$candidate_evidence/install-state.env"
+grep -Fxq 'ORIGINAL_POLICY' "$candidate_root/usr/sbin/policy-rc.d"
+grep -Fxq 'deb http://archive.ubuntu.com/ubuntu noble main universe' "$candidate_root/etc/apt/sources.list"
+test ! -e "$candidate_root/etc/apt/sources.list.d/ros2.list"
+test ! -e "$candidate_root/etc/apt/sources.list.d/gazebo-stable.list"
+python3 - "$candidate_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+target_installs = [item for item in operations if item["command"] == "apt-get" and "install" in item["argv"] and "ros-jazzy-ros-base" in item["argv"]]
+assert target_installs == []
+PY
+
+IFS=$'\t' read -r symlink_case symlink_root symlink_evidence symlink_bin < <(make_case apt-source-symlink 1)
+ln -s ubuntu.sources "$symlink_root/etc/apt/sources.list.d/active-symlink.sources"
+set +e
+run_case_install "$symlink_case" "$symlink_root" "$symlink_evidence" "$symlink_bin" env
+symlink_rc=$?
+set -e
+test "$symlink_rc" -ne 0
+test ! -e "$symlink_evidence/install-state.env"
+
+IFS=$'\t' read -r reboot_case reboot_root reboot_evidence reboot_bin < <(make_case reboot-resume 0)
+set +e
+run_case_install "$reboot_case" "$reboot_root" "$reboot_evidence" "$reboot_bin" env
+reboot_rc=$?
+set -e
+test "$reboot_rc" -eq 20
+grep -Fxq 'state=REBOOT_REQUIRED' "$reboot_evidence/install-resume.env"
+before_resume_count="$(wc -l < "$reboot_case/operations.jsonl")"
+run_case_install "$reboot_case" "$reboot_root" "$reboot_evidence" "$reboot_bin" env
+grep -Fxq 'state=PASS' "$reboot_evidence/install-complete.env"
+python3 - "$reboot_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+target_installs = [item for item in operations if item["command"] == "apt-get" and "install" in item["argv"] and "ros-jazzy-ros-base" in item["argv"]]
+assert len(target_installs) == 1
+PY
+
+snapshot="$reboot_case/completed.snapshot"
+find "$reboot_evidence" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$reboot_evidence/{}" > "$snapshot"
+mutations_before_completed_rerun="$(python3 - "$reboot_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+mutating = []
+for item in operations:
+    argv = item["argv"]
+    if item["command"] in {"ubuntu-drivers", "locale-gen", "update-locale", "rosdep"}:
+        mutating.append(item)
+    elif item["command"] == "apt-get" and any(action in argv for action in {"update", "install", "remove"}) and "--simulate" not in argv and "-s" not in argv:
+        mutating.append(item)
+    elif item["command"] == "systemctl" and any(action in argv for action in {"start", "stop", "enable", "disable", "mask", "unmask"}):
+        mutating.append(item)
+print(len(mutating))
+PY
+)"
+run_case_install "$reboot_case" "$reboot_root" "$reboot_evidence" "$reboot_bin" env
+mutations_after_completed_rerun="$(python3 - "$reboot_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+mutating = []
+for item in operations:
+    argv = item["argv"]
+    if item["command"] in {"ubuntu-drivers", "locale-gen", "update-locale", "rosdep"}:
+        mutating.append(item)
+    elif item["command"] == "apt-get" and any(action in argv for action in {"update", "install", "remove"}) and "--simulate" not in argv and "-s" not in argv:
+        mutating.append(item)
+    elif item["command"] == "systemctl" and any(action in argv for action in {"start", "stop", "enable", "disable", "mask", "unmask"}):
+        mutating.append(item)
+print(len(mutating))
+PY
+)"
+test "$mutations_after_completed_rerun" -eq "$mutations_before_completed_rerun"
+find "$reboot_evidence" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$reboot_evidence/{}" > "$reboot_case/completed.after"
+cmp "$snapshot" "$reboot_case/completed.after"
+
+IFS=$'\t' read -r partial_case partial_root partial_evidence partial_bin < <(make_case partial-state 1)
+printf '%s\n' 'state=INITIAL_INSTALL_STARTED' > "$partial_evidence/install-state.env"
+set +e
+run_case_install "$partial_case" "$partial_root" "$partial_evidence" "$partial_bin" env
+partial_rc=$?
+set -e
+test "$partial_rc" -ne 0
+python3 - "$partial_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+for item in operations:
+    argv = item["argv"]
+    assert not (item["command"] == "apt-get" and any(action in argv for action in {"update", "install", "remove"}) and "--simulate" not in argv and "-s" not in argv)
+    assert item["command"] not in {"ubuntu-drivers", "locale-gen", "update-locale", "rosdep"}
+PY
+
+IFS=$'\t' read -r tamper_case tamper_root tamper_evidence tamper_bin < <(make_case backup-tamper 0)
+set +e
+run_case_install "$tamper_case" "$tamper_root" "$tamper_evidence" "$tamper_bin" env
+tamper_reboot_rc=$?
+set -e
+test "$tamper_reboot_rc" -eq 20
+backup_file="$(awk -F '\t' '$2 == 1 {print $5; exit}' "$tamper_evidence/apt-sources-before/inventory.tsv")"
+printf '%s\n' tampered >> "$tamper_evidence/apt-sources-before/$backup_file"
+set +e
+run_case_install "$tamper_case" "$tamper_root" "$tamper_evidence" "$tamper_bin" env
+tamper_rc=$?
+set -e
+test "$tamper_rc" -ne 0
+test ! -e "$tamper_evidence/install-complete.env"
+
+IFS=$'\t' read -r nginx_case nginx_root nginx_evidence nginx_bin < <(make_case nginx-absence-rollback 1)
+run_case_install "$nginx_case" "$nginx_root" "$nginx_evidence" "$nginx_bin" env
+set +e
+PATH="$nginx_bin:$PATH" \
+SUBSTATION_INSTALL_TEST_ROOT="$nginx_root" \
+FAKE_HOST_STATE="$nginx_case/state.json" \
+FAKE_HOST_OPERATIONS="$nginx_case/operations.jsonl" \
+FAKE_KEEP_NGINX_UNIT=1 \
+bash scripts/rollback_host.sh --apply --evidence-dir "$nginx_evidence" --confirm-run-id "$(basename "$(dirname "$nginx_evidence")")"
+nginx_absence_rc=$?
+set -e
+test "$nginx_absence_rc" -ne 0
+
+PATH="$success_bin:$PATH" \
+SUBSTATION_INSTALL_TEST_ROOT="$success_root" \
+FAKE_HOST_STATE="$success_case/state.json" \
+FAKE_HOST_OPERATIONS="$success_case/operations.jsonl" \
+bash scripts/rollback_host.sh --plan --evidence-dir "$success_evidence"
+PATH="$success_bin:$PATH" \
+SUBSTATION_INSTALL_TEST_ROOT="$success_root" \
+FAKE_HOST_STATE="$success_case/state.json" \
+FAKE_HOST_OPERATIONS="$success_case/operations.jsonl" \
+bash scripts/rollback_host.sh --apply --evidence-dir "$success_evidence" --confirm-run-id "$(basename "$(dirname "$success_evidence")")"
+grep -Fxq 'deb http://archive.ubuntu.com/ubuntu noble main universe' "$success_root/etc/apt/sources.list"
+grep -Fxq 'Types: deb' "$success_root/etc/apt/sources.list.d/ubuntu.sources"
+grep -Fxq 'Suites: noble-updates noble-security' "$success_root/etc/apt/sources.list.d/ubuntu.sources"
+test ! -e "$success_root/etc/apt/sources.list.d/ros2.list"
+test ! -e "$success_root/etc/apt/sources.list.d/gazebo-stable.list"
+grep -Fxq 'ORIGINAL_POLICY' "$success_root/usr/sbin/policy-rc.d"
+python3 - "$success_case/operations.jsonl" <<'PY'
+import json, sys
+operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+simulate = [index for index, item in enumerate(operations) if item["command"] == "apt-get" and ("--simulate" in item["argv"] or "-s" in item["argv"])]
+actual = [index for index, item in enumerate(operations) if item["command"] == "apt-get" and ("remove" in item["argv"] or "install" in item["argv"]) and "--simulate" not in item["argv"] and "-s" not in item["argv"]]
+assert simulate and actual and max(simulate) < max(actual)
+PY
+
+trap - EXIT
+cleanup
+printf '%s\n' 'install-host-test: PASS'
+```
+
+Create `tests/environment/fixtures/fake_host_command.py` with this exact content:
+
+```python
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+
+LOCKED = {
+    "ros-jazzy-ros-gz": "1.0.23-1-1noble.20260701",
+    "ros-jazzy-navigation2": "1.3.12-1-1noble.20260701",
+    "ros-jazzy-nav2-bringup": "1.3.12-1-1noble.20260701",
+    "ros-jazzy-slam-toolbox": "2.8.5-1-1noble.20260701",
+    "ros-jazzy-turtlebot3": "2.3.6-1-1noble.20260701",
+    "ros-jazzy-turtlebot3-simulations": "2.3.7-1-1noble.20260701",
+    "gz-harmonic": "8.9.0-1~noble",
+}
+
+
+def write_json(path, value):
+    Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_state():
+    return json.loads(Path(os.environ["FAKE_HOST_STATE"]).read_text(encoding="utf-8"))
+
+
+def save_state(state):
+    write_json(os.environ["FAKE_HOST_STATE"], state)
+
+
+def record(command, argv):
+    path = Path(os.environ["FAKE_HOST_OPERATIONS"])
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"command": command, "argv": argv}, sort_keys=True) + "\n")
+
+
+def init(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--state", required=True)
+    parser.add_argument("--operations", required=True)
+    parser.add_argument("--driver-ready", choices=("0", "1"), required=True)
+    args = parser.parse_args(argv)
+    state = {
+        "packages": {"base-files": "13ubuntu10.1"},
+        "candidates": LOCKED,
+        "driver_ready": args.driver_ready == "1",
+        "nginx_unit": False,
+        "nginx_active": False,
+        "nginx_enabled": "disabled",
+    }
+    write_json(args.state, state)
+    Path(args.operations).write_text("", encoding="utf-8")
+    return 0
+
+
+def package_version(package, state):
+    if package in state["candidates"]:
+        return state["candidates"][package]
+    return "1.0-1noble"
+
+
+def apt_get(argv, state):
+    record("apt-get", argv)
+    action = next((item for item in argv if item in {"update", "install", "remove"}), None)
+    if action == "update":
+        return 0
+    simulate = "--simulate" in argv or "-s" in argv
+    action_index = argv.index(action)
+    packages = [item for item in argv[action_index + 1 :] if not item.startswith("-")]
+    if simulate:
+        prefix = "Inst" if action == "install" else "Remv"
+        for spec in packages:
+            print(prefix, spec.split("=", 1)[0])
+        return 0
+    if action == "install":
+        for spec in packages:
+            package, _, requested = spec.partition("=")
+            state["packages"][package] = requested or package_version(package, state)
+            if package == "nginx":
+                state["nginx_unit"] = True
+                policy = Path(os.environ["SUBSTATION_INSTALL_TEST_ROOT"]) / "usr/sbin/policy-rc.d"
+                if not policy.is_file() or "exit 101" not in policy.read_text(encoding="utf-8"):
+                    state["nginx_active"] = True
+        save_state(state)
+        return 0
+    if action == "remove":
+        for package in packages:
+            state["packages"].pop(package, None)
+            if package == "nginx":
+                if os.environ.get("FAKE_KEEP_NGINX_UNIT") != "1":
+                    state["nginx_unit"] = False
+                    state["nginx_active"] = False
+                    state["nginx_enabled"] = "disabled"
+        save_state(state)
+        return 0
+    return 2
+
+
+def apt_cache(argv, state):
+    record("apt-cache", argv)
+    if argv == ["policy"]:
+        print("500 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages")
+        return 0
+    if len(argv) != 2 or argv[0] != "policy":
+        return 2
+    package = argv[1]
+    candidate = state["candidates"].get(package, "1.0-1noble")
+    if os.environ.get("FAKE_CANDIDATE_FAILURE") == "1" and package == "ros-jazzy-ros-gz":
+        candidate = "9.9.9-1"
+    print(f"  Candidate: {candidate}")
+    print(f"     {candidate} 500")
+    if package == "gz-harmonic":
+        print("        500 http://packages.osrfoundation.org/gazebo/ubuntu-stable noble/main amd64 Packages")
+    else:
+        print("        500 http://packages.ros.org/ros2/ubuntu noble/main amd64 Packages")
+    return 0
+
+
+def dpkg_query(argv, state):
+    record("dpkg-query", argv)
+    packages = [item for item in argv if not item.startswith("-") and "${" not in item]
+    format_arg = next((item for item in argv if item.startswith("-f")), "")
+    selected = packages or sorted(state["packages"])
+    for package in selected:
+        if package not in state["packages"]:
+            return 1
+        version = state["packages"][package]
+        if "Status-Abbrev" in format_arg:
+            print(f"ii \t{package}")
+        elif "${Package}" in format_arg:
+            print(f"{package}\t{version}")
+        else:
+            print(version, end="" if len(selected) == 1 else "\n")
+    return 0
+
+
+def systemctl(argv, state):
+    record("systemctl", argv)
+    if "list-unit-files" in argv:
+        if state["nginx_unit"]:
+            print("nginx.service enabled")
+            return 0
+        return 1
+    if "is-active" in argv:
+        if state["nginx_active"]:
+            if "--quiet" not in argv:
+                print("active")
+            return 0
+        if "--quiet" not in argv:
+            print("inactive")
+        return 3
+    if "is-enabled" in argv:
+        print(state["nginx_enabled"])
+        return 0 if state["nginx_enabled"] == "enabled" else 1
+    if "disable" in argv:
+        state["nginx_enabled"] = "disabled"
+        if "--now" in argv:
+            state["nginx_active"] = False
+        save_state(state)
+        return 0
+    if "enable" in argv:
+        state["nginx_enabled"] = "enabled"
+        save_state(state)
+        return 0
+    if "start" in argv:
+        state["nginx_active"] = True
+        save_state(state)
+        return 0
+    if "stop" in argv:
+        state["nginx_active"] = False
+        save_state(state)
+        return 0
+    if "mask" in argv or "unmask" in argv:
+        return 0
+    return 2
+
+
+def main():
+    invoked_as = Path(sys.argv[0]).name
+    if invoked_as == "fake_host_command.py" and len(sys.argv) > 1 and sys.argv[1] == "init":
+        return init(sys.argv[2:])
+    command = invoked_as
+    argv = sys.argv[1:]
+    state = load_state()
+    if command == "sudo":
+        record("sudo", argv)
+        os.execvp(argv[0], argv)
+    if command == "apt-get":
+        return apt_get(argv, state)
+    if command == "apt-cache":
+        return apt_cache(argv, state)
+    if command == "dpkg-query":
+        return dpkg_query(argv, state)
+    if command == "systemctl":
+        return systemctl(argv, state)
+    record(command, argv)
+    if command == "ubuntu-drivers":
+        state["driver_ready"] = True
+        state["packages"]["nvidia-driver-560"] = "560.35.05-0ubuntu1"
+        save_state(state)
+        return 0
+    if command == "nvidia-smi":
+        if not state["driver_ready"]:
+            return 1
+        query = next((item for item in argv if item.startswith("--query-gpu=")), "")
+        if query == "--query-gpu=driver_version":
+            print("560.35.05")
+        elif query == "--query-gpu=name,driver_version":
+            print("NVIDIA RTX 3060 Ti, 560.35.05")
+        else:
+            print("NVIDIA RTX 3060 Ti, 560.35.05, 8192 MiB")
+        return 0
+    if command == "curl":
+        output = argv[argv.index("-o") + 1]
+        Path(output).write_text("fixture-key:" + argv[-2] + "\n", encoding="utf-8")
+        return 0
+    if command == "rosdep" and argv and argv[0] == "init":
+        path = Path(os.environ["SUBSTATION_INSTALL_TEST_ROOT"]) / "etc/ros/rosdep/sources.list.d/20-default.list"
+        path.write_text("fixture rosdep\n", encoding="utf-8")
+        return 0
+    if command == "gz":
+        print("Gazebo Sim, version 8.9.0")
+        return 0
+    if command == "lspci":
+        print("01:00.0 VGA compatible controller: NVIDIA Corporation Device")
+        return 0
+    if command == "findmnt":
+        target = argv[argv.index("--target") + 1]
+        print(json.dumps({"filesystems": [{"target": target, "source": "fixture", "fstype": "ext4"}]}))
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 ```
 
 Run:
@@ -725,14 +1565,41 @@ if test "$#" -eq 1 && test "$1" = --plan; then
   exit 0
 fi
 if test "$#" -ne 3 || test "$1" != --apply || test "$2" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/install_host.sh --plan | --apply --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/install_host.sh --plan | --apply --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
 evidence_dir="$3"
 source scripts/lib/environment_common.sh
-environment_require_evidence_dir "$evidence_dir"
-bash scripts/audit_host.sh >/dev/null
+test_root="${SUBSTATION_INSTALL_TEST_ROOT:-}"
+if test -n "$test_root"; then
+  case "$test_root" in /tmp/phase1-installer-fixture-*/root) ;; *) printf 'invalid-install-test-root: %s\n' "$test_root" >&2; exit 2 ;; esac
+  case "$evidence_dir" in /tmp/phase1-installer-fixture-*/evidence/01-environment.staging) ;; *) printf 'invalid-install-test-evidence: %s\n' "$evidence_dir" >&2; exit 2 ;; esac
+  test -d "$test_root"
+  test -d "$evidence_dir"
+else
+  environment_require_evidence_dir "$evidence_dir"
+fi
+
+host_path() {
+  local logical="$1"
+  test "${logical#/}" != "$logical"
+  if test -n "$test_root"; then
+    printf '%s%s\n' "$test_root" "$logical"
+  else
+    printf '%s\n' "$logical"
+  fi
+}
+
+run_privileged() {
+  if test -n "$test_root"; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+bash scripts/audit_host.sh --preflight >/dev/null
 
 apt_sources_before="$evidence_dir/apt-sources-before"
 state_file="$evidence_dir/install-state.env"
@@ -744,6 +1611,8 @@ new_packages="$evidence_dir/host-install-new-packages.txt"
 version_changes="$evidence_dir/host-install-version-changes.tsv"
 candidate_file="$evidence_dir/apt-candidates.tsv"
 managed_after="$evidence_dir/managed-files-after.tsv"
+apt_sources_after="$evidence_dir/apt-sources-after"
+policy_state="$evidence_dir/policy-rc.d-state.tsv"
 managed_paths=(
   /etc/apt/sources.list.d/ros2.list
   /etc/apt/sources.list.d/gazebo-stable.list
@@ -751,21 +1620,114 @@ managed_paths=(
   /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
   /etc/default/locale
   /etc/ros/rosdep/sources.list.d/20-default.list
+  /usr/sbin/policy-rc.d
 )
 
 key_work=
 list_work=
 capture_work=
 inventory_work=
+source_paths_work=
+policy_active=0
 cleanup() {
   local path
-  for path in "$key_work" "$list_work" "$capture_work" "$inventory_work"; do
+  for path in "$key_work" "$list_work" "$capture_work" "$inventory_work" "$source_paths_work"; do
     if test -n "$path" && test -e "$path"; then
       unlink -- "$path"
     fi
   done
+  if test "$policy_active" -eq 1; then
+    restore_policy_blocker
+  fi
 }
 trap cleanup EXIT
+
+backup_name_for() {
+  printf '%s' "$1" | sed 's#^/##; s#/#__#g'
+}
+
+collect_apt_source_paths() {
+  local live source_dir
+  live="$(host_path /etc/apt/sources.list)"
+  if test -L "$live"; then
+    printf 'apt source symlink is forbidden: %s\n' "$live" >&2
+    return 1
+  elif test -e "$live"; then
+    test -f "$live" || {
+      printf 'apt source is not a regular file: %s\n' "$live" >&2
+      return 1
+    }
+    printf '%s\n' /etc/apt/sources.list
+  fi
+  source_dir="$(host_path /etc/apt/sources.list.d)"
+  for live in "$source_dir"/*.list "$source_dir"/*.sources; do
+    if test -L "$live"; then
+      printf 'apt source symlink is forbidden: %s\n' "$live" >&2
+      return 1
+    fi
+    test -e "$live" || continue
+    test -f "$live" || {
+      printf 'apt source is not a regular file: %s\n' "$live" >&2
+      return 1
+    }
+    if test -n "$test_root"; then
+      printf '%s\n' "${live#"$test_root"}"
+    else
+      printf '%s\n' "$live"
+    fi
+  done
+}
+
+restore_policy_blocker() {
+  local logical=/usr/sbin/policy-rc.d
+  local live backup mode existed
+  live="$(host_path "$logical")"
+  IFS=$'\t' read -r _ existed mode _ backup < <(
+    awk -F '\t' -v path="$logical" '$1 == path {print; exit}' "$apt_sources_before/inventory.tsv"
+  )
+  if test "$existed" = 1; then
+    run_privileged install -m "$mode" "$apt_sources_before/$backup" "$live"
+  elif test -e "$live"; then
+    run_privileged unlink -- "$live"
+  fi
+  policy_active=0
+  if test -s "$policy_state"; then
+    python3 - "$policy_state" <<'PY'
+import csv
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+rows = list(csv.DictReader(path.open(encoding="utf-8"), delimiter="\t"))
+assert len(rows) == 1
+rows[0]["restored"] = "1"
+work = path.with_name(path.name + ".new")
+with work.open("w", encoding="utf-8", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=rows[0].keys(), delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+os.replace(work, path)
+PY
+  fi
+}
+
+activate_policy_blocker() {
+  local live
+  live="$(host_path /usr/sbin/policy-rc.d)"
+  capture_work="$(mktemp --tmpdir=/tmp)"
+  printf '%s\n' '#!/usr/bin/env sh' 'exit 101' > "$capture_work"
+  run_privileged install -m 0755 "$capture_work" "$live"
+  policy_active=1
+  unlink -- "$capture_work"
+  capture_work=
+  printf 'path\texisted_before\tmode_before\tsha256_before\trestored\n/usr/sbin/policy-rc.d\t%s\t%s\t%s\t0\n' \
+    "$policy_existed_before" "$policy_mode_before" "$policy_sha_before" > "$policy_state"
+}
+
+record_policy_restored() {
+  restore_policy_blocker
+}
 
 driver_is_ready() {
   command -v nvidia-smi >/dev/null 2>&1 || return 1
@@ -792,7 +1754,7 @@ require_upstream_version() {
 
 validate_installed_stack() {
   driver_is_ready
-  source /opt/ros/jazzy/setup.bash
+  source "$(host_path /opt/ros/jazzy/setup.bash)"
   test "$ROS_DISTRO" = jazzy
   require_upstream_version ros-jazzy-ros-gz 1.0.23-1
   require_upstream_version ros-jazzy-navigation2 1.3.12-1
@@ -861,9 +1823,12 @@ PY
   capture_work="$(mktemp --tmpdir=/tmp)"
   printf 'source_path\texisted_after\tmode\tsha256\n' > "$capture_work"
   for source_path in "${managed_paths[@]}"; do
-    if test -f "$source_path"; then
+    live_path="$(host_path "$source_path")"
+    test ! -L "$live_path"
+    if test -e "$live_path"; then
+      test -f "$live_path"
       printf '%s\t1\t%s\t%s\n' \
-        "$source_path" "$(stat -c '%a' "$source_path")" "$(environment_sha256 "$source_path")" \
+        "$source_path" "$(stat -c '%a' "$live_path")" "$(environment_sha256 "$live_path")" \
         >> "$capture_work"
     else
       printf '%s\t0\t-\t-\n' "$source_path" >> "$capture_work"
@@ -872,6 +1837,23 @@ PY
   install -m 0640 "$capture_work" "$managed_after"
   unlink -- "$capture_work"
   capture_work=
+
+  test ! -e "$apt_sources_after"
+  install -d -m 0750 "$apt_sources_after"
+  capture_work="$(mktemp --tmpdir=/tmp)"
+  source_paths_work="$(mktemp --tmpdir=/tmp)"
+  collect_apt_source_paths > "$source_paths_work"
+  LC_ALL=C sort -u -o "$source_paths_work" "$source_paths_work"
+  printf 'source_path\tmode\tsha256\n' > "$capture_work"
+  while IFS= read -r source_path; do
+    live_path="$(host_path "$source_path")"
+    printf '%s\t%s\t%s\n' "$source_path" "$(stat -c '%a' "$live_path")" "$(environment_sha256 "$live_path")" >> "$capture_work"
+  done < "$source_paths_work"
+  install -m 0640 "$capture_work" "$apt_sources_after/inventory.tsv"
+  unlink -- "$capture_work"
+  capture_work=
+  unlink -- "$source_paths_work"
+  source_paths_work=
 }
 
 mark_complete() {
@@ -887,13 +1869,13 @@ mark_complete() {
 }
 
 verify_managed_evidence() {
-  python3 - "$apt_sources_before/inventory.tsv" "$managed_after" <<'PY'
+  python3 - "$apt_sources_before/inventory.tsv" "$managed_after" "${test_root:-/}" <<'PY'
 import csv
 import hashlib
 import sys
 from pathlib import Path
 
-inventory_path, after_path = map(Path, sys.argv[1:])
+inventory_path, after_path, root = map(Path, sys.argv[1:])
 expected_paths = {
     "/etc/apt/sources.list.d/ros2.list",
     "/etc/apt/sources.list.d/gazebo-stable.list",
@@ -901,11 +1883,12 @@ expected_paths = {
     "/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg",
     "/etc/default/locale",
     "/etc/ros/rosdep/sources.list.d/20-default.list",
+    "/usr/sbin/policy-rc.d",
 }
 
 with inventory_path.open(encoding="utf-8", newline="") as handle:
     inventory = list(csv.DictReader(handle, delimiter="\t"))
-assert {row["source_path"] for row in inventory} == expected_paths
+assert expected_paths <= {row["source_path"] for row in inventory}
 for row in inventory:
     if row["existed"] == "1":
         backup_name = row["backup_file"]
@@ -923,7 +1906,8 @@ with after_path.open(encoding="utf-8", newline="") as handle:
     after = list(csv.DictReader(handle, delimiter="\t"))
 assert {row["source_path"] for row in after} == expected_paths
 for row in after:
-    path = Path(row["source_path"])
+    logical = Path(row["source_path"])
+    path = logical if root == Path("/") else root / logical.relative_to("/")
     if row["existed_after"] == "1":
         assert path.is_file()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
@@ -932,6 +1916,28 @@ for row in after:
         assert row["existed_after"] == "0"
         assert not path.exists()
         assert row["mode"] == row["sha256"] == "-"
+PY
+}
+
+verify_backup_inventory() {
+  python3 - "$apt_sources_before/inventory.tsv" <<'PY'
+import csv
+import hashlib
+import sys
+from pathlib import Path
+
+inventory_path = Path(sys.argv[1])
+rows = list(csv.DictReader(inventory_path.open(encoding="utf-8"), delimiter="\t"))
+assert rows
+for row in rows:
+    if row["existed"] == "1":
+        backup = inventory_path.parent / row["backup_file"]
+        assert backup.is_file()
+        assert hashlib.sha256(backup.read_bytes()).hexdigest() == row["sha256"]
+        assert row["mode"].isdigit()
+    else:
+        assert row["existed"] == "0"
+        assert row["mode"] == row["sha256"] == row["backup_file"] == "-"
 PY
 }
 
@@ -944,8 +1950,11 @@ verify_completed_state() {
   test -f "$new_packages"
   test -s "$version_changes"
   test -s "$managed_after"
+  test -s "$apt_sources_after/inventory.tsv"
+  test -s "$policy_state"
   grep -Fxq 'state=INITIAL_INSTALL_STARTED' "$state_file"
   grep -Fxq 'state=PASS' "$complete_marker"
+  grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$policy_state"
   if test -e "$resume_marker"; then
     grep -Fxq 'state=REBOOT_REQUIRED' "$resume_marker"
   fi
@@ -972,10 +1981,15 @@ if test -s "$resume_marker"; then
   test -s "$before_packages"
   test -s "$apt_sources_before/inventory.tsv"
   test -s "$candidate_file"
+  test -s "$evidence_dir/apt-policy-origins.json"
+  test -s "$policy_state"
   test ! -e "$after_packages"
   test ! -e "$new_packages"
   test ! -e "$version_changes"
   test ! -e "$managed_after"
+  test ! -e "$apt_sources_after"
+  verify_backup_inventory
+  grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$policy_state"
   driver_is_ready || {
     printf '%s\n' 'rebooted NVIDIA driver is absent or below 560.35.05' >&2
     exit 1
@@ -992,12 +2006,15 @@ for initial_artifact in \
   "$before_packages" \
   "$apt_sources_before" \
   "$candidate_file" \
+  "$evidence_dir/apt-policy-origins.json" \
+  "$policy_state" \
   "$evidence_dir/ros-archive-key.sha256" \
   "$evidence_dir/gazebo-archive-key.sha256" \
   "$after_packages" \
   "$new_packages" \
   "$version_changes" \
-  "$managed_after"; do
+  "$managed_after" \
+  "$apt_sources_after"; do
   if test -e "$initial_artifact"; then
     printf 'incomplete-install-evidence-requires-review: %s\n' "$initial_artifact" >&2
     exit 1
@@ -1008,6 +2025,10 @@ universe_present=0
 if apt-cache policy | grep -q 'noble/universe'; then
   universe_present=1
 fi
+test "$universe_present" -eq 1 || {
+  printf '%s\n' 'Ubuntu Noble universe must already be enabled; refusing to mutate an existing Ubuntu source file' >&2
+  exit 1
+}
 nginx_unit_present_before=0
 nginx_active_before=absent
 nginx_enabled_before=absent
@@ -1016,6 +2037,14 @@ if systemctl list-unit-files --type=service --no-legend nginx.service 2>/dev/nul
   nginx_unit_present_before=1
   nginx_active_before="$(systemctl is-active nginx.service 2>/dev/null || true)"
   nginx_enabled_before="$(systemctl is-enabled nginx.service 2>/dev/null || true)"
+  case "$nginx_active_before" in
+    active|inactive) ;;
+    *) printf 'unsupported nginx active state before install: %s\n' "$nginx_active_before" >&2; exit 1 ;;
+  esac
+  case "$nginx_enabled_before" in
+    enabled|disabled|masked) ;;
+    *) printf 'unsupported nginx enabled state before install: %s\n' "$nginx_enabled_before" >&2; exit 1 ;;
+  esac
 fi
 capture_work="$(mktemp --tmpdir=/tmp)"
 printf 'state=INITIAL_INSTALL_STARTED\nuniverse_present_before=%s\nnginx_unit_present_before=%s\nnginx_active_before=%s\nnginx_enabled_before=%s\nstarted_at=%s\n' \
@@ -1033,11 +2062,21 @@ capture_work=
 install -d -m 0750 "$apt_sources_before"
 inventory_work="$(mktemp --tmpdir=/tmp)"
 printf 'source_path\texisted\tmode\tsha256\tbackup_file\n' > "$inventory_work"
-for source_path in "${managed_paths[@]}"; do
-  if test -f "$source_path"; then
-    backup_name="$(printf '%s' "$source_path" | sed 's#^/##; s#/#__#g')"
-    original_mode="$(stat -c '%a' "$source_path")"
-    install -m 0640 "$source_path" "$apt_sources_before/$backup_name"
+source_paths_work="$(mktemp --tmpdir=/tmp)"
+printf '%s\n' "${managed_paths[@]}" > "$source_paths_work"
+collect_apt_source_paths >> "$source_paths_work"
+LC_ALL=C sort -u -o "$source_paths_work" "$source_paths_work"
+mapfile -t backup_paths < "$source_paths_work"
+unlink -- "$source_paths_work"
+source_paths_work=
+for source_path in "${backup_paths[@]}"; do
+  live_path="$(host_path "$source_path")"
+  test ! -L "$live_path"
+  if test -e "$live_path"; then
+    test -f "$live_path"
+    backup_name="$(backup_name_for "$source_path")"
+    original_mode="$(stat -c '%a' "$live_path")"
+    install -m 0640 "$live_path" "$apt_sources_before/$backup_name"
     original_sha="$(environment_sha256 "$apt_sources_before/$backup_name")"
     printf '%s\t1\t%s\t%s\t%s\n' \
       "$source_path" "$original_mode" "$original_sha" "$backup_name" >> "$inventory_work"
@@ -1049,32 +2088,36 @@ install -m 0640 "$inventory_work" "$apt_sources_before/inventory.tsv"
 unlink -- "$inventory_work"
 inventory_work=
 
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg locales software-properties-common ubuntu-drivers-common
-if test "$universe_present" -eq 0; then
-  sudo add-apt-repository -y universe
-fi
+IFS=$'\t' read -r _ policy_existed_before policy_mode_before policy_sha_before _ < <(
+  awk -F '\t' '$1 == "/usr/sbin/policy-rc.d" {print; exit}' "$apt_sources_before/inventory.tsv"
+)
+activate_policy_blocker
+
+run_privileged apt-get update
+run_privileged apt-get install -y ca-certificates curl gnupg locales software-properties-common ubuntu-drivers-common
 
 key_work="$(mktemp --tmpdir=/tmp)"
 list_work="$(mktemp --tmpdir=/tmp)"
 curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o "$key_work"
 environment_sha256 "$key_work" > "$evidence_dir/ros-archive-key.sha256"
-sudo install -m 0644 "$key_work" /usr/share/keyrings/ros-archive-keyring.gpg
+run_privileged install -m 0644 "$key_work" "$(host_path /usr/share/keyrings/ros-archive-keyring.gpg)"
 architecture="$(dpkg --print-architecture)"
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu noble main\n' "$architecture" > "$list_work"
-sudo install -m 0644 "$list_work" /etc/apt/sources.list.d/ros2.list
+run_privileged install -m 0644 "$list_work" "$(host_path /etc/apt/sources.list.d/ros2.list)"
 
 curl -fsSL https://packages.osrfoundation.org/gazebo.gpg -o "$key_work"
 environment_sha256 "$key_work" > "$evidence_dir/gazebo-archive-key.sha256"
-sudo install -m 0644 "$key_work" /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+run_privileged install -m 0644 "$key_work" "$(host_path /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg)"
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable noble main\n' "$architecture" > "$list_work"
-sudo install -m 0644 "$list_work" /etc/apt/sources.list.d/gazebo-stable.list
+run_privileged install -m 0644 "$list_work" "$(host_path /etc/apt/sources.list.d/gazebo-stable.list)"
 
-sudo apt-get update
+run_privileged apt-get update
 capture_work="$(mktemp --tmpdir=/tmp)"
-printf 'package\texpected_upstream\tcandidate\n' > "$capture_work"
+printf 'package\texpected_upstream\tcandidate\torigin\n' > "$capture_work"
 while IFS=$'\t' read -r package expected; do
-  candidate="$(apt-cache policy "$package" | awk '$1 == "Candidate:" {print $2; exit}')"
+  policy_output="$(apt-cache policy "$package")"
+  candidate="$(awk '$1 == "Candidate:" {print $2; exit}' <<<"$policy_output")"
+  origin="$(awk '/^[[:space:]]*[0-9]+[[:space:]]+https?:\/\// {print $2}' <<<"$policy_output" | LC_ALL=C sort -u)"
   test -n "$candidate"
   test "$candidate" != '(none)'
   case "$candidate" in
@@ -1085,7 +2128,8 @@ while IFS=$'\t' read -r package expected; do
       exit 1
       ;;
   esac
-  printf '%s\t%s\t%s\n' "$package" "$expected" "$candidate" >> "$capture_work"
+  test "$origin" = http://packages.ros.org/ros2/ubuntu
+  printf '%s\t%s\t%s\t%s\n' "$package" "$expected" "$candidate" "$origin" >> "$capture_work"
 done <<'VERSIONS'
 ros-jazzy-ros-gz	1.0.23-1
 ros-jazzy-navigation2	1.3.12-1
@@ -1098,22 +2142,41 @@ install -m 0640 "$capture_work" "$candidate_file"
 unlink -- "$capture_work"
 capture_work=
 
-mapfile -t requested_packages < config/environment/apt-packages.txt
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${requested_packages[@]}"
+bash scripts/audit_host.sh --report-only > "$evidence_dir/apt-policy-origins.json"
+python3 - "$evidence_dir/apt-policy-origins.json" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-sudo locale-gen en_US en_US.UTF-8
-sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-if test ! -f /etc/ros/rosdep/sources.list.d/20-default.list; then
-  sudo rosdep init
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+locked = {key: value for key, value in data["apt_policy"].items() if key != "gz-harmonic"}
+assert locked
+assert all(item["candidate_ok"] and item["origin_ok"] for item in locked.values())
+gz = data["apt_policy"]["gz-harmonic"]
+assert gz["candidate_ok"] and gz["origin_ok"]
+PY
+
+mapfile -t requested_packages < config/environment/apt-packages.txt
+if test -n "$test_root"; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${requested_packages[@]}"
+else
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${requested_packages[@]}"
+fi
+
+run_privileged locale-gen en_US en_US.UTF-8
+run_privileged update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+if test ! -f "$(host_path /etc/ros/rosdep/sources.list.d/20-default.list)"; then
+  run_privileged rosdep init
 fi
 rosdep update --rosdistro jazzy
 
 if systemctl list-unit-files nginx.service >/dev/null 2>&1; then
-  sudo systemctl disable --now nginx.service
+  run_privileged systemctl disable --now nginx.service
 fi
 
 if ! driver_is_ready; then
-  sudo ubuntu-drivers install
+  run_privileged ubuntu-drivers install
+  record_policy_restored
   capture_work="$(mktemp --tmpdir=/tmp)"
   printf 'state=REBOOT_REQUIRED\nrequested_at=%s\nresume_command=bash scripts/install_host.sh --apply --evidence-dir %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$evidence_dir" > "$capture_work"
@@ -1126,6 +2189,7 @@ if ! driver_is_ready; then
   exit 20
 fi
 
+record_policy_restored
 mark_complete
 trap - EXIT
 cleanup
@@ -1134,17 +2198,208 @@ printf '%s\n' 'install-host: PASS'
 
 The installer has three explicit states. A first run creates `install-state.env`, `dpkg-before.tsv`, `apt-sources-before/`, key hashes, and `apt-candidates.tsv` exactly once before the corresponding mutations; the state file also records Nginx's original unit, active, and enabled states. A `REBOOT_REQUIRED` run leaves `install-resume.env` and exits 20 without creating after-state evidence. The resume path skips repository setup and every package installation command, validates the rebooted driver, creates `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, and `install-complete.env`, then finishes. The managed-file verifier checks every original backup against its recorded SHA-256 and checks the live after-state against its own mode and SHA-256. A completed rerun writes no evidence and compares the live package and managed-file sets with the captured after-state before printing `PASS`. Any partial state without a valid resume or complete marker fails closed for operator review. The script never installs a desktop metapackage, starts a project service, or exposes a port; Nginx is explicitly disabled and stopped after package installation.
 
-- [ ] **Step 4: Run static tests before the host mutation**
+- [ ] **Step 4: Implement simulation-gated exact rollback**
+
+Create `scripts/rollback_host.sh` with this exact content:
 
 ```bash
-chmod +x scripts/install_host.sh tests/environment/test_install_host.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode=
+evidence_dir=
+confirm_run_id=
+if test "$#" -eq 3 && test "$1" = --plan && test "$2" = --evidence-dir; then
+  mode=plan
+  evidence_dir="$3"
+elif test "$#" -eq 5 && test "$1" = --apply && test "$2" = --evidence-dir && test "$4" = --confirm-run-id; then
+  mode=apply
+  evidence_dir="$3"
+  confirm_run_id="$5"
+else
+  printf '%s\n' 'usage: bash scripts/rollback_host.sh --plan --evidence-dir DIR | --apply --evidence-dir DIR --confirm-run-id RUN_ID' >&2
+  exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+source scripts/lib/environment_common.sh
+test_root="${SUBSTATION_INSTALL_TEST_ROOT:-}"
+if test -n "$test_root"; then
+  case "$test_root" in /tmp/phase1-installer-fixture-*/root) ;; *) exit 2 ;; esac
+  case "$evidence_dir" in /tmp/phase1-installer-fixture-*/evidence/01-environment.staging) ;; *) exit 2 ;; esac
+else
+  environment_require_evidence_dir "$evidence_dir"
+fi
+
+host_path() {
+  if test -n "$test_root"; then printf '%s%s\n' "$test_root" "$1"; else printf '%s\n' "$1"; fi
+}
+run_privileged() {
+  if test -n "$test_root"; then "$@"; else sudo "$@"; fi
+}
+
+state_file="$evidence_dir/install-state.env"
+before_packages="$evidence_dir/dpkg-before.tsv"
+changes="$evidence_dir/host-install-version-changes.tsv"
+additions="$evidence_dir/host-install-new-packages.txt"
+before_inventory="$evidence_dir/apt-sources-before/inventory.tsv"
+after_inventory="$evidence_dir/apt-sources-after/inventory.tsv"
+managed_after="$evidence_dir/managed-files-after.tsv"
+for required in "$state_file" "$before_packages" "$changes" "$before_inventory" "$after_inventory" "$managed_after" "$evidence_dir/install-complete.env"; do
+  test -s "$required"
+done
+test -f "$additions"
+grep -Fxq 'state=PASS' "$evidence_dir/install-complete.env"
+
+python3 - "$before_inventory" "$after_inventory" "$managed_after" "${test_root:-/}" <<'PY'
+import csv
+import hashlib
+import sys
+from pathlib import Path
+
+before_path, apt_after_path, managed_after_path, root = map(Path, sys.argv[1:])
+before = list(csv.DictReader(before_path.open(encoding="utf-8"), delimiter="\t"))
+assert before
+for row in before:
+    if row["existed"] == "1":
+        backup = before_path.parent / row["backup_file"]
+        assert backup.is_file()
+        assert hashlib.sha256(backup.read_bytes()).hexdigest() == row["sha256"]
+
+expected = {}
+for path in (apt_after_path, managed_after_path):
+    for row in csv.DictReader(path.open(encoding="utf-8"), delimiter="\t"):
+        expected[row["source_path"]] = row
+for logical_text, row in expected.items():
+    logical = Path(logical_text)
+    live = logical if root == Path("/") else root / logical.relative_to("/")
+    existed = row.get("existed_after", "1")
+    if existed == "1":
+        assert live.is_file()
+        assert hashlib.sha256(live.read_bytes()).hexdigest() == row["sha256"]
+        assert f"{live.stat().st_mode & 0o777:o}" == row["mode"]
+    else:
+        assert existed == "0" and not live.exists()
+PY
+
+mapfile -t rollback_versions < <(
+  awk -F '\t' 'NR > 1 && ($4 == "version-changed" || $4 == "removed") {print $1 "=" $2}' "$changes"
+)
+mapfile -t added_packages < "$additions"
+
+validate_simulation() (
+  local action="$1"
+  shift
+  local output expected_work actual_work
+  expected_work="$(mktemp --tmpdir=/tmp)"
+  actual_work="$(mktemp --tmpdir=/tmp)"
+  cleanup_simulation() {
+    unlink -- "$expected_work"
+    unlink -- "$actual_work"
+  }
+  trap cleanup_simulation EXIT
+  printf '%s\n' "$@" | sed 's/=.*//' | LC_ALL=C sort -u > "$expected_work"
+  if test "$action" = install; then
+    run_privileged apt-get --simulate install --yes --allow-downgrades --no-install-recommends "$@" \
+      | awk '$1 == "Inst" {print $2}' | LC_ALL=C sort -u > "$actual_work"
+  else
+    run_privileged apt-get --simulate remove --no-auto-remove --yes "$@" \
+      | awk '$1 == "Remv" {print $2}' | LC_ALL=C sort -u > "$actual_work"
+  fi
+  cmp "$expected_work" "$actual_work"
+)
+
+if test "${#rollback_versions[@]}" -gt 0; then
+  validate_simulation install "${rollback_versions[@]}"
+fi
+if test "${#added_packages[@]}" -gt 0; then
+  validate_simulation remove "${added_packages[@]}"
+fi
+printf '%s\n' 'rollback-host-plan: PASS'
+if test "$mode" = plan; then
+  exit 0
+fi
+
+run_id="$(basename "$(dirname "$evidence_dir")")"
+test "$confirm_run_id" = "$run_id"
+
+if test "${#rollback_versions[@]}" -gt 0; then
+  run_privileged apt-get install --yes --allow-downgrades --no-install-recommends "${rollback_versions[@]}"
+fi
+if test "${#added_packages[@]}" -gt 0; then
+  run_privileged apt-get remove --no-auto-remove --yes "${added_packages[@]}"
+fi
+
+while IFS=$'\t' read -r source_path existed_before mode_before sha_before backup_file; do
+  test "$source_path" != source_path || continue
+  live="$(host_path "$source_path")"
+  if test "$existed_before" = 1; then
+    backup="$evidence_dir/apt-sources-before/$backup_file"
+    test "$(environment_sha256 "$backup")" = "$sha_before"
+    if test ! -f "$live" || test "$(environment_sha256 "$live")" != "$sha_before" || test "$(stat -c '%a' "$live")" != "$mode_before"; then
+      run_privileged install -m "$mode_before" "$backup" "$live"
+    fi
+  elif test -e "$live"; then
+    case "$source_path" in
+      /etc/apt/sources.list.d/ros2.list|/etc/apt/sources.list.d/gazebo-stable.list|/usr/share/keyrings/ros-archive-keyring.gpg|/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg|/etc/default/locale|/etc/ros/rosdep/sources.list.d/20-default.list|/usr/sbin/policy-rc.d) ;;
+      *) printf 'refusing-to-unlink-unowned-path: %s\n' "$source_path" >&2; exit 1 ;;
+    esac
+    run_privileged unlink -- "$live"
+  fi
+done < "$before_inventory"
+
+source "$state_file"
+if test "$nginx_unit_present_before" = 1; then
+  case "$nginx_enabled_before" in
+    enabled) run_privileged systemctl enable nginx.service ;;
+    disabled) run_privileged systemctl disable nginx.service ;;
+    masked) run_privileged systemctl mask nginx.service ;;
+    *) printf 'unsupported recorded nginx enabled state: %s\n' "$nginx_enabled_before" >&2; exit 1 ;;
+  esac
+  case "$nginx_active_before" in
+    active) run_privileged systemctl start nginx.service ;;
+    inactive) run_privileged systemctl stop nginx.service ;;
+    *) printf 'unsupported recorded nginx active state: %s\n' "$nginx_active_before" >&2; exit 1 ;;
+  esac
+elif systemctl list-unit-files --type=service --no-legend nginx.service 2>/dev/null \
+  | grep -q '^nginx\.service'; then
+  printf '%s\n' 'nginx unit remains after rollback although it was absent before installation' >&2
+  exit 1
+fi
+
+current_work="$(mktemp --tmpdir=/tmp)"
+cleanup() { test ! -e "$current_work" || unlink -- "$current_work"; }
+trap cleanup EXIT
+dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > "$current_work"
+python3 - "$before_packages" "$current_work" <<'PY'
+import sys
+from pathlib import Path
+
+def rows(path):
+    return {line.split("\t", 1)[0]: line.split("\t", 1)[1] for line in Path(path).read_text(encoding="utf-8").splitlines()}
+before, current = map(rows, sys.argv[1:])
+for package in sorted(set(before) | set(current)):
+    if package.startswith("nvidia-"):
+        continue
+    assert before.get(package) == current.get(package), (package, before.get(package), current.get(package))
+PY
+printf '%s\n' 'rollback-host-apply: PASS'
+```
+
+The rollback `--apply` path invokes the same strict simulation internally before any package or file mutation. The simulation output may name only the exact recorded restore/remove package sets; extra apt dependency changes fail. Current live files and every backup are hash/mode validated before application. Only the seven explicitly owned created paths may be unlinked; every existing `sources.list`, `.list`, and deb822 `.sources` file is restored byte-for-byte with its recorded mode.
+
+- [ ] **Step 5: Run behavioral tests before the host mutation**
+
+```bash
+chmod +x scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
 bash tests/environment/test_install_host.sh
 LC_ALL=C sort -c config/environment/apt-packages.txt
 ```
 
-Expected: both commands exit 0; the plan output contains every required ROS/Gazebo package and none of the forbidden stack names.
+Expected: `install-host-test: PASS`; the fake-host scenarios prove fresh success, candidate failure before target install, reboot/resume without repeat mutation, completed read-only rerun, partial-state refusal, backup tamper refusal, temporary service suppression restoration, and simulation-gated package/source rollback. No `sudo` command touches the real host during this test.
 
-- [ ] **Step 5: Apply the installer and handle the explicit reboot boundary**
+- [ ] **Step 6: Apply the installer and handle the explicit reboot boundary**
 
 Run:
 
@@ -1164,7 +2419,7 @@ Expected without a driver change: final line `install-host: PASS`, exit 0. Expec
 If exit 20 occurs, do not reboot until the installer commit and a reboot handoff commit both exist. Run:
 
 ```bash
-git add config/environment/apt-packages.txt scripts/install_host.sh tests/environment/test_install_host.sh
+git add config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
 git diff --cached --check
 git commit -m "feat: install locked ros and gazebo baseline"
 install_commit="$(git rev-parse HEAD)"
@@ -1214,7 +2469,7 @@ grep -Fx 'state=PASS' "$PHASE1_EVIDENCE_ROOT/install-complete.env"
 
 Use `apply_patch` immediately after that success to change the handoff state to “reboot completed, driver validated, Task 3 verification in progress,” preserve the same installer commit/evidence path, and set the first resume action to Step 6 below. Commit only `docs/HANDOFF.md` with `git commit -m "docs: record phase one reboot completion"`. If the resume command attempts any apt/source mutation, overwrites an initial artifact, or observes a different locked core version, stop for authority review.
 
-- [ ] **Step 6: Verify exact distribution families immediately after install**
+- [ ] **Step 7: Verify exact distribution families immediately after install**
 
 ```bash
 source .phase1-run.env
@@ -1239,7 +2494,10 @@ dpkg --compare-versions "$driver_version" ge 560.35.05
 test -s "$PHASE1_EVIDENCE_ROOT/dpkg-before.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/dpkg-after.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/apt-candidates.tsv"
+test -s "$PHASE1_EVIDENCE_ROOT/apt-policy-origins.json"
 test -s "$PHASE1_EVIDENCE_ROOT/apt-sources-before/inventory.tsv"
+test -s "$PHASE1_EVIDENCE_ROOT/apt-sources-after/inventory.tsv"
+grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$PHASE1_EVIDENCE_ROOT/policy-rc.d-state.tsv"
 test -f "$PHASE1_EVIDENCE_ROOT/host-install-new-packages.txt"
 test -s "$PHASE1_EVIDENCE_ROOT/host-install-version-changes.tsv"
 test -s "$PHASE1_EVIDENCE_ROOT/managed-files-after.tsv"
@@ -1248,9 +2506,9 @@ grep -Fx 'state=PASS' "$PHASE1_EVIDENCE_ROOT/install-complete.env"
 
 Expected: every command exits 0; ROS is Jazzy, `ros_gz` upstream is 1.0.23-1, Navigation2 is 1.3.12-1, SLAM Toolbox is 2.8.5-1, TurtleBot3 core and simulation expose 2.3.6-1 and 2.3.7-1 respectively, Gazebo major is 8, and the driver meets the floor. Full Ubuntu package revisions are captured for review later; they are not silently normalized away.
 
-Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, optional historical `install-resume.env`, `apt-candidates.tsv`, key SHA files, and the recursive source backup inventory below `$PHASE1_EVIDENCE_ROOT/apt-sources-before`.
+Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, optional historical `install-resume.env`, `apt-candidates.tsv`, `apt-policy-origins.json`, `policy-rc.d-state.tsv`, key SHA files, and the complete before/after apt-source inventories below `$PHASE1_EVIDENCE_ROOT/apt-sources-before` and `apt-sources-after`.
 
-Safe rollback:
+Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$PHASE1_EVIDENCE_ROOT"`. Review the exact simulated package set, then run `bash scripts/rollback_host.sh --apply --evidence-dir "$PHASE1_EVIDENCE_ROOT" --confirm-run-id "$PHASE1_RUN_ID"`. The numbered details below explain that script's recorded transaction; do not execute individual snippets as a substitute for its validation gate.
 
 1. Preserve all evidence.
 2. Review `$PHASE1_EVIDENCE_ROOT/host-install-version-changes.tsv`. Restore every `version-changed` or `removed` row through an operator-reviewed exact-version transaction before removing additions:
@@ -1329,22 +2587,22 @@ Safe rollback:
      esac
    fi
    ```
-6. If `universe_present_before=0`, run `sudo add-apt-repository -y --remove universe` only after verifying no other project depends on it.
+6. The installer requires Noble `universe` to exist before mutation and never edits it, so rollback must not add, remove, or normalize an Ubuntu base source.
 7. Compare a fresh sorted `dpkg-query` snapshot with `dpkg-before.tsv`. Every non-NVIDIA difference is an incomplete rollback. Do not attempt an automated NVIDIA driver rollback; boot the previously known-good kernel/driver package set and require an operator-reviewed exact-version transaction for those remaining rows.
 8. Revert the Task 3 implementation commit and any conditional reboot handoff commits only after the restored host state and retained evidence have been reviewed.
 
-- [ ] **Step 7: Commit Task 3**
+- [ ] **Step 8: Commit Task 3**
 
 ```bash
-if ! git log -1 --format=%s -- config/environment/apt-packages.txt scripts/install_host.sh tests/environment/test_install_host.sh \
+if ! git log -1 --format=%s -- config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py \
   | grep -Fxq 'feat: install locked ros and gazebo baseline'; then
-  git add config/environment/apt-packages.txt scripts/install_host.sh tests/environment/test_install_host.sh
+  git add config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
   git diff --cached --check
   git commit -m "feat: install locked ros and gazebo baseline"
 fi
 ```
 
-Expected: the installer implementation exists in one focused commit containing only the three implementation paths. A reboot path additionally has two focused `docs/HANDOFF.md` synchronization commits; a no-reboot path has neither.
+Expected: the installer, rollback entry point, fake-host fixture, and behavioral test exist in one focused commit. A reboot path additionally has two focused `docs/HANDOFF.md` synchronization commits; a no-reboot path has neither.
 
 ---
 
@@ -1353,11 +2611,12 @@ Expected: the installer implementation exists in one focused commit containing o
 **Files:**
 - Create: `config/environment/resource-sources.tsv`
 - Create: `scripts/download_phase1_resources.sh`
+- Create: `scripts/verify_phase1_resources.sh`
 - Create: `tests/environment/test_phase1_resources.sh`
 
 **Interfaces:**
-- Consumes: official Node.js 24.18.0 release files, the Ultralytics assets v8.4.0 YOLO11n URL, the dataset revisions fixed by `docs/VERSION_MATRIX.md`, at least 80 GiB free space, and the active evidence directory.
-- Produces: verified Node.js and `yolo11n.pt` payloads below `/var/lib/substation`, plus `$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv`. It also freezes the later dataset download order without downloading raw datasets during the environment phase.
+- Consumes: official Node.js 24.18.0 release files, the Ultralytics assets v8.4.0 YOLO11n URL, the dataset revisions fixed by `docs/VERSION_MATRIX.md`, at least 80 GiB free space, and the active unsealed evidence directory.
+- Produces: atomically installed task-owned Node and YOLO leaves below `/var/lib/substation`, provenance markers plus YOLO `source.json`, `$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv`, and a separate checksum-only `scripts/verify_phase1_resources.sh`. The downloader preflights any locked row or existing target before persistent installation, traps every temporary path, and refuses foreign/incomplete content-addressed directories. The verifier has no network, download, repair, or manifest rewrite path.
 
 - [ ] **Step 1: Write the failing resource-governance test**
 
@@ -1371,6 +2630,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 test -x scripts/download_phase1_resources.sh
+test -x scripts/verify_phase1_resources.sh
 test -s config/environment/resource-sources.tsv
 grep -F $'node-linux-x64\tphase1' config/environment/resource-sources.tsv
 grep -F $'yolo11n-base\tphase1' config/environment/resource-sources.tsv
@@ -1383,6 +2643,109 @@ bash scripts/download_phase1_resources.sh --list | grep -Fx 'node-linux-x64'
 bash scripts/download_phase1_resources.sh --list | grep -Fx 'yolo11n-base'
 rg -F 'resource identity changed' scripts/download_phase1_resources.sh
 ! git ls-files | grep -E '\.(pt|onnx|engine|tar\.xz|zip)$'
+
+fixture_root="/tmp/phase1-resource-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+case "$fixture_root" in /tmp/phase1-resource-fixture-*) ;; *) exit 1 ;; esac
+test ! -e "$fixture_root"
+install -d -m 0700 "$fixture_root/bin" "$fixture_root/root/var/lib/substation" "$fixture_root/evidence/01-environment.staging"
+cleanup() {
+  case "$fixture_root" in /tmp/phase1-resource-fixture-*) find "$fixture_root" -depth -delete ;; *) return 1 ;; esac
+}
+trap cleanup EXIT
+cat > "$fixture_root/bin/curl" <<'SH'
+#!/usr/bin/bash
+output=
+url=
+while test "$#" -gt 0; do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  */node-v24.18.0-linux-x64.tar.xz) printf '%s' 'fixture-node-24.18.0' > "$output" ;;
+  */SHASUMS256.txt)
+    digest="$(printf '%s' 'fixture-node-24.18.0' | sha256sum | awk '{print $1}')"
+    printf '%s  %s\n' "$digest" node-v24.18.0-linux-x64.tar.xz > "$output"
+    ;;
+  */yolo11n.pt) printf '%s' 'fixture-yolo11n-v8.4.0' > "$output" ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 0750 "$fixture_root/bin/curl"
+
+PATH="$fixture_root/bin:$PATH" \
+SUBSTATION_RESOURCE_TEST_ROOT="$fixture_root/root" \
+bash scripts/download_phase1_resources.sh --resource all --evidence-dir "$fixture_root/evidence/01-environment.staging"
+manifest="$fixture_root/evidence/01-environment.staging/resource-downloads.tsv"
+test "$(wc -l < "$manifest")" -eq 3
+yolo_logical="$(awk -F '\t' '$1 == "yolo11n-base" {print $6}' "$manifest")"
+yolo_dir="$fixture_root/root$(dirname "$yolo_logical")"
+test -s "$yolo_dir/source.json"
+test -s "$yolo_dir/.substation-resource.json"
+python3 - "$yolo_dir/source.json" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert data["resource_id"] == "yolo11n-base"
+assert data["revision"] == "v8.4.0"
+assert data["source_url"].endswith("/v8.4.0/yolo11n.pt")
+assert len(data["sha256"]) == 64
+PY
+
+find "$fixture_root/root/var/lib/substation" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$fixture_root/root/var/lib/substation/{}" > "$fixture_root/resources.before"
+cat > "$fixture_root/bin/curl" <<'SH'
+#!/usr/bin/bash
+printf '%s\n' 'curl must not be called by checksum-only verification' >&2
+exit 99
+SH
+PATH="$fixture_root/bin:$PATH" \
+SUBSTATION_RESOURCE_TEST_ROOT="$fixture_root/root" \
+bash scripts/verify_phase1_resources.sh --evidence-dir "$fixture_root/evidence/01-environment.staging"
+find "$fixture_root/root/var/lib/substation" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$fixture_root/root/var/lib/substation/{}" > "$fixture_root/resources.after"
+cmp "$fixture_root/resources.before" "$fixture_root/resources.after"
+
+printf '%s' foreign > "$yolo_dir/foreign-extra.bin"
+set +e
+PATH="$fixture_root/bin:$PATH" SUBSTATION_RESOURCE_TEST_ROOT="$fixture_root/root" bash scripts/verify_phase1_resources.sh --evidence-dir "$fixture_root/evidence/01-environment.staging"
+verify_extra_rc=$?
+set -e
+test "$verify_extra_rc" -ne 0
+grep -Fxq foreign "$yolo_dir/foreign-extra.bin"
+unlink -- "$yolo_dir/foreign-extra.bin"
+
+printf '%s' tampered > "$yolo_dir/yolo11n.pt"
+set +e
+PATH="$fixture_root/bin:$PATH" SUBSTATION_RESOURCE_TEST_ROOT="$fixture_root/root" bash scripts/verify_phase1_resources.sh --evidence-dir "$fixture_root/evidence/01-environment.staging"
+verify_tamper_rc=$?
+set -e
+test "$verify_tamper_rc" -ne 0
+grep -Fxq tampered "$yolo_dir/yolo11n.pt"
+
+foreign_root="$fixture_root/foreign-root"
+foreign_evidence="$fixture_root/foreign-evidence/01-environment.staging"
+install -d -m 0700 "$foreign_root/var/lib/substation/models/base" "$foreign_evidence"
+foreign_sha="$(printf '%s' 'fixture-yolo11n-v8.4.0' | sha256sum | awk '{print $1}')"
+install -d -m 0700 "$foreign_root/var/lib/substation/models/base/$foreign_sha"
+printf '%s' foreign > "$foreign_root/var/lib/substation/models/base/$foreign_sha/unowned.bin"
+cat > "$fixture_root/bin/curl" <<'SH'
+#!/usr/bin/bash
+output=
+while test "$#" -gt 0; do if test "$1" = -o; then output="$2"; shift 2; else shift; fi; done
+printf '%s' 'fixture-yolo11n-v8.4.0' > "$output"
+SH
+set +e
+PATH="$fixture_root/bin:$PATH" SUBSTATION_RESOURCE_TEST_ROOT="$foreign_root" bash scripts/download_phase1_resources.sh --resource yolo11n-base --evidence-dir "$foreign_evidence"
+foreign_rc=$?
+set -e
+test "$foreign_rc" -ne 0
+test ! -e "$foreign_root/var/lib/substation/models/base/$foreign_sha/.substation-resource.json"
+test "$(find "$foreign_root/var/lib/substation/models/base" -maxdepth 1 -type d -name '.*.staging-*' | wc -l)" -eq 0
+
+trap - EXIT
+cleanup
+printf '%s\n' 'phase1-resource-test: PASS'
 ```
 
 Run:
@@ -1429,13 +2792,21 @@ if test "$#" -eq 1 && test "$1" = --list; then
   exit 0
 fi
 if test "$#" -ne 4 || test "$1" != --resource || test "$3" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/download_phase1_resources.sh --resource node-linux-x64|yolo11n-base|all --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/download_phase1_resources.sh --resource node-linux-x64|yolo11n-base|all --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
 selection="$2"
 evidence_dir="$4"
-environment_require_evidence_dir "$evidence_dir"
+test_root="${SUBSTATION_RESOURCE_TEST_ROOT:-}"
+if test -n "$test_root"; then
+  case "$test_root" in /tmp/phase1-resource-fixture-*) ;; *) printf 'invalid-resource-test-root: %s\n' "$test_root" >&2; exit 2 ;; esac
+  case "$evidence_dir" in /tmp/phase1-resource-fixture-*/01-environment.staging) ;; *) printf 'invalid-resource-test-evidence: %s\n' "$evidence_dir" >&2; exit 2 ;; esac
+  test -d "$test_root"
+  test -d "$evidence_dir"
+else
+  environment_require_evidence_dir "$evidence_dir"
+fi
 case "$selection" in
   node-linux-x64|yolo11n-base|all) ;;
   *) printf 'unknown-resource: %s\n' "$selection" >&2; exit 2 ;;
@@ -1443,66 +2814,213 @@ esac
 
 operator_user="$(id -un)"
 operator_group="$(id -gn)"
-sudo install -d -m 0750 -o "$operator_user" -g "$operator_group" \
-  /var/lib/substation/downloads \
-  /var/lib/substation/downloads/node \
-  /var/lib/substation/downloads/node/24.18.0 \
-  /var/lib/substation/models \
-  /var/lib/substation/models/base
+resource_path() {
+  if test -n "$test_root"; then printf '%s%s\n' "$test_root" "$1"; else printf '%s\n' "$1"; fi
+}
+run_privileged() {
+  if test -n "$test_root"; then "$@"; else sudo "$@"; fi
+}
+
+storage_manifest="$evidence_dir/storage-paths-before.tsv"
+if test ! -e "$storage_manifest"; then
+  printf 'path\texisted_before\tmode_before\towner_before\tgroup_before\tdevice\tinode\texpected_mode\texpected_owner\texpected_group\tcreated_by_task\n' > "$storage_manifest"
+fi
+prepare_directory() {
+  local logical="$1"
+  local mode="$2"
+  local live parent actual_mode actual_owner actual_group
+  mode="${mode#0}"
+  live="$(resource_path "$logical")"
+  test ! -L "$live"
+  if test -e "$live"; then
+    test -d "$live"
+    actual_mode="$(stat -c '%a' "$live")"
+    actual_owner="$(stat -c '%U' "$live")"
+    actual_group="$(stat -c '%G' "$live")"
+    if test -z "$test_root"; then
+      test "$actual_mode" = "$mode"
+      test "$actual_owner" = "$operator_user"
+      test "$actual_group" = "$operator_group"
+    fi
+    if ! awk -F '\t' -v path="$logical" 'NR > 1 && $1 == path {found=1} END {exit !found}' "$storage_manifest"; then
+      printf '%s\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\n' \
+        "$logical" "$actual_mode" "$actual_owner" "$actual_group" "$(stat -c '%d' "$live")" "$(stat -c '%i' "$live")" \
+        "$mode" "$operator_user" "$operator_group" >> "$storage_manifest"
+    fi
+    return
+  fi
+  parent="$(dirname -- "$live")"
+  test -d "$parent"
+  test ! -L "$parent"
+  printf '%s\t0\t-\t-\t-\t-\t-\t%s\t%s\t%s\t1\n' "$logical" "$mode" "$operator_user" "$operator_group" >> "$storage_manifest"
+  run_privileged install -d -m "$mode" -o "$operator_user" -g "$operator_group" "$live"
+}
+
+prepare_directory /var/lib/substation/downloads 0750
+prepare_directory /var/lib/substation/downloads/node 0750
+prepare_directory /var/lib/substation/models 0750
+prepare_directory /var/lib/substation/models/base 0750
+
+if test -s "$evidence_dir/resource-downloads.tsv"; then
+  SUBSTATION_RESOURCE_TEST_ROOT="$test_root" bash scripts/verify_phase1_resources.sh --evidence-dir "$evidence_dir"
+fi
 
 manifest_work="$(mktemp --tmpdir=/tmp)"
 printf 'resource_id\trevision\tsha256\tsize_bytes\tsource_url\tserver_path\n' > "$manifest_work"
 
+archive_work=
+sums_work=
+weight_work=
+stage_root=
 cleanup() {
-  test ! -e "$manifest_work" || unlink -- "$manifest_work"
+  local path
+  for path in "$manifest_work" "$archive_work" "$sums_work" "$weight_work"; do
+    test -z "$path" || test ! -e "$path" || unlink -- "$path"
+  done
+  if test -n "$stage_root" && test -e "$stage_root"; then
+    case "$stage_root" in
+      /var/lib/substation/downloads/node/.*.staging-*|/var/lib/substation/models/base/.*.staging-*|/tmp/phase1-resource-fixture-*/root/var/lib/substation/downloads/node/.*.staging-*|/tmp/phase1-resource-fixture-*/root/var/lib/substation/models/base/.*.staging-*|/tmp/phase1-resource-fixture-*/foreign-root/var/lib/substation/models/base/.*.staging-*) find "$stage_root" -depth -delete ;;
+      *) printf 'refusing-resource-stage-cleanup: %s\n' "$stage_root" >&2; return 1 ;;
+    esac
+  fi
 }
 trap cleanup EXIT
 
 download_node() {
-  local node_dir=/var/lib/substation/downloads/node/24.18.0
+  local node_dir_logical=/var/lib/substation/downloads/node/24.18.0
+  local node_parent archive marker source_url prior
+  local node_dir
   local archive=node-v24.18.0-linux-x64.tar.xz
-  local archive_path="$node_dir/$archive"
-  local sums_path="$node_dir/SHASUMS256.txt"
-  local archive_work sums_work expected actual size
-  if test ! -f "$archive_path"; then
-    archive_work="$(mktemp --tmpdir="$node_dir")"
-    sums_work="$(mktemp --tmpdir="$node_dir")"
-    curl -fL --retry 3 --retry-delay 2 "https://nodejs.org/dist/v24.18.0/$archive" -o "$archive_work"
+  local archive_path sums_path
+  local expected actual size operation_id
+  source_url="https://nodejs.org/dist/v24.18.0/$archive"
+  node_dir="$(resource_path "$node_dir_logical")"
+  node_parent="$(dirname -- "$node_dir")"
+  archive_path="$node_dir/$archive"
+  sums_path="$node_dir/SHASUMS256.txt"
+  marker="$node_dir/.substation-resource.json"
+  prior="$(awk -F '\t' '$1 == "node-linux-x64" {print; exit}' "$evidence_dir/resource-downloads.tsv" 2>/dev/null || true)"
+  if test -n "$prior"; then
+    IFS=$'\t' read -r _ prior_revision prior_sha prior_size prior_url prior_path <<<"$prior"
+    test "$prior_revision" = 24.18.0
+    test "$prior_url" = "$source_url"
+    test "$prior_path" = "$node_dir_logical/$archive"
+    printf '%s\n' "$prior" >> "$manifest_work"
+    return
+  fi
+  if test -e "$node_dir"; then
+    printf 'resource target exists without locked manifest: %s\n' "$node_dir_logical" >&2
+    return 1
+  fi
+  operation_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  stage_root="$node_parent/.24.18.0.staging-$operation_id"
+  test ! -e "$stage_root"
+  run_privileged install -d -m 0750 -o "$operator_user" -g "$operator_group" "$stage_root"
+  archive_work="$(mktemp --tmpdir=/tmp)"
+  sums_work="$(mktemp --tmpdir=/tmp)"
+  curl -fL --retry 3 --retry-delay 2 "$source_url" -o "$archive_work"
     curl -fL --retry 3 --retry-delay 2 https://nodejs.org/dist/v24.18.0/SHASUMS256.txt -o "$sums_work"
     expected="$(awk -v file="$archive" '$2 == file {print $1}' "$sums_work")"
     test "$expected" != ""
     actual="$(environment_sha256 "$archive_work")"
     test "$actual" = "$expected"
-    install -m 0640 "$archive_work" "$archive_path"
-    install -m 0640 "$sums_work" "$sums_path"
-    unlink -- "$archive_work" "$sums_work"
-  fi
+  install -m 0640 "$archive_work" "$stage_root/$archive"
+  install -m 0640 "$sums_work" "$stage_root/SHASUMS256.txt"
+  python3 - "$stage_root/.substation-resource.json" "$actual" "$(stat -c '%s' "$archive_work")" "$source_url" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, digest, size, url = sys.argv[1:]
+Path(path).write_text(json.dumps({"schema_version": 1, "owner": "phase1-resource", "resource_id": "node-linux-x64", "revision": "24.18.0", "sha256": digest, "size_bytes": int(size), "source_url": url}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    unlink -- "$archive_work"
+    unlink -- "$sums_work"
+  archive_work=
+  sums_work=
+  test ! -e "$node_dir"
+  run_privileged mv -- "$stage_root" "$node_dir"
+  stage_root=
   expected="$(awk -v file="$archive" '$2 == file {print $1}' "$sums_path")"
   actual="$(environment_sha256 "$archive_path")"
   test "$actual" = "$expected"
   size="$(stat -c '%s' "$archive_path")"
   printf 'node-linux-x64\t24.18.0\t%s\t%s\thttps://nodejs.org/dist/v24.18.0/%s\t%s\n' \
-    "$actual" "$size" "$archive" "$archive_path" >> "$manifest_work"
+    "$actual" "$size" "$archive" "$node_dir_logical/$archive" >> "$manifest_work"
 }
 
 download_yolo() {
   local source_url=https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt
-  local weight_work weight_sha weight_dir weight_path size
-  weight_work="$(mktemp --tmpdir=/var/lib/substation/models/base)"
+  local prior weight_sha weight_dir_logical weight_dir weight_path size operation_id marker
+  prior="$(awk -F '\t' '$1 == "yolo11n-base" {print; exit}' "$evidence_dir/resource-downloads.tsv" 2>/dev/null || true)"
+  if test -n "$prior"; then
+    IFS=$'\t' read -r _ prior_revision prior_sha prior_size prior_url prior_path <<<"$prior"
+    test "$prior_revision" = v8.4.0
+    test "$prior_url" = "$source_url"
+    test "$prior_path" = "/var/lib/substation/models/base/$prior_sha/yolo11n.pt"
+    printf '%s\n' "$prior" >> "$manifest_work"
+    return
+  fi
+  weight_work="$(mktemp --tmpdir=/tmp)"
   curl -fL --retry 3 --retry-delay 2 "$source_url" -o "$weight_work"
   weight_sha="$(environment_sha256 "$weight_work")"
-  weight_dir="/var/lib/substation/models/base/$weight_sha"
+  weight_dir_logical="/var/lib/substation/models/base/$weight_sha"
+  weight_dir="$(resource_path "$weight_dir_logical")"
   weight_path="$weight_dir/yolo11n.pt"
-  sudo install -d -m 0750 -o "$operator_user" -g "$operator_group" "$weight_dir"
-  if test -f "$weight_path"; then
+  marker="$weight_dir/.substation-resource.json"
+  if test -e "$weight_dir"; then
+    test -d "$weight_dir"
+    test -s "$marker"
+    test -s "$weight_dir/source.json"
+    test -f "$weight_path"
     test "$(environment_sha256 "$weight_path")" = "$weight_sha"
+    python3 - "$marker" "$weight_dir/source.json" "$weight_sha" "$(stat -c '%s' "$weight_path")" "$source_url" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+marker_path, source_path, digest, size, url = sys.argv[1:]
+leaf = Path(marker_path).parent
+children = list(leaf.iterdir())
+assert {path.name for path in children} == {
+    ".substation-resource.json", "source.json", "yolo11n.pt"
+}
+assert all(path.is_file() and not path.is_symlink() for path in children)
+for path in (marker_path, source_path):
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["resource_id"] == "yolo11n-base"
+    assert data["revision"] == "v8.4.0"
+    assert data["sha256"] == digest
+    assert data["size_bytes"] == int(size)
+    assert data["source_url"] == url
+assert json.loads(Path(marker_path).read_text(encoding="utf-8"))["owner"] == "phase1-resource"
+PY
   else
-    install -m 0640 "$weight_work" "$weight_path"
+    operation_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    stage_root="$(resource_path /var/lib/substation/models/base)/.$weight_sha.staging-$operation_id"
+    test ! -e "$stage_root"
+    run_privileged install -d -m 0750 -o "$operator_user" -g "$operator_group" "$stage_root"
+    install -m 0640 "$weight_work" "$stage_root/yolo11n.pt"
+    size="$(stat -c '%s' "$weight_work")"
+    python3 - "$stage_root/.substation-resource.json" "$stage_root/source.json" "$weight_sha" "$size" "$source_url" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+marker_path, source_path, digest, size, url = sys.argv[1:]
+common = {"schema_version": 1, "resource_id": "yolo11n-base", "revision": "v8.4.0", "sha256": digest, "size_bytes": int(size), "source_url": url}
+Path(marker_path).write_text(json.dumps(common | {"owner": "phase1-resource"}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+Path(source_path).write_text(json.dumps(common, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    test ! -e "$weight_dir"
+    run_privileged mv -- "$stage_root" "$weight_dir"
+    stage_root=
   fi
   unlink -- "$weight_work"
+  weight_work=
   size="$(stat -c '%s' "$weight_path")"
   printf 'yolo11n-base\tv8.4.0\t%s\t%s\t%s\t%s\n' \
-    "$weight_sha" "$size" "$source_url" "$weight_path" >> "$manifest_work"
+    "$weight_sha" "$size" "$source_url" "$weight_dir_logical/yolo11n.pt" >> "$manifest_work"
 }
 
 if test "$selection" = node-linux-x64 || test "$selection" = all; then
@@ -1560,10 +3078,100 @@ cleanup
 printf 'phase1-resources: PASS: %s\n' "$selection"
 ```
 
+Create `scripts/verify_phase1_resources.sh` with this exact content:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+if test "$#" -ne 2 || test "$1" != --evidence-dir; then
+  printf '%s\n' 'usage: bash scripts/verify_phase1_resources.sh --evidence-dir DIR' >&2
+  exit 2
+fi
+evidence_dir="$2"
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+source scripts/lib/environment_common.sh
+test_root="${SUBSTATION_RESOURCE_TEST_ROOT:-}"
+if test -n "$test_root"; then
+  case "$test_root" in /tmp/phase1-resource-fixture-*) ;; *) exit 2 ;; esac
+  case "$evidence_dir" in /tmp/phase1-resource-fixture-*/01-environment.staging) ;; *) exit 2 ;; esac
+else
+  environment_require_evidence_dir "$evidence_dir"
+fi
+manifest="$evidence_dir/resource-downloads.tsv"
+test -s "$manifest"
+
+python3 - "$manifest" config/environment/resource-sources.tsv "${test_root:-/}" <<'PY'
+import csv
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+manifest_path, sources_path, root = map(Path, sys.argv[1:])
+fields = ["resource_id", "revision", "sha256", "size_bytes", "source_url", "server_path"]
+with manifest_path.open(encoding="utf-8", newline="") as handle:
+    reader = csv.DictReader(handle, delimiter="\t")
+    assert reader.fieldnames == fields
+    rows = list(reader)
+identifiers = [row["resource_id"] for row in rows]
+assert identifiers == sorted(set(identifiers))
+assert set(identifiers) <= {"node-linux-x64", "yolo11n-base"}
+assert identifiers
+
+with sources_path.open(encoding="utf-8", newline="") as handle:
+    source_rows = {row["resource_id"]: row for row in csv.DictReader(handle, delimiter="\t")}
+
+for row in rows:
+    logical = Path(row["server_path"])
+    assert logical.is_absolute()
+    live = logical if root == Path("/") else root / logical.relative_to("/")
+    assert live.is_file()
+    expected_names = (
+        {".substation-resource.json", "SHASUMS256.txt", live.name}
+        if row["resource_id"] == "node-linux-x64"
+        else {".substation-resource.json", "source.json", "yolo11n.pt"}
+    )
+    children = list(live.parent.iterdir())
+    assert {path.name for path in children} == expected_names
+    assert all(path.is_file() and not path.is_symlink() for path in children)
+    payload = live.read_bytes()
+    assert len(payload) == int(row["size_bytes"])
+    assert hashlib.sha256(payload).hexdigest() == row["sha256"]
+    marker_path = live.parent / ".substation-resource.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert marker == {
+        "owner": "phase1-resource",
+        "resource_id": row["resource_id"],
+        "revision": row["revision"],
+        "schema_version": 1,
+        "sha256": row["sha256"],
+        "size_bytes": int(row["size_bytes"]),
+        "source_url": row["source_url"],
+    }
+    source = source_rows[row["resource_id"]]
+    expected_revision = "24.18.0" if row["resource_id"] == "node-linux-x64" else "v8.4.0"
+    assert row["revision"] == expected_revision
+    assert row["source_url"] == source["source_url"]
+    if row["resource_id"] == "node-linux-x64":
+        assert logical == Path("/var/lib/substation/downloads/node/24.18.0/node-v24.18.0-linux-x64.tar.xz")
+        sums = live.parent / "SHASUMS256.txt"
+        expected = [line.split()[0] for line in sums.read_text(encoding="utf-8").splitlines() if line.split()[1] == live.name]
+        assert expected == [row["sha256"]]
+    else:
+        assert logical == Path(f"/var/lib/substation/models/base/{row['sha256']}/yolo11n.pt")
+        source_metadata = json.loads((live.parent / "source.json").read_text(encoding="utf-8"))
+        assert source_metadata == {key: value for key, value in marker.items() if key != "owner"}
+PY
+
+printf '%s\n' 'verify-phase1-resources: PASS'
+```
+
 - [ ] **Step 4: Run the static test, then begin the approved downloads**
 
 ```bash
-chmod +x scripts/download_phase1_resources.sh tests/environment/test_phase1_resources.sh
+chmod +x scripts/download_phase1_resources.sh scripts/verify_phase1_resources.sh tests/environment/test_phase1_resources.sh
 bash tests/environment/test_phase1_resources.sh
 source .phase1-run.env
 bash scripts/download_phase1_resources.sh --resource all --evidence-dir "$PHASE1_EVIDENCE_ROOT" \
@@ -1574,9 +3182,10 @@ install -m 0600 "$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv" "$manifest_snapsh
 bash scripts/download_phase1_resources.sh --resource all --evidence-dir "$PHASE1_EVIDENCE_ROOT"
 cmp "$manifest_snapshot" "$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv"
 unlink -- "$manifest_snapshot"
+bash scripts/verify_phase1_resources.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"
 ```
 
-Expected: both calls print `phase1-resources: PASS: all`; exactly two data rows exist in `resource-downloads.tsv`; both target files exist outside Git and match their recorded SHA-256 and size; the second identical call leaves the manifest byte-for-byte unchanged. Any existing row whose revision, SHA-256, size, URL, or server path differs from the newly resolved row fails with `resource identity changed` before replacing the manifest.
+Expected: the behavioral test prints `phase1-resource-test: PASS`; both live calls print `phase1-resources: PASS: all`; the checksum-only call prints `verify-phase1-resources: PASS`. Exactly two data rows exist; the Node leaf has its archive, official sums, and ownership marker; the YOLO content-addressed leaf has `yolo11n.pt`, `.substation-resource.json`, and `source.json`. The second identical download call performs a preflight checksum verification and leaves the manifest byte-for-byte unchanged. Any foreign target, missing marker, changed identity, stale source metadata, checksum mismatch, or leaked staging directory is a hard failure and is never repaired by the verifier.
 
 Run the exact post-download validation:
 
@@ -1610,7 +3219,7 @@ Safe rollback: keep the manifest and logs. A downloaded payload may be quarantin
 - [ ] **Step 5: Commit Task 4**
 
 ```bash
-git add config/environment/resource-sources.tsv scripts/download_phase1_resources.sh tests/environment/test_phase1_resources.sh
+git add config/environment/resource-sources.tsv scripts/download_phase1_resources.sh scripts/verify_phase1_resources.sh tests/environment/test_phase1_resources.sh
 git diff --cached --check
 git commit -m "feat: lock phase one resource acquisition"
 ```
@@ -1666,7 +3275,7 @@ Create the empty file `ros2_ws/src/.gitkeep` and create `scripts/setup_ros_works
 set -euo pipefail
 
 if test "$#" -ne 2 || test "$1" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/setup_ros_workspace.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/setup_ros_workspace.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
@@ -1742,6 +3351,7 @@ Expected: generated `build`, `install`, and `log` directories remain ignored and
 - Create: `requirements.in`
 - Create: `requirements.lock`
 - Create: `scripts/compile_requirements.sh`
+- Create: `scripts/lib/venv_provenance.py`
 - Create: `scripts/setup_python_env.sh`
 - Create: `tests/environment/test_ai_environment.sh`
 
@@ -1781,6 +3391,19 @@ assert torch.cuda.is_available()
 assert torch.version.cuda == "12.6"
 print("ai-environment: PASS")
 PY
+python3 scripts/lib/venv_provenance.py verify --kind ai --venv .venv --lock requirements.lock
+
+fixture_root="/tmp/phase1-venv-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+case "$fixture_root" in /tmp/phase1-venv-fixture-*) ;; *) exit 1 ;; esac
+install -d -m 0700 "$fixture_root/foreign/bin"
+printf '%s\n' 'include-system-site-packages = true' > "$fixture_root/foreign/pyvenv.cfg"
+ln -s "$(command -v python3)" "$fixture_root/foreign/bin/python"
+set +e
+python3 scripts/lib/venv_provenance.py verify --kind ai --venv "$fixture_root/foreign" --lock requirements.lock
+foreign_rc=$?
+set -e
+test "$foreign_rc" -ne 0
+case "$fixture_root" in /tmp/phase1-venv-fixture-*) find "$fixture_root" -depth -delete ;; *) exit 1 ;; esac
 ```
 
 Run:
@@ -1790,7 +3413,7 @@ chmod +x tests/environment/test_ai_environment.sh
 bash tests/environment/test_ai_environment.sh
 ```
 
-Expected: exit nonzero because the lock, setup script, and `.venv` do not exist.
+Expected: exit nonzero because the lock, provenance helper, setup script, and `.venv` do not exist. After implementation it also proves that a Python-looking directory without the task-owned marker is rejected without mutation.
 
 - [ ] **Step 2: Add exact direct AI requirements**
 
@@ -1863,7 +3486,81 @@ bash scripts/compile_requirements.sh --profile ai
 
 Expected: final line `requirements-lock: PASS: requirements.lock`; every resolved distribution entry has one or more SHA-256 hashes; direct versions remain exact.
 
-- [ ] **Step 4: Implement idempotent AI environment setup**
+- [ ] **Step 4: Implement task-owned virtual-environment provenance**
+
+Create `scripts/lib/venv_provenance.py` with this exact content:
+
+```python
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def expected(kind: str, venv: Path, lock: Path) -> dict:
+    cfg = venv / "pyvenv.cfg"
+    python = venv / "bin/python"
+    if not cfg.is_file() or not python.is_file():
+        raise SystemExit(f"not a complete virtual environment: {venv}")
+    values = {}
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    if values.get("include-system-site-packages") != "true":
+        raise SystemExit(f"system-site-packages is not enabled: {venv}")
+    version = subprocess.run(
+        [str(python), "-c", "import platform; print(platform.python_version())"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    if not version.startswith("3.12."):
+        raise SystemExit(f"unexpected Python version: {version}")
+    return {
+        "schema_version": 1,
+        "owner": "phase1-environment",
+        "kind": kind,
+        "python_version": version,
+        "system_site_packages": True,
+        "lock_path": lock.name,
+        "lock_sha256": sha256(lock),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action", choices=("write", "verify"))
+    parser.add_argument("--kind", choices=("ai", "gateway"), required=True)
+    parser.add_argument("--venv", type=Path, required=True)
+    parser.add_argument("--lock", type=Path, required=True)
+    args = parser.parse_args()
+    marker = args.venv / ".substation-environment.json"
+    document = expected(args.kind, args.venv, args.lock)
+    if args.action == "write":
+        if marker.exists():
+            raise SystemExit(f"refusing to overwrite provenance marker: {marker}")
+        marker.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    else:
+        if not marker.is_file():
+            raise SystemExit(f"foreign virtual environment without provenance: {args.venv}")
+        actual = json.loads(marker.read_text(encoding="utf-8"))
+        if actual != document:
+            raise SystemExit(f"virtual environment provenance mismatch: {args.venv}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 5: Implement create-once AI environment setup**
 
 Create `scripts/setup_python_env.sh` with this exact content:
 
@@ -1872,7 +3569,7 @@ Create `scripts/setup_python_env.sh` with this exact content:
 set -euo pipefail
 
 if test "$#" -ne 2 || test "$1" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/setup_python_env.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/setup_python_env.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
@@ -1886,15 +3583,41 @@ test "$ROS_DISTRO" = jazzy
 python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
 test -s requirements.lock
 
-if test -e .venv && test ! -x .venv/bin/python; then
-  printf '%s\n' '.venv exists but is not a Python environment; move it to a reviewed quarantine path' >&2
-  exit 1
+stage=".venv.staging-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+cleanup() {
+  if test -e "$stage"; then
+    case "$stage" in .venv.staging-*) find "$stage" -depth -delete ;; *) return 1 ;; esac
+  fi
+}
+trap cleanup EXIT
+if test -e .venv; then
+  test -d .venv
+  test ! -L .venv
+  python3 scripts/lib/venv_provenance.py verify --kind ai --venv .venv --lock requirements.lock
+else
+  test ! -e "$stage"
+  python3 -m venv --system-site-packages "$stage"
+  grep -Fxq 'include-system-site-packages = true' "$stage/pyvenv.cfg"
+  "$stage/bin/python" -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+  "$stage/bin/python" - <<'PY'
+import cv2
+import numpy
+import rclpy
+import torch
+import torchvision
+import ultralytics
+
+assert torch.__version__.split("+")[0] == "2.12.1"
+assert torchvision.__version__.split("+")[0] == "0.27.1"
+assert ultralytics.__version__ == "8.4.104"
+assert numpy.__version__ == "1.26.4"
+assert cv2.__version__ == "4.11.0"
+assert torch.cuda.is_available()
+assert torch.version.cuda == "12.6"
+PY
+  python3 scripts/lib/venv_provenance.py write --kind ai --venv "$stage" --lock requirements.lock
+  mv -- "$stage" .venv
 fi
-if test ! -d .venv; then
-  python3 -m venv --system-site-packages .venv
-fi
-grep -Fxq 'include-system-site-packages = true' .venv/pyvenv.cfg
-.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
 
 .venv/bin/python - <<'PY'
 import cv2
@@ -1915,10 +3638,13 @@ print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))
 PY
 
 .venv/bin/python -m pip freeze --all | LC_ALL=C sort > "$evidence_dir/ai-pip-freeze.txt"
+python3 scripts/lib/venv_provenance.py verify --kind ai --venv .venv --lock requirements.lock
+trap - EXIT
+cleanup
 printf '%s\n' 'setup-python-env: PASS'
 ```
 
-- [ ] **Step 5: Validate the lock, create `.venv`, and run the test**
+- [ ] **Step 6: Validate the lock, create `.venv`, and run the test**
 
 ```bash
 python3 - <<'PY'
@@ -1944,10 +3670,10 @@ Evidence: `setup-python-env.log` and `ai-pip-freeze.txt`.
 
 Safe rollback: keep evidence and lock files; move exactly `.venv` to `.venv.quarantine-$(date -u +%Y%m%dT%H%M%SZ)`; never uninstall system Python or ROS packages and never run a global pip command. Revert only Task 6's tracked commit.
 
-- [ ] **Step 6: Commit Task 6**
+- [ ] **Step 7: Commit Task 6**
 
 ```bash
-git add requirements.in requirements.lock scripts/compile_requirements.sh scripts/setup_python_env.sh tests/environment/test_ai_environment.sh
+git add requirements.in requirements.lock scripts/compile_requirements.sh scripts/lib/venv_provenance.py scripts/setup_python_env.sh tests/environment/test_ai_environment.sh
 git diff --cached --check
 git commit -m "feat: add locked cuda ai environment"
 ```
@@ -1966,7 +3692,7 @@ Expected: `.venv` is ignored; the generated lock is reviewed and committed.
 
 **Interfaces:**
 - Consumes: Python 3.12, ROS Jazzy `rclpy`, PyPI, `scripts/compile_requirements.sh`, and the hashed Gateway lock.
-- Produces: `.venv-web`, exact Gateway import/version proof, and `$PHASE1_EVIDENCE_ROOT/gateway-pip-freeze.txt`.
+- Produces: a create-once `.venv-web` with task-owned provenance bound to the exact Gateway lock, exact import/version proof, and `$PHASE1_EVIDENCE_ROOT/gateway-pip-freeze.txt`. A foreign or mismatched existing environment fails before pip mutation.
 
 - [ ] **Step 1: Write the failing Gateway environment test**
 
@@ -1996,6 +3722,7 @@ assert pydantic.__version__ == "2.13.4"
 assert websockets.__version__ == "16.1.1"
 print("gateway-environment: PASS")
 PY
+python3 scripts/lib/venv_provenance.py verify --kind gateway --venv .venv-web --lock requirements-web.lock
 ```
 
 Run:
@@ -2035,7 +3762,7 @@ Create `scripts/setup_gateway_env.sh` with this exact content:
 set -euo pipefail
 
 if test "$#" -ne 2 || test "$1" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/setup_gateway_env.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/setup_gateway_env.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
@@ -2049,15 +3776,37 @@ test "$ROS_DISTRO" = jazzy
 python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
 test -s requirements-web.lock
 
-if test -e .venv-web && test ! -x .venv-web/bin/python; then
-  printf '%s\n' '.venv-web exists but is not a Python environment; move it to a reviewed quarantine path' >&2
-  exit 1
+stage=".venv-web.staging-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+cleanup() {
+  if test -e "$stage"; then
+    case "$stage" in .venv-web.staging-*) find "$stage" -depth -delete ;; *) return 1 ;; esac
+  fi
+}
+trap cleanup EXIT
+if test -e .venv-web; then
+  test -d .venv-web
+  test ! -L .venv-web
+  python3 scripts/lib/venv_provenance.py verify --kind gateway --venv .venv-web --lock requirements-web.lock
+else
+  test ! -e "$stage"
+  python3 -m venv --system-site-packages "$stage"
+  grep -Fxq 'include-system-site-packages = true' "$stage/pyvenv.cfg"
+  "$stage/bin/python" -m pip install --disable-pip-version-check --require-hashes -r requirements-web.lock
+  "$stage/bin/python" - <<'PY'
+import fastapi
+import pydantic
+import rclpy
+import uvicorn
+import websockets
+
+assert fastapi.__version__ == "0.139.2"
+assert uvicorn.__version__ == "0.51.0"
+assert pydantic.__version__ == "2.13.4"
+assert websockets.__version__ == "16.1.1"
+PY
+  python3 scripts/lib/venv_provenance.py write --kind gateway --venv "$stage" --lock requirements-web.lock
+  mv -- "$stage" .venv-web
 fi
-if test ! -d .venv-web; then
-  python3 -m venv --system-site-packages .venv-web
-fi
-grep -Fxq 'include-system-site-packages = true' .venv-web/pyvenv.cfg
-.venv-web/bin/python -m pip install --disable-pip-version-check --require-hashes -r requirements-web.lock
 
 .venv-web/bin/python - <<'PY'
 import fastapi
@@ -2074,6 +3823,9 @@ print(fastapi.__version__, uvicorn.__version__, pydantic.__version__, websockets
 PY
 
 .venv-web/bin/python -m pip freeze --all | LC_ALL=C sort > "$evidence_dir/gateway-pip-freeze.txt"
+python3 scripts/lib/venv_provenance.py verify --kind gateway --venv .venv-web --lock requirements-web.lock
+trap - EXIT
+cleanup
 printf '%s\n' 'setup-gateway-env: PASS'
 ```
 
@@ -2157,7 +3909,18 @@ npm --prefix web/frontend ls tailwindcss --depth=0 | grep -F 'tailwindcss@4.3.3'
 npm --prefix web/frontend ls three --depth=0 | grep -F 'three@0.185.1'
 npm --prefix web/frontend ls @react-three/fiber --depth=0 | grep -F '@react-three/fiber@9.6.1'
 npm --prefix web/frontend ls echarts --depth=0 | grep -F 'echarts@6.1.0'
-npm --prefix web/frontend exec playwright -- --version | grep -Fx 'Version 1.61.1'
+web/frontend/node_modules/.bin/playwright --version | grep -Fx 'Version 1.61.1'
+test -L /opt/substation/toolchains/node-current
+test "$(readlink -f /opt/substation/toolchains/node-current)" = /opt/substation/toolchains/node-v24.18.0
+python3 - /opt/substation/toolchains/node-v24.18.0/.substation-toolchain.json <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert data["owner"] == "phase1-environment"
+assert data["toolchain"] == "node"
+assert data["version"] == "24.18.0"
+assert len(data["archive_sha256"]) == 64
+PY
 ```
 
 Run:
@@ -2216,7 +3979,14 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     work = args.output.with_suffix(args.output.suffix + ".new")
     work.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    work.replace(args.output)
+    if args.output.exists():
+        actual = json.loads(args.output.read_text(encoding="utf-8"))
+        if actual != document:
+            work.unlink()
+            raise SystemExit(f"refusing to overwrite changed frontend manifest: {args.output}")
+        work.unlink()
+    else:
+        work.replace(args.output)
     return 0
 
 
@@ -2303,7 +4073,7 @@ Create `scripts/setup_web_env.sh` with this exact content:
 set -euo pipefail
 
 if test "$#" -ne 2 || test "$1" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/setup_web_env.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/setup_web_env.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
@@ -2322,14 +4092,48 @@ test "$(environment_sha256 "$node_archive")" = "$node_sha"
 toolchain_root=/opt/substation/toolchains
 node_root="$toolchain_root/node-v24.18.0"
 stage_root="$toolchain_root/.node-v24.18.0-${PHASE1_RUN_ID:?}"
-operator_user="$(id -un)"
-operator_group="$(id -gn)"
-sudo install -d -m 0755 "$toolchain_root"
-if test ! -d "$node_root"; then
+marker="$node_root/.substation-toolchain.json"
+node_current="$toolchain_root/node-current"
+node_current_before="$evidence_dir/node-current-before.tsv"
+link_work=
+cleanup() {
+  if test -n "$link_work" && test -e "$link_work"; then
+    case "$link_work" in /opt/substation/toolchains/.node-current-*) sudo unlink -- "$link_work" ;; *) return 1 ;; esac
+  fi
+  if test -e "$stage_root"; then
+    case "$stage_root" in /opt/substation/toolchains/.node-v24.18.0-*) sudo find "$stage_root" -depth -delete ;; *) return 1 ;; esac
+  fi
+}
+trap cleanup EXIT
+test -d "$toolchain_root"
+test ! -L "$toolchain_root"
+test "$(stat -c '%a:%U:%G' "$toolchain_root")" = 755:root:root
+if test -e "$node_current" && test ! -L "$node_current"; then
+  printf 'refusing-foreign-node-current: %s\n' "$node_current" >&2
+  exit 1
+fi
+if test -e "$node_root"; then
+  test -d "$node_root"
+  test ! -L "$node_root"
+  test -s "$marker"
+  python3 - "$marker" "$node_sha" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert data == {"archive_sha256": sys.argv[2], "owner": "phase1-environment", "schema_version": 1, "toolchain": "node", "version": "24.18.0"}
+PY
+else
   test ! -e "$stage_root"
   sudo install -d -m 0755 "$stage_root"
-  sudo tar -xJf "$node_archive" -C "$stage_root" --strip-components=1
-  sudo chown -R root:root "$stage_root"
+  sudo tar -xJf "$node_archive" -C "$stage_root" --strip-components=1 --no-same-owner --owner=root --group=root
+  marker_work="$(mktemp --tmpdir=/tmp)"
+  python3 - "$marker_work" "$node_sha" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({"archive_sha256": sys.argv[2], "owner": "phase1-environment", "schema_version": 1, "toolchain": "node", "version": "24.18.0"}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  sudo install -m 0644 "$marker_work" "$stage_root/.substation-toolchain.json"
+  unlink -- "$marker_work"
   sudo mv -- "$stage_root" "$node_root"
 fi
 "$node_root/bin/node" --version | grep -Fx v24.18.0
@@ -2348,17 +4152,38 @@ for command_name in node npm npx corepack; do
   fi
 done
 
-link_work="$toolchain_root/.node-current-${PHASE1_RUN_ID:?}"
-test ! -e "$link_work"
-sudo ln -s "$node_root" "$link_work"
-sudo mv -Tf -- "$link_work" "$toolchain_root/node-current"
+if test ! -e "$node_current_before"; then
+  if test -L "$node_current"; then
+    printf 'path\texisted_before\ttarget_before\n%s\t1\t%s\n' "$node_current" "$(readlink -- "$node_current")" > "$node_current_before"
+  elif test -e "$node_current"; then
+    printf 'refusing-foreign-node-current: %s\n' "$node_current" >&2
+    exit 1
+  else
+    printf 'path\texisted_before\ttarget_before\n%s\t0\t-\n' "$node_current" > "$node_current_before"
+  fi
+else
+  test -L "$node_current"
+  test "$(readlink -f "$node_current")" = "$node_root"
+fi
+if test ! -L "$node_current" || test "$(readlink -f "$node_current")" != "$node_root"; then
+  link_work="$toolchain_root/.node-current-${PHASE1_RUN_ID:?}"
+  test ! -e "$link_work"
+  sudo ln -s "$node_root" "$link_work"
+  sudo mv -Tf -- "$link_work" "$node_current"
+  link_work=
+fi
 
 npm_version="$(npm --version)"
 python3 scripts/write_frontend_manifest.py \
   --npm-version "$npm_version" \
   --output web/frontend/package.json
 
-npm --prefix web/frontend install --package-lock-only --ignore-scripts
+if test -e web/frontend/package-lock.json; then
+  test -f web/frontend/package-lock.json
+  test ! -L web/frontend/package-lock.json
+else
+  npm --prefix web/frontend install --package-lock-only --ignore-scripts
+fi
 test "$(node -p 'require("./web/frontend/package-lock.json").lockfileVersion')" = 3
 npm --prefix web/frontend ci
 npm --prefix web/frontend run build \
@@ -2370,6 +4195,8 @@ test "${PIPESTATUS[0]}" -eq 0
   npm --version
   node -p 'require("./web/frontend/package.json").packageManager'
 } > "$evidence_dir/node-npm-versions.txt"
+trap - EXIT
+cleanup
 printf '%s\n' 'setup-web-env: PASS'
 ```
 
@@ -2390,7 +4217,7 @@ Expected: `setup-web-env: PASS`; `node --version` is exactly `v24.18.0`; `packag
 
 Evidence: `setup-web-env.log`, `frontend-build.log`, and `node-npm-versions.txt`.
 
-Safe rollback: preserve evidence and `package-lock.json`; remove `/usr/local/bin/{node,npm,npx,corepack}` only when each exact path is a symlink whose resolved target is below `/opt/substation/toolchains/node-v24.18.0/bin`; move `/opt/substation/toolchains/node-v24.18.0` to `/opt/substation/toolchains/node-v24.18.0.quarantine-$PHASE1_RUN_ID`; move `node_modules` and `.next` to sibling quarantine names; revert only Task 8's tracked commit.
+Safe rollback: preserve evidence and `package-lock.json`. First require `node-current` to be a symlink resolving to `/opt/substation/toolchains/node-v24.18.0`; read `node-current-before.tsv`; if `existed_before=1`, atomically replace it with a temporary symlink using the exact recorded raw target, otherwise unlink only that exact symlink. Refuse a non-symlink at every point. Remove `/usr/local/bin/{node,npm,npx,corepack}` only when each exact path is a symlink whose resolved target is below the owned Node directory. Move `/opt/substation/toolchains/node-v24.18.0` to `/opt/substation/toolchains/node-v24.18.0.quarantine-$PHASE1_RUN_ID` only after `.substation-toolchain.json` exactly matches the archive SHA/version/owner marker. Move `node_modules` and `.next` to sibling quarantine names; revert only Task 8's tracked commit.
 
 - [ ] **Step 6: Commit Task 8**
 
@@ -2515,7 +4342,7 @@ Create `scripts/smoke_headless_egl.sh` with this exact content:
 set -euo pipefail
 
 if test "$#" -ne 2 || test "$1" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/smoke_headless_egl.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/smoke_headless_egl.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
@@ -2610,11 +4437,12 @@ Expected: the SDF fixture is small text; no rendered image or Gazebo log is comm
 
 ---
 
-### Task 10: Captured Environment Lock and Consolidated Verifier
+### Task 10: Captured Environment Lock and One-Time Evidence Seal
 
 **Files:**
 - Create: `scripts/capture_environment_lock.sh`
 - Create: `scripts/verify_environment.sh`
+- Create: `scripts/check_environment_seal.sh`
 - Create: `tests/environment/test_verify_environment.sh`
 - Create: `artifacts/environment/dpkg-packages.tsv`
 - Create: `artifacts/environment/ai-pip-freeze.txt`
@@ -2624,10 +4452,11 @@ Expected: the SDF fixture is small text; no rendered image or Gazebo log is comm
 - Create: `artifacts/environment/SHA256SUMS`
 
 **Interfaces:**
-- Consumes: all Task 1–9 scripts, locks, toolchains, downloads, tests, and the approved installed host.
-- Produces: the unique Phase 1 entry point `bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"`, a reviewed tracked environment lock, per-command stdout/stderr plus structured argv/time/exit metadata, and the complete checksummed Phase 1 evidence set required by `docs/TEST_ACCEPTANCE.md`.
+- Consumes: all Task 1–9 scripts, locks, toolchains, downloads, tests, the approved installed host, the existing unsealed `$PHASE1_EVIDENCE_ROOT`, and the absent `$PHASE1_EVIDENCE_FINAL`.
+- Produces: the one-shot Phase 1 acceptance entry point `bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"`, a reviewed tracked environment lock, an atomically published immutable `$PHASE1_EVIDENCE_FINAL`, and the read-only sealed-evidence checker `bash scripts/check_environment_seal.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"`.
+- Invariant: the canonical verifier derives the staging sibling by appending `.staging` to its final-target argument. It refuses an existing final target, a missing staging directory, any pre-existing staging `SHA256SUMS`, or any prior `commands/`, `environment.json`, or `result.json`. It never downloads, repairs, installs, compiles locks, calls an environment setup script, or runs `npm ci`.
 
-- [ ] **Step 1: Write the failing consolidated-verifier test**
+- [ ] **Step 1: Write the failing synthetic seal behavior test**
 
 Create `tests/environment/test_verify_environment.sh` with this exact content:
 
@@ -2637,143 +4466,110 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
-source .phase1-run.env
 
 test -x scripts/verify_environment.sh
-bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"
+test -x scripts/check_environment_seal.sh
 
-required=(
-  acceptance_run_id.txt
-  documentation-gate.log
-  host-audit.json
-  install-host.log
-  install-state.env
-  install-complete.env
-  apt-candidates.tsv
-  apt-sources-before/inventory.tsv
-  managed-files-after.tsv
-  host-install-version-changes.tsv
-  ros-archive-key.sha256
-  gazebo-archive-key.sha256
-  dpkg-before.tsv
-  dpkg-after.tsv
-  environment.json
-  dpkg-packages.tsv
-  ai-pip-freeze.txt
-  gateway-pip-freeze.txt
-  node-npm-versions.txt
-  resource-downloads.tsv
-  gpu.txt
-  egl.log
-  forbidden-packages.txt
-  disk-memory.txt
-  colcon-build.log
-  colcon-test.log
-  colcon-test-result.log
-  frontend-build.log
-  result.json
-  SHA256SUMS
-)
-for name in "${required[@]}"; do
-  test -s "$PHASE1_EVIDENCE_ROOT/$name"
-done
-test -f "$PHASE1_EVIDENCE_ROOT/host-install-new-packages.txt"
-test "$(tail -n1 "$PHASE1_EVIDENCE_ROOT/install-host.log")" = 'install-host: PASS'
-if test -e "$PHASE1_EVIDENCE_ROOT/install-resume.env"; then
-  grep -Fx 'state=REBOOT_REQUIRED' "$PHASE1_EVIDENCE_ROOT/install-resume.env"
-fi
+fixture_root="/tmp/phase1-seal-fixture-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+case "$fixture_root" in /tmp/phase1-seal-fixture-*) ;; *) exit 2 ;; esac
+test ! -e "$fixture_root"
+install -d -m 0750 "$fixture_root/acceptance"
 
-python3 - "$PHASE1_EVIDENCE_ROOT/result.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-required = {"schema_version", "acceptance_run_id", "git_commit", "started_at", "completed_at", "commands", "exit_codes", "thresholds", "measurements", "artifacts", "status", "failures"}
-assert required <= result.keys()
-assert result["status"] == "passed"
-assert result["failures"] == []
-expected_ids = {
-    "documentation-gate", "host-audit", "tracked-lock", "version-checks",
-    "ai-environment", "gateway-environment", "ai-lock", "gateway-lock",
-    "resource-lock", "ros-workspace", "web-environment", "node-lock",
-    "npm-ci", "frontend-build", "headless-egl",
+cleanup() {
+  case "$fixture_root" in /tmp/phase1-seal-fixture-*) ;; *) return 1 ;; esac
+  if test -e "$fixture_root"; then
+    find "$fixture_root" -depth -delete
+  fi
 }
-records = result["commands"]
-assert {record["id"] for record in records} == expected_ids
-assert result["exit_codes"] == ({command_id: 0 for command_id in expected_ids} | {"verify_environment": 0})
-for record in records:
-    assert record["argv"]
-    assert record["started_at"].endswith("Z")
-    assert record["completed_at"].endswith("Z")
-    assert record["exit_code"] == record["capture_exit_code"] == 0
-    log_path = Path(sys.argv[1]).parent / record["log"]
-    assert log_path.is_file()
-    assert log_path.stat().st_size > 0
-PY
+trap cleanup EXIT
 
-(cd "$PHASE1_EVIDENCE_ROOT" && sha256sum -c SHA256SUMS)
-grep -F '  apt-sources-before/inventory.tsv' "$PHASE1_EVIDENCE_ROOT/SHA256SUMS"
-grep -F '  commands/documentation-gate.json' "$PHASE1_EVIDENCE_ROOT/SHA256SUMS"
-(cd artifacts/environment && sha256sum -c SHA256SUMS)
-cmp artifacts/environment/dpkg-packages.tsv "$PHASE1_EVIDENCE_ROOT/dpkg-packages.tsv"
-cmp artifacts/environment/ai-pip-freeze.txt "$PHASE1_EVIDENCE_ROOT/ai-pip-freeze.txt"
-cmp artifacts/environment/gateway-pip-freeze.txt "$PHASE1_EVIDENCE_ROOT/gateway-pip-freeze.txt"
-cmp artifacts/environment/node-npm-versions.txt "$PHASE1_EVIDENCE_ROOT/node-npm-versions.txt"
-cmp artifacts/environment/resource-downloads.tsv "$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv"
-
-failure_run_id="phase1-verifier-failure-$(python3 -c 'import uuid; print(uuid.uuid4())')"
-failure_run_root="/var/lib/substation/evidence/acceptance/$failure_run_id"
-test ! -e "$failure_run_root"
-install -d -m 0750 "$failure_run_root"
-cleanup_failure_fixture() {
-  case "$failure_run_root" in
-    /var/lib/substation/evidence/acceptance/phase1-verifier-failure-*) ;;
-    *) return 1 ;;
-  esac
-  find "$failure_run_root" -depth -delete
+create_staging() {
+  local run_id="$1"
+  local staging="$fixture_root/acceptance/$run_id/01-environment.staging"
+  install -d -m 0750 "$staging"
+  printf '%s\n' "$run_id" > "$staging/acceptance_run_id.txt"
+  printf '%s\n' "seed=$run_id" > "$staging/fixture-seed.txt"
+  printf '%s\n' "$staging"
 }
-trap cleanup_failure_fixture EXIT
-failure_evidence_dir="$failure_run_root/01-environment"
-failure_bin="$failure_run_root/bin"
-install -d -m 0750 "$failure_evidence_dir" "$failure_bin"
-cp -a -- "$PHASE1_EVIDENCE_ROOT/." "$failure_evidence_dir/"
-printf '%s\n' "$failure_run_id" > "$failure_evidence_dir/acceptance_run_id.txt"
-cat > "$failure_bin/bash" <<'SH'
-#!/usr/bin/bash
-if test "${1-}" = scripts/verify_documentation_gate.sh; then
-  printf '%s\n' 'injected-documentation-gate-failure' >&2
-  exit 23
-fi
-exec /usr/bin/bash "$@"
-SH
-chmod 0750 "$failure_bin/bash"
 
+snapshot_tree() {
+  local root="$1"
+  local output="$2"
+  (
+    cd "$root"
+    find . -printf '%y\t%m\t%p\n' | LC_ALL=C sort
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) > "$output"
+}
+
+success_run=seal-success
+success_staging="$(create_staging "$success_run")"
+success_final="$fixture_root/acceptance/$success_run/01-environment"
+SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+  bash scripts/verify_environment.sh --evidence-dir "$success_final"
+test ! -e "$success_staging"
+test -d "$success_final"
+test -s "$success_final/SHA256SUMS"
+SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+  bash scripts/check_environment_seal.sh --evidence-dir "$success_final"
+
+before_snapshot="$fixture_root/success-before.tsv"
+after_snapshot="$fixture_root/success-after.tsv"
+snapshot_tree "$success_final" "$before_snapshot"
 set +e
-PATH="$failure_bin:$PATH" /usr/bin/bash scripts/verify_environment.sh \
-  --evidence-dir "$failure_evidence_dir" \
-  > "$failure_run_root/verify-failure.log" 2>&1
+SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+  bash scripts/verify_environment.sh --evidence-dir "$success_final" \
+  > "$fixture_root/existing-final-refusal.log" 2>&1
+existing_rc=$?
+set -e
+test "$existing_rc" -ne 0
+snapshot_tree "$success_final" "$after_snapshot"
+cmp "$before_snapshot" "$after_snapshot"
+SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+  bash scripts/check_environment_seal.sh --evidence-dir "$success_final"
+
+failure_run=seal-failure
+failure_staging="$(create_staging "$failure_run")"
+failure_final="$fixture_root/acceptance/$failure_run/01-environment"
+set +e
+SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+SUBSTATION_VERIFY_TEST_FAILURE=23 \
+  bash scripts/verify_environment.sh --evidence-dir "$failure_final" \
+  > "$fixture_root/failure.log" 2>&1
 failure_rc=$?
 set -e
 test "$failure_rc" -eq 23
-test ! -e "$failure_evidence_dir/SHA256SUMS"
-python3 - "$failure_evidence_dir/result.json" "$failure_evidence_dir/commands/documentation-gate.json" <<'PY'
+test ! -e "$failure_final"
+test -d "$failure_staging"
+test ! -e "$failure_staging/SHA256SUMS"
+test -s "$failure_staging/result.json"
+test -s "$failure_staging/commands/fixture-check.json"
+python3 - "$failure_staging/result.json" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-record = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 assert result["status"] == "failed"
-assert result["commands"] == [record]
-assert result["exit_codes"] == {"documentation-gate": 23, "verify_environment": 23}
-assert record["id"] == "documentation-gate"
-assert record["argv"] == ["bash", "scripts/verify_documentation_gate.sh"]
-assert record["exit_code"] == 23
-assert record["capture_exit_code"] == 0
-assert record["log"] == "documentation-gate.log"
+assert result["failures"]
+assert result["exit_codes"] == {"fixture-check": 23, "verify_environment": 23}
+assert result["commands"][0]["id"] == "fixture-check"
+assert result["commands"][0]["exit_code"] == 23
 PY
-trap - EXIT
-cleanup_failure_fixture
+
+failed_snapshot="$fixture_root/failure-before-rerun.tsv"
+failed_after="$fixture_root/failure-after-rerun.tsv"
+snapshot_tree "$failure_staging" "$failed_snapshot"
+set +e
+SUBSTATION_VERIFY_TEST_ROOT="$fixture_root" \
+  bash scripts/verify_environment.sh --evidence-dir "$failure_final" \
+  > "$fixture_root/failed-staging-refusal.log" 2>&1
+rerun_rc=$?
+set -e
+test "$rerun_rc" -ne 0
+snapshot_tree "$failure_staging" "$failed_after"
+cmp "$failed_snapshot" "$failed_after"
+
 printf '%s\n' 'verify-environment-test: PASS'
 ```
 
@@ -2784,9 +4580,9 @@ chmod +x tests/environment/test_verify_environment.sh
 bash tests/environment/test_verify_environment.sh
 ```
 
-Expected: exit nonzero because the capture script, canonical verifier, and tracked environment lock do not exist.
+Expected: exit nonzero at the first missing executable. The test itself is limited to a guarded `/tmp/phase1-seal-fixture-*` root and never reads or mutates the live Phase 1 evidence tree.
 
-- [ ] **Step 2: Implement the reviewed environment-lock capture**
+- [ ] **Step 2: Implement create-once tracked environment-lock capture**
 
 Create `scripts/capture_environment_lock.sh` with this exact content:
 
@@ -2795,7 +4591,7 @@ Create `scripts/capture_environment_lock.sh` with this exact content:
 set -euo pipefail
 
 if test "$#" -ne 2 || test "$1" != --evidence-dir; then
-  printf '%s\n' 'usage: bash scripts/capture_environment_lock.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  printf '%s\n' 'usage: bash scripts/capture_environment_lock.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment.staging' >&2
   exit 2
 fi
 
@@ -2809,36 +4605,197 @@ for name in ai-pip-freeze.txt gateway-pip-freeze.txt node-npm-versions.txt resou
   test -s "$evidence_dir/$name"
 done
 
-install -d -m 0755 artifacts/environment
-dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > artifacts/environment/dpkg-packages.tsv
-install -m 0644 "$evidence_dir/ai-pip-freeze.txt" artifacts/environment/ai-pip-freeze.txt
-install -m 0644 "$evidence_dir/gateway-pip-freeze.txt" artifacts/environment/gateway-pip-freeze.txt
-install -m 0644 "$evidence_dir/node-npm-versions.txt" artifacts/environment/node-npm-versions.txt
-install -m 0644 "$evidence_dir/resource-downloads.tsv" artifacts/environment/resource-downloads.tsv
-
-manifest_work="$(mktemp --tmpdir=/tmp)"
+target=artifacts/environment
+run_id="$(basename "$(dirname "$evidence_dir")")"
+stage="artifacts/.environment-capture-$run_id"
+candidate=
 cleanup() {
-  test ! -e "$manifest_work" || unlink -- "$manifest_work"
+  local path
+  for path in "$stage" "$candidate"; do
+    test -n "$path" || continue
+    if test -e "$path"; then
+      case "$path" in
+        artifacts/.environment-capture-*|/tmp/phase1-environment-lock-*) ;;
+        *) return 1 ;;
+      esac
+      find "$path" -depth -delete
+    fi
+  done
 }
 trap cleanup EXIT
-for name in \
-  ai-pip-freeze.txt \
-  dpkg-packages.tsv \
-  gateway-pip-freeze.txt \
-  node-npm-versions.txt \
-  resource-downloads.tsv; do
-  (cd artifacts/environment && sha256sum -- "$name") >> "$manifest_work"
-done
-install -m 0644 "$manifest_work" artifacts/environment/SHA256SUMS
-(cd artifacts/environment && sha256sum -c SHA256SUMS)
+
+build_candidate() {
+  local destination="$1"
+  install -d -m 0755 "$destination"
+  dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort \
+    > "$destination/dpkg-packages.tsv"
+  install -m 0644 "$evidence_dir/ai-pip-freeze.txt" "$destination/ai-pip-freeze.txt"
+  install -m 0644 "$evidence_dir/gateway-pip-freeze.txt" "$destination/gateway-pip-freeze.txt"
+  install -m 0644 "$evidence_dir/node-npm-versions.txt" "$destination/node-npm-versions.txt"
+  install -m 0644 "$evidence_dir/resource-downloads.tsv" "$destination/resource-downloads.tsv"
+  (
+    cd "$destination"
+    for name in \
+      ai-pip-freeze.txt \
+      dpkg-packages.tsv \
+      gateway-pip-freeze.txt \
+      node-npm-versions.txt \
+      resource-downloads.tsv; do
+      sha256sum -- "$name"
+    done > SHA256SUMS
+    sha256sum -c SHA256SUMS
+  )
+}
+
+tracked_files=(
+  artifacts/environment/dpkg-packages.tsv
+  artifacts/environment/ai-pip-freeze.txt
+  artifacts/environment/gateway-pip-freeze.txt
+  artifacts/environment/node-npm-versions.txt
+  artifacts/environment/resource-downloads.tsv
+  artifacts/environment/SHA256SUMS
+)
+
+if test -e "$target"; then
+  test -d "$target"
+  test ! -L "$target"
+  for path in "${tracked_files[@]}"; do
+    git ls-files --error-unmatch "$path" >/dev/null || {
+      printf 'refusing-existing-untracked-or-partial-baseline: %s\n' "$target" >&2
+      exit 1
+    }
+  done
+  test -z "$(git status --porcelain=v1 --untracked-files=all -- "$target")" || {
+    printf 'refusing-dirty-tracked-baseline: %s\n' "$target" >&2
+    exit 1
+  }
+  candidate="/tmp/phase1-environment-lock-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  test ! -e "$candidate"
+  install -d -m 0700 "$candidate"
+  build_candidate "$candidate"
+  diff -ru --no-dereference "$target" "$candidate"
+  printf '%s\n' 'capture-environment-lock: PASS: tracked-baseline-unchanged'
+  trap - EXIT
+  cleanup
+  exit 0
+fi
+
+test ! -e "$stage"
+install -d -m 0755 artifacts
+build_candidate "$stage"
+mv -T -- "$stage" "$target"
+stage=
+printf '%s\n' 'capture-environment-lock: PASS: first-baseline-created'
 trap - EXIT
 cleanup
-printf '%s\n' 'capture-environment-lock: PASS'
 ```
 
-This capture is deliberately explicit. It cannot update an approved baseline unnoticed because the resulting Git diff must be reviewed and committed in this task; any later change requires the version/ADR synchronization rule.
+This script never overwrites `artifacts/environment`. An already tracked, clean six-file baseline is accepted only when a freshly captured candidate is byte-for-byte identical. Any existing untracked, partial, dirty, or mismatched baseline is refused before mutation.
 
-- [ ] **Step 3: Implement the canonical failure-closed verifier**
+- [ ] **Step 3: Implement the read-only sealed-evidence checker and one-shot verifier**
+
+Create `scripts/check_environment_seal.sh` with this exact content:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+if test "$#" -ne 2 || test "$1" != --evidence-dir; then
+  printf '%s\n' 'usage: bash scripts/check_environment_seal.sh --evidence-dir /var/lib/substation/evidence/acceptance/$PHASE1_RUN_ID/01-environment' >&2
+  exit 2
+fi
+
+evidence_dir="$2"
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+source scripts/lib/environment_common.sh
+test_root="${SUBSTATION_VERIFY_TEST_ROOT:-}"
+if test -n "$test_root"; then
+  case "$test_root" in /tmp/phase1-seal-fixture-*) ;; *) exit 2 ;; esac
+  case "$evidence_dir" in "$test_root"/acceptance/**/01-environment) ;; *) exit 2 ;; esac
+else
+  environment_require_final_evidence_target "$evidence_dir"
+fi
+
+test -d "$evidence_dir"
+test ! -L "$evidence_dir"
+test ! -e "$evidence_dir.staging"
+test -s "$evidence_dir/SHA256SUMS"
+python3 - "$evidence_dir" <<'PY'
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+manifest = root / "SHA256SUMS"
+entries = {}
+for line in manifest.read_text(encoding="utf-8").splitlines():
+    if len(line) < 67 or line[64:66] != "  ":
+        raise SystemExit(f"malformed SHA256SUMS entry: {line!r}")
+    digest, relative = line[:64], line[66:]
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise SystemExit(f"invalid SHA-256: {digest!r}")
+    if not relative or relative.startswith("/") or "\\" in relative or "\n" in relative:
+        raise SystemExit(f"unsafe checksum path: {relative!r}")
+    path = Path(relative)
+    if ".." in path.parts or relative in entries:
+        raise SystemExit(f"duplicate or escaping checksum path: {relative!r}")
+    entries[relative] = digest
+
+actual = set()
+for path in root.rglob("*"):
+    if path.is_symlink():
+        raise SystemExit(f"symlink forbidden in sealed evidence: {path}")
+    if path.is_file() and path.name != "SHA256SUMS":
+        actual.add(path.relative_to(root).as_posix())
+    elif not path.is_dir() and not path.is_file():
+        raise SystemExit(f"unsupported evidence entry: {path}")
+if set(entries) != actual:
+    raise SystemExit(
+        f"checksum path set mismatch: missing={sorted(actual - set(entries))}, "
+        f"extra={sorted(set(entries) - actual)}"
+    )
+for relative, expected in entries.items():
+    digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+    if digest != expected:
+        raise SystemExit(f"checksum mismatch: {relative}")
+
+result = json.loads((root / "result.json").read_text(encoding="utf-8"))
+required = {
+    "schema_version", "acceptance_run_id", "git_commit", "started_at",
+    "completed_at", "commands", "exit_codes", "thresholds", "measurements",
+    "artifacts", "status", "failures",
+}
+if not required <= result.keys():
+    raise SystemExit("result.json schema keys missing")
+if result["status"] != "passed" or result["failures"] != []:
+    raise SystemExit("sealed result is not passed")
+if not re.fullmatch(r"[0-9a-f]{40}", result["git_commit"]):
+    raise SystemExit("result git_commit is not a full commit")
+if result["acceptance_run_id"] != root.parent.name:
+    raise SystemExit("acceptance run id does not match evidence parent")
+expected_artifacts = sorted(actual - {"result.json"})
+if result["artifacts"] != expected_artifacts:
+    raise SystemExit("result artifact inventory does not match sealed files")
+records = result["commands"]
+if len({record["id"] for record in records}) != len(records):
+    raise SystemExit("duplicate command ids")
+if result["exit_codes"] != (
+    {record["id"]: record["exit_code"] for record in records}
+    | {"verify_environment": 0}
+):
+    raise SystemExit("exit-code map does not match command records")
+for record in records:
+    if record["exit_code"] != 0 or record["capture_exit_code"] != 0:
+        raise SystemExit(f"nonzero sealed command record: {record['id']}")
+    if not (root / record["log"]).is_file():
+        raise SystemExit(f"missing sealed command log: {record['log']}")
+PY
+
+printf '%s\n' 'check-environment-seal: PASS'
+```
 
 Create `scripts/verify_environment.sh` with this exact content:
 
@@ -2851,22 +4808,87 @@ if test "$#" -ne 2 || test "$1" != --evidence-dir; then
   exit 2
 fi
 
-evidence_dir="$2"
+final_dir="$2"
+staging_dir="$final_dir.staging"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 source scripts/lib/environment_common.sh
-environment_require_evidence_dir "$evidence_dir"
+test_root="${SUBSTATION_VERIFY_TEST_ROOT:-}"
+test_mode=0
+if test -n "$test_root"; then
+  case "$test_root" in /tmp/phase1-seal-fixture-*) ;; *) exit 2 ;; esac
+  case "$final_dir" in "$test_root"/acceptance/**/01-environment) ;; *) exit 2 ;; esac
+  test_mode=1
+else
+  environment_require_final_evidence_target "$final_dir"
+fi
 
+parent_dir="$(dirname "$final_dir")"
+test -d "$parent_dir"
+test ! -L "$parent_dir"
+exec 9<"$parent_dir"
+flock -n 9 || {
+  printf 'phase1-seal-lock-busy: %s\n' "$(basename "$parent_dir")" >&2
+  exit 1
+}
+
+test ! -e "$final_dir" || {
+  printf 'refusing-existing-final-evidence: %s\n' "$final_dir" >&2
+  exit 1
+}
+test -d "$staging_dir"
+test ! -L "$staging_dir"
+test ! -e "$staging_dir/SHA256SUMS" || {
+  printf 'refusing-presealed-staging-evidence: %s\n' "$staging_dir" >&2
+  exit 1
+}
+for prior in commands environment.json result.json; do
+  test ! -e "$staging_dir/$prior" || {
+    printf 'refusing-prior-verifier-state: %s\n' "$staging_dir/$prior" >&2
+    exit 1
+  }
+done
+
+acceptance_run_id="$(basename "$(dirname "$final_dir")")"
+test "$(<"$staging_dir/acceptance_run_id.txt")" = "$acceptance_run_id"
+[[ "$acceptance_run_id" =~ ^[A-Za-z0-9._-]+$ ]]
+test "$(stat -c '%d' "$staging_dir")" = "$(stat -c '%d' "$parent_dir")"
+verify_parent_rename() (
+  set -euo pipefail
+  local rename_probe rename_probe_after
+  rename_probe="$parent_dir/.phase1-rename-probe-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  rename_probe_after="$rename_probe.renamed"
+  cleanup_probe() {
+    test ! -d "$rename_probe" || rmdir -- "$rename_probe"
+    test ! -d "$rename_probe_after" || rmdir -- "$rename_probe_after"
+  }
+  trap cleanup_probe EXIT
+  test ! -e "$rename_probe"
+  test ! -e "$rename_probe_after"
+  install -d -m 0700 "$rename_probe"
+  mv -T -- "$rename_probe" "$rename_probe_after"
+  rmdir -- "$rename_probe_after"
+)
+verify_parent_rename
+
+commands_dir="$staging_dir/commands"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-acceptance_run_id="$(basename "$(dirname "$evidence_dir")")"
 git_commit="$(git rev-parse HEAD)"
-commands_dir="$evidence_dir/commands"
+checksum_work=
+cleanup() {
+  if test -n "$checksum_work" && test -e "$checksum_work"; then
+    unlink -- "$checksum_work"
+  fi
+  flock -u 9 || true
+}
+trap cleanup EXIT
 
 write_failed_result() {
   local rc="$1"
   local line="$2"
   trap - ERR
-  python3 - "$evidence_dir/result.json" "$acceptance_run_id" "$git_commit" "$started_at" "$rc" "$line" "$commands_dir" <<'PY'
+  test ! -e "$staging_dir/SHA256SUMS"
+  python3 - "$staging_dir/result.json" "$acceptance_run_id" "$git_commit" "$started_at" "$rc" "$line" "$commands_dir" <<'PY'
 import datetime
 import json
 import sys
@@ -2874,8 +4896,10 @@ from pathlib import Path
 
 path, run_id, commit, started, rc, line, commands_dir = sys.argv[1:]
 records = []
-for record_path in sorted(Path(commands_dir).glob("*.json")):
-    records.append(json.loads(record_path.read_text(encoding="utf-8")))
+commands = Path(commands_dir)
+if commands.is_dir():
+    for record_path in sorted(commands.glob("*.json")):
+        records.append(json.loads(record_path.read_text(encoding="utf-8")))
 result = {
     "schema_version": 1,
     "acceptance_run_id": run_id,
@@ -2883,33 +4907,28 @@ result = {
     "started_at": started,
     "completed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "commands": records,
-    "exit_codes": {record["id"]: record["exit_code"] for record in records} | {"verify_environment": int(rc)},
-    "thresholds": {"disk_free_bytes_min": 80 * 1024**3, "memory_bytes_min": 16 * 1024**3, "nvidia_driver_min": "560.35.05"},
+    "exit_codes": {record["id"]: record["exit_code"] for record in records}
+        | {"verify_environment": int(rc)},
+    "thresholds": {
+        "disk_free_bytes_min": 80 * 1024**3,
+        "memory_bytes_min": 16 * 1024**3,
+        "nvidia_driver_min": "560.35.05",
+    },
     "measurements": {},
     "artifacts": [],
     "status": "failed",
     "failures": [f"verify_environment failed at shell line {line} with exit {rc}"],
 }
-Path(path).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+Path(path).write_text(
+    json.dumps(result, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
 PY
   exit "$rc"
 }
 trap 'write_failed_result "$?" "$LINENO"' ERR
 
 install -d -m 0750 "$commands_dir"
-command_ids=(
-  documentation-gate host-audit tracked-lock version-checks ai-environment
-  gateway-environment ai-lock gateway-lock resource-lock ros-workspace
-  web-environment node-lock npm-ci frontend-build headless-egl
-)
-for command_id in "${command_ids[@]}"; do
-  if test -e "$commands_dir/$command_id.json"; then
-    unlink -- "$commands_dir/$command_id.json"
-  fi
-done
-if test -e "$evidence_dir/SHA256SUMS"; then
-  unlink -- "$evidence_dir/SHA256SUMS"
-fi
 
 run_recorded() {
   local command_id="$1"
@@ -2919,10 +4938,12 @@ run_recorded() {
   shift
   [[ "$command_id" =~ ^[a-z0-9-]+$ ]]
   [[ "$log_relative" != /* && "$log_relative" != *..* ]]
-  local log_path="$evidence_dir/$log_relative"
+  local log_path="$staging_dir/$log_relative"
   local record_path="$commands_dir/$command_id.json"
   local command_started command_completed command_rc capture_rc saved_err_trap
   local -a pipeline_status
+  test ! -e "$log_path"
+  test ! -e "$record_path"
   command_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   saved_err_trap="$(trap -p ERR)"
   trap - ERR
@@ -2934,7 +4955,8 @@ run_recorded() {
   command_rc="${pipeline_status[0]}"
   capture_rc="${pipeline_status[1]}"
   command_completed="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  python3 - "$record_path" "$command_id" "$log_relative" "$command_started" "$command_completed" "$command_rc" "$capture_rc" "$@" <<'PY'
+  python3 - "$record_path" "$command_id" "$log_relative" \
+    "$command_started" "$command_completed" "$command_rc" "$capture_rc" "$@" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -2950,74 +4972,125 @@ record = {
     "capture_exit_code": int(capture_rc),
     "log": log_path,
 }
-Path(record_path).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+Path(record_path).write_text(
+    json.dumps(record, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
 PY
-  if test "$command_rc" -ne 0; then
-    return "$command_rc"
-  fi
-  if test "$capture_rc" -ne 0; then
-    return "$capture_rc"
-  fi
+  test "$command_rc" -eq 0 || return "$command_rc"
+  test "$capture_rc" -eq 0 || return "$capture_rc"
 }
 
-installer_required=(
-  acceptance_run_id.txt
-  documentation-gate.log
-  host-audit.json
-  install-host.log
-  install-state.env
-  install-complete.env
-  apt-candidates.tsv
-  apt-sources-before/inventory.tsv
-  managed-files-after.tsv
-  host-install-version-changes.tsv
-  ros-archive-key.sha256
-  gazebo-archive-key.sha256
-  dpkg-before.tsv
-  dpkg-after.tsv
-)
-for relative_path in "${installer_required[@]}"; do
-  test -s "$evidence_dir/$relative_path" || {
-    printf 'missing-mandatory-installer-artifact: %s\n' "$relative_path" >&2
-    false
+if test "$test_mode" -eq 1; then
+  fixture_check() {
+    local requested_rc="${SUBSTATION_VERIFY_TEST_FAILURE:-0}"
+    printf 'fixture-check: rc=%s\n' "$requested_rc"
+    test "$requested_rc" -eq 0 || return "$requested_rc"
   }
-done
-test -f "$evidence_dir/host-install-new-packages.txt"
-test "$(<"$evidence_dir/acceptance_run_id.txt")" = "$acceptance_run_id"
-test "$(tail -n1 "$evidence_dir/install-host.log")" = 'install-host: PASS'
-grep -Fxq 'state=INITIAL_INSTALL_STARTED' "$evidence_dir/install-state.env"
-grep -Fxq 'state=PASS' "$evidence_dir/install-complete.env"
-if test -e "$evidence_dir/install-resume.env"; then
-  test -s "$evidence_dir/install-resume.env"
-  grep -Fxq 'state=REBOOT_REQUIRED' "$evidence_dir/install-resume.env"
-fi
-grep -Eq '^nginx_unit_present_before=[01]$' "$evidence_dir/install-state.env"
-grep -Eq '^nginx_active_before=(absent|[a-z-]+)$' "$evidence_dir/install-state.env"
-grep -Eq '^nginx_enabled_before=(absent|[a-z-]+)$' "$evidence_dir/install-state.env"
-python3 - "$evidence_dir/apt-sources-before/inventory.tsv" "$evidence_dir/managed-files-after.tsv" <<'PY'
+  run_recorded fixture-check fixture-check.log -- fixture_check
+  python3 - "$staging_dir/environment.json" "$git_commit" <<'PY'
+import json
+import sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {"schema_version": 1, "git_commit": sys.argv[2], "fixture": True},
+        indent=2,
+        sort_keys=True,
+    ) + "\n",
+    encoding="utf-8",
+)
+PY
+  measurements='{}'
+else
+  required_preexisting=(
+    storage-paths-before.tsv
+    documentation-gate.log
+    host-audit.json
+    install-host.log
+    install-state.env
+    install-complete.env
+    apt-candidates.tsv
+    apt-policy-origins.json
+    apt-sources-before/inventory.tsv
+    apt-sources-after/inventory.tsv
+    policy-rc.d-state.tsv
+    managed-files-after.tsv
+    host-install-version-changes.tsv
+    ros-archive-key.sha256
+    gazebo-archive-key.sha256
+    dpkg-before.tsv
+    dpkg-after.tsv
+    ai-pip-freeze.txt
+    gateway-pip-freeze.txt
+    node-npm-versions.txt
+    node-current-before.tsv
+    resource-downloads.tsv
+    colcon-build.log
+    colcon-test.log
+    colcon-test-result.log
+    frontend-build.log
+  )
+  for relative_path in "${required_preexisting[@]}"; do
+    test -s "$staging_dir/$relative_path" || {
+      printf 'missing-preexisting-evidence: %s\n' "$relative_path" >&2
+      false
+    }
+  done
+  test -f "$staging_dir/host-install-new-packages.txt"
+  test "$(tail -n1 "$staging_dir/install-host.log")" = 'install-host: PASS'
+  grep -Fxq 'state=PASS' "$staging_dir/install-complete.env"
+
+  tracked_paths=(
+    scripts/capture_environment_lock.sh
+    scripts/verify_environment.sh
+    scripts/check_environment_seal.sh
+    tests/environment/test_verify_environment.sh
+    artifacts/environment/dpkg-packages.tsv
+    artifacts/environment/ai-pip-freeze.txt
+    artifacts/environment/gateway-pip-freeze.txt
+    artifacts/environment/node-npm-versions.txt
+    artifacts/environment/resource-downloads.tsv
+    artifacts/environment/SHA256SUMS
+  )
+  for path in "${tracked_paths[@]}"; do
+    git ls-files --error-unmatch "$path" >/dev/null
+    git diff --quiet HEAD -- "$path"
+  done
+  test -z "$(git status --porcelain=v1 --untracked-files=all -- "${tracked_paths[@]}")"
+
+  verify_installer_evidence() {
+    python3 - "$staging_dir" <<'PY'
 import csv
 import hashlib
+import json
 import sys
 from pathlib import Path
 
-inventory_path, after_path = map(Path, sys.argv[1:])
-expected_paths = {
+root = Path(sys.argv[1])
+before_path = root / "apt-sources-before/inventory.tsv"
+after_path = root / "apt-sources-after/inventory.tsv"
+managed_path = root / "managed-files-after.tsv"
+policy_path = root / "policy-rc.d-state.tsv"
+
+with before_path.open(encoding="utf-8", newline="") as handle:
+    before = list(csv.DictReader(handle, delimiter="\t"))
+assert before
+assert len({row["source_path"] for row in before}) == len(before)
+managed_expected = {
     "/etc/apt/sources.list.d/ros2.list",
     "/etc/apt/sources.list.d/gazebo-stable.list",
     "/usr/share/keyrings/ros-archive-keyring.gpg",
     "/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg",
     "/etc/default/locale",
     "/etc/ros/rosdep/sources.list.d/20-default.list",
+    "/usr/sbin/policy-rc.d",
 }
-with inventory_path.open(encoding="utf-8", newline="") as handle:
-    inventory = list(csv.DictReader(handle, delimiter="\t"))
-assert {row["source_path"] for row in inventory} == expected_paths
-for row in inventory:
+assert managed_expected <= {row["source_path"] for row in before}
+before_by_path = {row["source_path"]: row for row in before}
+for row in before:
     if row["existed"] == "1":
-        backup_name = row["backup_file"]
-        assert backup_name not in {"", "-"}
-        assert Path(backup_name).name == backup_name
-        backup = inventory_path.parent / backup_name
+        backup = before_path.parent / row["backup_file"]
         assert backup.is_file()
         assert hashlib.sha256(backup.read_bytes()).hexdigest() == row["sha256"]
         assert row["mode"].isdigit()
@@ -3025,10 +5098,33 @@ for row in inventory:
         assert row["existed"] == "0"
         assert row["mode"] == row["sha256"] == row["backup_file"] == "-"
 
+current_sources = []
+source_list = Path("/etc/apt/sources.list")
+source_dir = Path("/etc/apt/sources.list.d")
+candidates = [source_list]
+for pattern in ("*.list", "*.sources"):
+    candidates.extend(source_dir.glob(pattern))
+for path in candidates:
+    if path.is_symlink():
+        raise AssertionError(f"apt source symlink is forbidden: {path}")
+    if not path.exists():
+        continue
+    assert path.is_file(), f"apt source is not a regular file: {path}"
+    current_sources.append(path)
+current_source_names = {path.as_posix() for path in current_sources}
 with after_path.open(encoding="utf-8", newline="") as handle:
     after = list(csv.DictReader(handle, delimiter="\t"))
-assert {row["source_path"] for row in after} == expected_paths
+assert len({row["source_path"] for row in after}) == len(after)
+assert {row["source_path"] for row in after} == current_source_names
 for row in after:
+    path = Path(row["source_path"])
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
+    assert f"{path.stat().st_mode & 0o777:o}" == row["mode"]
+
+with managed_path.open(encoding="utf-8", newline="") as handle:
+    managed = list(csv.DictReader(handle, delimiter="\t"))
+assert {row["source_path"] for row in managed} == managed_expected
+for row in managed:
     path = Path(row["source_path"])
     if row["existed_after"] == "1":
         assert path.is_file()
@@ -3038,13 +5134,28 @@ for row in after:
         assert row["existed_after"] == "0"
         assert not path.exists()
         assert row["mode"] == row["sha256"] == "-"
-PY
-python3 - "$evidence_dir/dpkg-before.tsv" "$evidence_dir/dpkg-after.tsv" "$evidence_dir/host-install-version-changes.tsv" "$evidence_dir/host-install-new-packages.txt" <<'PY'
-import csv
-import sys
-from pathlib import Path
 
-before_path, after_path, changes_path, additions_path = map(Path, sys.argv[1:])
+with policy_path.open(encoding="utf-8", newline="") as handle:
+    policy = list(csv.DictReader(handle, delimiter="\t"))
+assert len(policy) == 1
+assert policy[0]["path"] == "/usr/sbin/policy-rc.d"
+assert policy[0]["restored"] == "1"
+policy_before = before_by_path["/usr/sbin/policy-rc.d"]
+policy_live = Path("/usr/sbin/policy-rc.d")
+if policy_before["existed"] == "1":
+    assert policy_live.is_file()
+    assert hashlib.sha256(policy_live.read_bytes()).hexdigest() == policy_before["sha256"]
+    assert f"{policy_live.stat().st_mode & 0o777:o}" == policy_before["mode"]
+else:
+    assert not policy_live.exists()
+
+audit = json.loads((root / "apt-policy-origins.json").read_text(encoding="utf-8"))
+assert audit["apt_policy"]
+assert all(
+    item["candidate_ok"] and item["origin_ok"]
+    for item in audit["apt_policy"].values()
+)
+
 def versions(path):
     rows = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -3052,195 +5163,202 @@ def versions(path):
         rows[package] = version
     return rows
 
-before = versions(before_path)
-after = versions(after_path)
-expected = []
-for package in sorted(set(before) | set(after)):
-    old = before.get(package)
-    new = after.get(package)
+before_packages = versions(root / "dpkg-before.tsv")
+after_packages = versions(root / "dpkg-after.tsv")
+expected_changes = []
+for package in sorted(set(before_packages) | set(after_packages)):
+    old = before_packages.get(package)
+    new = after_packages.get(package)
     if old == new:
         continue
-    change = "added" if old is None else "removed" if new is None else "version-changed"
-    expected.append({
+    expected_changes.append({
         "package": package,
         "before_version": old or "-",
         "after_version": new or "-",
-        "change": change,
+        "change": "added" if old is None else "removed" if new is None else "version-changed",
     })
-with changes_path.open(encoding="utf-8", newline="") as handle:
-    actual = list(csv.DictReader(handle, delimiter="\t"))
-assert actual == expected
-additions = additions_path.read_text(encoding="utf-8").splitlines()
-assert additions == [row["package"] for row in expected if row["change"] == "added"]
+with (root / "host-install-version-changes.tsv").open(
+    encoding="utf-8", newline=""
+) as handle:
+    actual_changes = list(csv.DictReader(handle, delimiter="\t"))
+assert actual_changes == expected_changes
+assert (root / "host-install-new-packages.txt").read_text(
+    encoding="utf-8"
+).splitlines() == [
+    row["package"] for row in expected_changes if row["change"] == "added"
+]
+
+with (root / "storage-paths-before.tsv").open(
+    encoding="utf-8", newline=""
+) as handle:
+    storage_rows = list(csv.DictReader(handle, delimiter="\t"))
+assert storage_rows
+for row in storage_rows:
+    path = Path(row["path"])
+    assert path.is_dir() and not path.is_symlink()
+    assert (path.stat().st_mode & 0o777) == int(row["expected_mode"], 8)
+    assert path.owner() == row["expected_owner"]
+    assert path.group() == row["expected_group"]
+
+with (root / "node-current-before.tsv").open(
+    encoding="utf-8", newline=""
+) as handle:
+    node_rows = list(csv.DictReader(handle, delimiter="\t"))
+assert len(node_rows) == 1
+assert node_rows[0]["path"] == "/opt/substation/toolchains/node-current"
 PY
-grep -E $'^ros-jazzy-ros-gz\t1\.0\.23-1\t1\.0\.23-1([^0-9].*)?$' "$evidence_dir/apt-candidates.tsv"
-grep -E $'^ros-jazzy-navigation2\t1\.3\.12-1\t1\.3\.12-1([^0-9].*)?$' "$evidence_dir/apt-candidates.tsv"
-grep -E $'^ros-jazzy-nav2-bringup\t1\.3\.12-1\t1\.3\.12-1([^0-9].*)?$' "$evidence_dir/apt-candidates.tsv"
-grep -E $'^ros-jazzy-slam-toolbox\t2\.8\.5-1\t2\.8\.5-1([^0-9].*)?$' "$evidence_dir/apt-candidates.tsv"
-grep -E $'^ros-jazzy-turtlebot3\t2\.3\.6-1\t2\.3\.6-1([^0-9].*)?$' "$evidence_dir/apt-candidates.tsv"
-grep -E $'^ros-jazzy-turtlebot3-simulations\t2\.3\.7-1\t2\.3\.7-1([^0-9].*)?$' "$evidence_dir/apt-candidates.tsv"
-if systemctl is-active --quiet nginx.service; then
-  printf '%s\n' 'nginx must remain stopped during the environment baseline' >&2
-  false
-fi
-nginx_enabled="$(systemctl is-enabled nginx.service 2>/dev/null || true)"
-test "$nginx_enabled" = disabled
-printf 'nginx.service=inactive\nnginx.enabled=%s\n' "$nginx_enabled" > "$evidence_dir/service-state.txt"
-grep -F 'deb [arch=' /etc/apt/sources.list.d/ros2.list >/dev/null
-grep -F 'http://packages.ros.org/ros2/ubuntu noble main' /etc/apt/sources.list.d/ros2.list >/dev/null
-grep -F 'http://packages.osrfoundation.org/gazebo/ubuntu-stable noble main' /etc/apt/sources.list.d/gazebo-stable.list >/dev/null
+    printf '%s\n' 'installer-evidence: PASS'
+  }
 
-verify_tracked_lock() {
-  local output_dir="$1"
-  dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > "$output_dir/dpkg-packages.tsv"
-  cmp artifacts/environment/dpkg-packages.tsv "$output_dir/dpkg-packages.tsv"
-  (cd artifacts/environment && sha256sum -c SHA256SUMS)
-  printf '%s\n' 'tracked-environment-lock: PASS'
-}
+  verify_tracked_lock() {
+    dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort \
+      > "$staging_dir/dpkg-packages.tsv"
+    cmp artifacts/environment/dpkg-packages.tsv "$staging_dir/dpkg-packages.tsv"
+    cmp artifacts/environment/ai-pip-freeze.txt "$staging_dir/ai-pip-freeze.txt"
+    cmp artifacts/environment/gateway-pip-freeze.txt "$staging_dir/gateway-pip-freeze.txt"
+    cmp artifacts/environment/node-npm-versions.txt "$staging_dir/node-npm-versions.txt"
+    cmp artifacts/environment/resource-downloads.tsv "$staging_dir/resource-downloads.tsv"
+    (cd artifacts/environment && sha256sum -c SHA256SUMS)
+    printf '%s\n' 'tracked-environment-lock: PASS'
+  }
 
-verify_versions() {
-  local output_dir="$1"
-  source /opt/ros/jazzy/setup.bash
-  test "$ROS_DISTRO" = jazzy
-  dpkg-query -W -f='${Package}\t${Version}\n' ros-jazzy-ros-gz \
-    | grep -E $'^ros-jazzy-ros-gz\t1\.0\.23-1([^0-9].*)?$'
-  dpkg-query -W -f='${Package}\t${Version}\n' ros-jazzy-navigation2 ros-jazzy-nav2-bringup \
-    | tee "$output_dir/navigation2-packages.txt"
-  grep -E $'^ros-jazzy-navigation2\t1\.3\.12-1([^0-9].*)?$' "$output_dir/navigation2-packages.txt"
-  grep -E $'^ros-jazzy-nav2-bringup\t1\.3\.12-1([^0-9].*)?$' "$output_dir/navigation2-packages.txt"
-  dpkg-query -W -f='${Version}\n' ros-jazzy-slam-toolbox \
-    | grep -E '^2\.8\.5-1([^0-9].*)?$'
-  dpkg-query -W -f='${Package}\t${Version}\n' ros-jazzy-turtlebot3 ros-jazzy-turtlebot3-simulations \
-    | tee "$output_dir/turtlebot3-packages.txt"
-  grep -E $'^ros-jazzy-turtlebot3\t2\.3\.6-1([^0-9].*)?$' "$output_dir/turtlebot3-packages.txt"
-  grep -E $'^ros-jazzy-turtlebot3-simulations\t2\.3\.7-1([^0-9].*)?$' "$output_dir/turtlebot3-packages.txt"
-  gz sim --versions | tee "$output_dir/gazebo-version.txt"
-  grep -E '(^|[^0-9])8\.[0-9]' "$output_dir/gazebo-version.txt"
-  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
-    | tee "$output_dir/gpu.txt"
-  local driver_version
-  driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)"
-  dpkg --compare-versions "$driver_version" ge 560.35.05
-  printf '%s\n' 'locked-version-checks: PASS'
-}
+  verify_versions() {
+    source /opt/ros/jazzy/setup.bash
+    test "$ROS_DISTRO" = jazzy
+    dpkg-query -W -f='${Package}\t${Version}\n' ros-jazzy-ros-gz \
+      | grep -E $'^ros-jazzy-ros-gz\t1\.0\.23-1([^0-9].*)?$'
+    dpkg-query -W -f='${Package}\t${Version}\n' \
+      ros-jazzy-navigation2 ros-jazzy-nav2-bringup \
+      | tee "$staging_dir/navigation2-packages.txt"
+    grep -E $'^ros-jazzy-navigation2\t1\.3\.12-1([^0-9].*)?$' \
+      "$staging_dir/navigation2-packages.txt"
+    grep -E $'^ros-jazzy-nav2-bringup\t1\.3\.12-1([^0-9].*)?$' \
+      "$staging_dir/navigation2-packages.txt"
+    dpkg-query -W -f='${Version}\n' ros-jazzy-slam-toolbox \
+      | grep -E '^2\.8\.5-1([^0-9].*)?$'
+    dpkg-query -W -f='${Package}\t${Version}\n' \
+      ros-jazzy-turtlebot3 ros-jazzy-turtlebot3-simulations \
+      | tee "$staging_dir/turtlebot3-packages.txt"
+    grep -E $'^ros-jazzy-turtlebot3\t2\.3\.6-1([^0-9].*)?$' \
+      "$staging_dir/turtlebot3-packages.txt"
+    grep -E $'^ros-jazzy-turtlebot3-simulations\t2\.3\.7-1([^0-9].*)?$' \
+      "$staging_dir/turtlebot3-packages.txt"
+    gz sim --versions | tee "$staging_dir/gazebo-version.txt"
+    grep -E '(^|[^0-9])8\.[0-9]' "$staging_dir/gazebo-version.txt"
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader \
+      | tee "$staging_dir/gpu.txt"
+    driver_version="$(
+      nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1
+    )"
+    dpkg --compare-versions "$driver_version" ge 560.35.05
+    if systemctl is-active --quiet nginx.service; then
+      printf '%s\n' 'nginx must remain stopped during Phase 1 verification' >&2
+      return 1
+    fi
+    nginx_enabled="$(systemctl is-enabled nginx.service 2>/dev/null || true)"
+    test "$nginx_enabled" = disabled
+    printf 'nginx.service=inactive\nnginx.enabled=%s\n' "$nginx_enabled" \
+      > "$staging_dir/service-state.txt"
+    printf '%s\n' 'locked-version-checks: PASS'
+  }
 
-capture_ai_lock() {
-  local output_dir="$1"
-  .venv/bin/python -m pip freeze --all | LC_ALL=C sort > "$output_dir/ai-pip-freeze.txt"
-  cmp artifacts/environment/ai-pip-freeze.txt "$output_dir/ai-pip-freeze.txt"
-  printf '%s\n' 'ai-freeze-lock: PASS'
-}
+  capture_ai_lock() {
+    .venv/bin/python -m pip freeze --all | LC_ALL=C sort \
+      > "$staging_dir/ai-pip-freeze-final.txt"
+    cmp artifacts/environment/ai-pip-freeze.txt \
+      "$staging_dir/ai-pip-freeze-final.txt"
+    printf '%s\n' 'ai-freeze-lock: PASS'
+  }
 
-capture_gateway_lock() {
-  local output_dir="$1"
-  .venv-web/bin/python -m pip freeze --all | LC_ALL=C sort > "$output_dir/gateway-pip-freeze.txt"
-  cmp artifacts/environment/gateway-pip-freeze.txt "$output_dir/gateway-pip-freeze.txt"
-  printf '%s\n' 'gateway-freeze-lock: PASS'
-}
+  capture_gateway_lock() {
+    .venv-web/bin/python -m pip freeze --all | LC_ALL=C sort \
+      > "$staging_dir/gateway-pip-freeze-final.txt"
+    cmp artifacts/environment/gateway-pip-freeze.txt \
+      "$staging_dir/gateway-pip-freeze-final.txt"
+    printf '%s\n' 'gateway-freeze-lock: PASS'
+  }
 
-verify_resources() {
-  local output_dir="$1"
-  bash scripts/download_phase1_resources.sh --resource all --evidence-dir "$output_dir"
-  cmp artifacts/environment/resource-downloads.tsv "$output_dir/resource-downloads.tsv"
-  printf '%s\n' 'resource-lock-check: PASS'
-}
+  verify_resources() {
+    bash scripts/verify_phase1_resources.sh --evidence-dir "$staging_dir"
+    cmp artifacts/environment/resource-downloads.tsv \
+      "$staging_dir/resource-downloads.tsv"
+    printf '%s\n' 'resource-lock-check: PASS'
+  }
 
-capture_node_lock() {
-  local output_dir="$1"
-  {
-    node --version
-    npm --version
-    node -p 'require("./web/frontend/package.json").packageManager'
-  } > "$output_dir/node-npm-versions.txt"
-  cmp artifacts/environment/node-npm-versions.txt "$output_dir/node-npm-versions.txt"
-  printf '%s\n' 'node-npm-lock: PASS'
-}
+  verify_ros_workspace() {
+    source /opt/ros/jazzy/setup.bash
+    cd ros2_ws
+    colcon build --symlink-install 2>&1 \
+      | tee "$staging_dir/colcon-build-final.log"
+    test "${PIPESTATUS[0]}" -eq 0
+    colcon test 2>&1 | tee "$staging_dir/colcon-test-final.log"
+    test "${PIPESTATUS[0]}" -eq 0
+    colcon test-result --verbose 2>&1 \
+      | tee "$staging_dir/colcon-test-result-final.log"
+    test "${PIPESTATUS[0]}" -eq 0
+    printf '%s\n' 'ros-workspace-final: PASS'
+  }
 
-run_recorded documentation-gate documentation-gate.log -- bash scripts/verify_documentation_gate.sh
-run_recorded host-audit host-audit.json -- bash scripts/audit_host.sh
+  capture_node_lock() {
+    {
+      node --version
+      npm --version
+      node -p 'require("./web/frontend/package.json").packageManager'
+    } > "$staging_dir/node-npm-versions-final.txt"
+    cmp artifacts/environment/node-npm-versions.txt \
+      "$staging_dir/node-npm-versions-final.txt"
+    printf '%s\n' 'node-npm-lock: PASS'
+  }
 
-python3 - "$evidence_dir/host-audit.json" "$evidence_dir/disk-memory.txt" <<'PY'
+  run_recorded documentation-gate documentation-gate-final.log -- \
+    bash scripts/verify_documentation_gate.sh
+  run_recorded host-audit host-audit-final.json -- bash scripts/audit_host.sh
+  python3 - "$staging_dir/host-audit-final.json" \
+    "$staging_dir/disk-memory.txt" \
+    "$staging_dir/forbidden-packages.txt" <<'PY'
 import json
 import sys
 from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+audit_path, disk_path, forbidden_path = map(Path, sys.argv[1:])
+data = json.loads(audit_path.read_text(encoding="utf-8"))
 assert data["status"] == "passed"
-Path(sys.argv[2]).write_text(
-    f"disk_free_bytes={data['disk_free_bytes']}\nmemory_bytes={data['memory_bytes']}\n",
+disk_path.write_text(
+    f"disk_free_bytes={data['disk_free_bytes']}\n"
+    f"memory_bytes={data['memory_bytes']}\n",
     encoding="utf-8",
 )
-PY
-
-python3 - "$evidence_dir/host-audit.json" "$evidence_dir/forbidden-packages.txt" <<'PY'
-import json
-import sys
-from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 packages = data["forbidden_packages"]
-Path(sys.argv[2]).write_text(
-    "forbidden-packages: none\n" if not packages else "\n".join(packages) + "\n",
+forbidden_path.write_text(
+    "forbidden-packages: none\n"
+    if not packages
+    else "\n".join(packages) + "\n",
     encoding="utf-8",
 )
 assert not packages
 PY
+  run_recorded installer-evidence installer-evidence.log -- \
+    verify_installer_evidence
+  run_recorded tracked-lock tracked-lock-check.log -- verify_tracked_lock
+  run_recorded version-checks version-checks.log -- verify_versions
+  run_recorded ai-environment test-ai-environment-final.log -- \
+    bash tests/environment/test_ai_environment.sh
+  run_recorded gateway-environment test-gateway-environment-final.log -- \
+    bash tests/environment/test_gateway_environment.sh
+  run_recorded ai-lock ai-lock-check.log -- capture_ai_lock
+  run_recorded gateway-lock gateway-lock-check.log -- capture_gateway_lock
+  run_recorded resource-lock resource-lock-check.log -- verify_resources
+  run_recorded ros-workspace ros-workspace-final.log -- verify_ros_workspace
+  run_recorded web-environment test-web-environment-final.log -- \
+    bash tests/environment/test_web_environment.sh
+  run_recorded node-lock node-lock-check.log -- capture_node_lock
+  run_recorded frontend-build frontend-build-final.log -- \
+    npm --prefix web/frontend run build
+  run_recorded headless-egl verify-headless-egl-final.log -- \
+    bash scripts/smoke_headless_egl.sh --evidence-dir "$staging_dir"
 
-run_recorded tracked-lock tracked-lock-check.log -- verify_tracked_lock "$evidence_dir"
-run_recorded version-checks version-checks.log -- verify_versions "$evidence_dir"
-run_recorded ai-environment test-ai-environment.log -- bash tests/environment/test_ai_environment.sh
-run_recorded gateway-environment test-gateway-environment.log -- bash tests/environment/test_gateway_environment.sh
-run_recorded ai-lock ai-lock-check.log -- capture_ai_lock "$evidence_dir"
-run_recorded gateway-lock gateway-lock-check.log -- capture_gateway_lock "$evidence_dir"
-run_recorded resource-lock resource-lock-check.log -- verify_resources "$evidence_dir"
-run_recorded ros-workspace verify-ros-workspace.log -- bash scripts/setup_ros_workspace.sh --evidence-dir "$evidence_dir"
-run_recorded web-environment test-web-environment.log -- bash tests/environment/test_web_environment.sh
-run_recorded node-lock node-lock-check.log -- capture_node_lock "$evidence_dir"
-run_recorded npm-ci npm-ci.log -- npm --prefix web/frontend ci
-run_recorded frontend-build frontend-build.log -- npm --prefix web/frontend run build
-run_recorded headless-egl verify-headless-egl.log -- bash scripts/smoke_headless_egl.sh --evidence-dir "$evidence_dir"
-
-python3 - "$commands_dir" "$evidence_dir" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-commands_dir, evidence_dir = map(Path, sys.argv[1:])
-expected = {
-    "documentation-gate": "documentation-gate.log",
-    "host-audit": "host-audit.json",
-    "tracked-lock": "tracked-lock-check.log",
-    "version-checks": "version-checks.log",
-    "ai-environment": "test-ai-environment.log",
-    "gateway-environment": "test-gateway-environment.log",
-    "ai-lock": "ai-lock-check.log",
-    "gateway-lock": "gateway-lock-check.log",
-    "resource-lock": "resource-lock-check.log",
-    "ros-workspace": "verify-ros-workspace.log",
-    "web-environment": "test-web-environment.log",
-    "node-lock": "node-lock-check.log",
-    "npm-ci": "npm-ci.log",
-    "frontend-build": "frontend-build.log",
-    "headless-egl": "verify-headless-egl.log",
-}
-records = {}
-for path in commands_dir.glob("*.json"):
-    record = json.loads(path.read_text(encoding="utf-8"))
-    records[record["id"]] = record
-assert set(records) == set(expected)
-for command_id, log_relative in expected.items():
-    record = records[command_id]
-    assert record["schema_version"] == 1
-    assert record["argv"]
-    assert record["started_at"].endswith("Z")
-    assert record["completed_at"].endswith("Z")
-    assert record["exit_code"] == 0
-    assert record["capture_exit_code"] == 0
-    assert record["log"] == log_relative
-    log_path = evidence_dir / log_relative
-    assert log_path.is_file()
-    assert log_path.stat().st_size > 0
-PY
-
-python3 - "$evidence_dir/environment.json" "$evidence_dir/host-audit.json" "$git_commit" <<'PY'
+  python3 - "$staging_dir/environment.json" \
+    "$staging_dir/host-audit-final.json" "$git_commit" <<'PY'
 import json
 import subprocess
 import sys
@@ -3248,8 +5366,12 @@ from pathlib import Path
 
 output, audit_path, commit = sys.argv[1:]
 audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
+
 def command(*args):
-    return subprocess.run(args, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+    return subprocess.run(
+        args, check=True, text=True, stdout=subprocess.PIPE
+    ).stdout.strip()
+
 document = {
     "schema_version": 1,
     "git_commit": commit,
@@ -3265,24 +5387,41 @@ document = {
     "npm": command("npm", "--version"),
     "headless_rendering": "ogre2-egl",
 }
-Path(output).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+Path(output).write_text(
+    json.dumps(document, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
 PY
+  measurements="$(
+    python3 - "$staging_dir/host-audit-final.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+audit = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps({
+    "disk_free_bytes": audit["disk_free_bytes"],
+    "memory_bytes": audit["memory_bytes"],
+    "driver_version": audit["gpu"]["driver_version"],
+}, sort_keys=True))
+PY
+  )"
+fi
 
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-python3 - "$evidence_dir/result.json" "$acceptance_run_id" "$git_commit" "$started_at" "$completed_at" "$evidence_dir/host-audit.json" "$commands_dir" <<'PY'
+python3 - "$staging_dir/result.json" "$acceptance_run_id" "$git_commit" \
+  "$started_at" "$completed_at" "$commands_dir" "$measurements" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-output, run_id, commit, started, completed, audit_path, commands_dir = sys.argv[1:]
-audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
+output, run_id, commit, started, completed, commands_dir, measurements = sys.argv[1:]
 records = [
     json.loads(path.read_text(encoding="utf-8"))
     for path in sorted(Path(commands_dir).glob("*.json"))
 ]
 root = Path(output).parent
 artifacts = sorted(
-    str(path.relative_to(root))
+    path.relative_to(root).as_posix()
     for path in root.rglob("*")
     if path.is_file() and path.name not in {"result.json", "SHA256SUMS"}
 )
@@ -3293,184 +5432,236 @@ result = {
     "started_at": started,
     "completed_at": completed,
     "commands": records,
-    "exit_codes": {record["id"]: record["exit_code"] for record in records} | {"verify_environment": 0},
-    "thresholds": {"disk_free_bytes_min": 80 * 1024**3, "memory_bytes_min": 16 * 1024**3, "nvidia_driver_min": "560.35.05"},
-    "measurements": {"disk_free_bytes": audit["disk_free_bytes"], "memory_bytes": audit["memory_bytes"], "driver_version": audit["gpu"]["driver_version"]},
+    "exit_codes": {record["id"]: record["exit_code"] for record in records}
+        | {"verify_environment": 0},
+    "thresholds": {
+        "disk_free_bytes_min": 80 * 1024**3,
+        "memory_bytes_min": 16 * 1024**3,
+        "nvidia_driver_min": "560.35.05",
+    },
+    "measurements": json.loads(measurements),
     "artifacts": artifacts,
     "status": "passed",
     "failures": [],
 }
-Path(output).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+Path(output).write_text(
+    json.dumps(result, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
 PY
 
-final_required=(
-  acceptance_run_id.txt
-  documentation-gate.log
-  host-audit.json
-  install-host.log
-  install-state.env
-  install-complete.env
-  apt-candidates.tsv
-  apt-sources-before/inventory.tsv
-  managed-files-after.tsv
-  host-install-version-changes.tsv
-  ros-archive-key.sha256
-  gazebo-archive-key.sha256
-  dpkg-before.tsv
-  dpkg-after.tsv
-  environment.json
-  dpkg-packages.tsv
-  ai-pip-freeze.txt
-  gateway-pip-freeze.txt
-  node-npm-versions.txt
-  resource-downloads.tsv
-  gpu.txt
-  egl.log
-  forbidden-packages.txt
-  disk-memory.txt
-  colcon-build.log
-  colcon-test.log
-  colcon-test-result.log
-  frontend-build.log
-  result.json
-)
-for relative_path in "${final_required[@]}"; do
-  test -s "$evidence_dir/$relative_path" || {
-    printf 'missing-mandatory-final-artifact: %s\n' "$relative_path" >&2
-    false
-  }
-done
-test -f "$evidence_dir/host-install-new-packages.txt"
-test "$(tail -n1 "$evidence_dir/install-host.log")" = 'install-host: PASS'
-
-acceptance_root="$evidence_dir"
-checksum_found_nul=
-checksum_expected_nul=
-checksum_expected_lines=
-checksum_work=
-checksum_actual_unsorted=
-checksum_actual_lines=
-checksum_install_work=
-checksum_cleanup() {
-  local cleanup_path
-  for cleanup_path in \
-    "$checksum_found_nul" \
-    "$checksum_expected_nul" \
-    "$checksum_expected_lines" \
-    "$checksum_work" \
-    "$checksum_actual_unsorted" \
-    "$checksum_actual_lines" \
-    "$checksum_install_work"; do
-    if test -n "$cleanup_path" && test -e "$cleanup_path"; then
-      unlink -- "$cleanup_path"
-    fi
+if test "$test_mode" -eq 0; then
+  final_required=(
+    acceptance_run_id.txt
+    documentation-gate.log
+    documentation-gate-final.log
+    storage-paths-before.tsv
+    host-audit.json
+    host-audit-final.json
+    install-host.log
+    install-state.env
+    install-complete.env
+    apt-candidates.tsv
+    apt-policy-origins.json
+    apt-sources-before/inventory.tsv
+    apt-sources-after/inventory.tsv
+    policy-rc.d-state.tsv
+    managed-files-after.tsv
+    host-install-version-changes.tsv
+    ros-archive-key.sha256
+    gazebo-archive-key.sha256
+    dpkg-before.tsv
+    dpkg-after.tsv
+    environment.json
+    dpkg-packages.tsv
+    ai-pip-freeze.txt
+    gateway-pip-freeze.txt
+    node-npm-versions.txt
+    node-current-before.tsv
+    resource-downloads.tsv
+    gpu.txt
+    egl.log
+    forbidden-packages.txt
+    disk-memory.txt
+    service-state.txt
+    colcon-build.log
+    colcon-test.log
+    colcon-test-result.log
+    colcon-build-final.log
+    colcon-test-final.log
+    colcon-test-result-final.log
+    frontend-build.log
+    frontend-build-final.log
+    result.json
+  )
+  for relative_path in "${final_required[@]}"; do
+    test -s "$staging_dir/$relative_path" || {
+      printf 'missing-mandatory-final-artifact: %s\n' "$relative_path" >&2
+      false
+    }
   done
-}
-trap checksum_cleanup EXIT
+  test -f "$staging_dir/host-install-new-packages.txt"
+fi
 
-checksum_found_nul="$(mktemp --tmpdir=/tmp)"
-checksum_expected_nul="$(mktemp --tmpdir=/tmp)"
-checksum_expected_lines="$(mktemp --tmpdir=/tmp)"
 checksum_work="$(mktemp --tmpdir=/tmp)"
-checksum_actual_unsorted="$(mktemp --tmpdir=/tmp)"
-checksum_actual_lines="$(mktemp --tmpdir=/tmp)"
+python3 - "$staging_dir" "$checksum_work" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
 
-find "$acceptance_root" -type f ! -path "$acceptance_root/SHA256SUMS" -printf '%P\0' \
-  > "$checksum_found_nul"
-LC_ALL=C sort -z "$checksum_found_nul" > "$checksum_expected_nul"
-mapfile -d '' -t checksum_paths < "$checksum_expected_nul"
-
-for relative_path in "${checksum_paths[@]}"; do
-  if [[ "$relative_path" == *$'\n'* || "$relative_path" == *'\'* ]]; then
-    printf 'checksum: unsupported newline or backslash in path: %q\n' "$relative_path" >&2
-    false
-  fi
-  printf '%s\n' "$relative_path" >> "$checksum_expected_lines"
-  (cd "$acceptance_root" && sha256sum -- "$relative_path") >> "$checksum_work"
-done
-
-LC_ALL=C awk '
-  length($0) < 66 || substr($0, 65, 2) != "  " {
-    print "checksum: malformed SHA256SUMS entry" > "/dev/stderr"
-    exit 1
-  }
-  { print substr($0, 67) }
-' "$checksum_work" > "$checksum_actual_unsorted"
-LC_ALL=C sort "$checksum_actual_unsorted" > "$checksum_actual_lines"
-
-checksum_expected_count="$(wc -l < "$checksum_expected_lines")"
-checksum_actual_count="$(wc -l < "$checksum_actual_lines")"
-printf 'checksum-expected-count=%s\n' "$checksum_expected_count"
-printf 'checksum-actual-count=%s\n' "$checksum_actual_count"
-if test "$checksum_expected_count" -ne "$checksum_actual_count"; then
-  printf '%s\n' 'checksum: expected and actual entry counts differ' >&2
-  false
-fi
-if ! cmp --silent "$checksum_expected_lines" "$checksum_actual_lines"; then
-  diff -u "$checksum_expected_lines" "$checksum_actual_lines" >&2 || true
-  printf '%s\n' 'checksum: expected and actual path sets differ' >&2
-  false
-fi
-
-(cd "$acceptance_root" && sha256sum -c "$checksum_work")
-checksum_install_dir="$(dirname -- "$acceptance_root")"
-checksum_install_work="$(mktemp --tmpdir="$checksum_install_dir")"
-install -m 0640 "$checksum_work" "$checksum_install_work"
-mv -f -- "$checksum_install_work" "$acceptance_root/SHA256SUMS"
-checksum_install_work=
-if ! (cd "$acceptance_root" && sha256sum -c SHA256SUMS); then
-  unlink -- "$acceptance_root/SHA256SUMS"
-  false
-fi
-
-trap - EXIT
-checksum_cleanup
+root, output = map(Path, sys.argv[1:])
+paths = []
+for path in root.rglob("*"):
+    if path.is_symlink():
+        raise SystemExit(f"symlink forbidden in evidence: {path}")
+    if path.is_file():
+        if path.name == "SHA256SUMS":
+            raise SystemExit("SHA256SUMS unexpectedly exists before seal")
+        relative = path.relative_to(root).as_posix()
+        if "\\" in relative or "\n" in relative:
+            raise SystemExit(f"unsupported checksum path: {relative!r}")
+        paths.append(relative)
+    elif not path.is_dir():
+        raise SystemExit(f"unsupported evidence entry: {path}")
+with output.open("w", encoding="utf-8") as handle:
+    for relative in sorted(paths):
+        digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        handle.write(f"{digest}  {relative}\n")
+PY
+(
+  cd "$staging_dir"
+  sha256sum -c "$checksum_work"
+)
 
 trap - ERR
+install -m 0640 "$checksum_work" "$staging_dir/SHA256SUMS"
+python3 - "$staging_dir" "$final_dir" <<'PY'
+import ctypes
+import os
+import sys
+
+source, target = map(os.fsencode, sys.argv[1:])
+libc = ctypes.CDLL(None, use_errno=True)
+renameat2 = libc.renameat2
+renameat2.argtypes = [
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.c_uint,
+]
+renameat2.restype = ctypes.c_int
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
+if renameat2(AT_FDCWD, source, AT_FDCWD, target, RENAME_NOREPLACE) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error), sys.argv[2])
+PY
+
+bash scripts/check_environment_seal.sh --evidence-dir "$final_dir"
 printf '%s\n' 'verify-environment: PASS'
 ```
 
-- [ ] **Step 4: Capture and review the proposed tracked lock**
+The only mutation after successful command/result creation is the final `install` of staging `SHA256SUMS`; the following `renameat2(..., RENAME_NOREPLACE)` publishes that already sealed directory without replacing a concurrent target. The verifier has no code path that unlinks or rewrites `SHA256SUMS`. A failure before that final mutation writes `result.json.status=failed`, leaves the staging directory without `SHA256SUMS`, and makes a rerun refuse the prior verifier state. A failure after checksum publication is treated as sealed-but-unpublished or sealed-final evidence and is never repaired in place.
+
+- [ ] **Step 4: Run the synthetic seal behavior test**
+
+```bash
+chmod +x \
+  scripts/capture_environment_lock.sh \
+  scripts/verify_environment.sh \
+  scripts/check_environment_seal.sh \
+  tests/environment/test_verify_environment.sh
+bash tests/environment/test_verify_environment.sh
+```
+
+Expected: exactly `verify-environment-test: PASS` as the final line. The fresh fixture is sealed and renamed; a second call against the same final target exits nonzero and leaves an exact tree snapshot unchanged; the injected exit 23 leaves an unsealed staging directory with failed `result.json`; a rerun against that partial verifier state is refused without mutation.
+
+Run the static no-repair contract:
+
+```bash
+if rg -n \
+  'download_phase1_resources|install_host|setup_(ros_workspace|python_env|gateway_env|web_env)|compile_requirements|npm[^[:alnum:]]+ci|(^|[[:space:];])(unlink|rm)[[:space:]][^[:cntrl:]]*SHA256SUMS' \
+  scripts/verify_environment.sh scripts/check_environment_seal.sh; then
+  exit 1
+else
+  printf '%s\n' 'verify-environment-no-repair-contract: PASS'
+fi
+```
+
+Expected: exactly `verify-environment-no-repair-contract: PASS`.
+
+- [ ] **Step 5: Capture and review the proposed tracked lock before sealing**
 
 Run:
 
 ```bash
-chmod +x scripts/capture_environment_lock.sh scripts/verify_environment.sh tests/environment/test_verify_environment.sh
 source .phase1-run.env
+test -d "$PHASE1_EVIDENCE_ROOT"
+test ! -e "$PHASE1_EVIDENCE_FINAL"
+test ! -e "$PHASE1_EVIDENCE_ROOT/SHA256SUMS"
 bash scripts/capture_environment_lock.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"
 git diff -- artifacts/environment
 (cd artifacts/environment && sha256sum -c SHA256SUMS)
+git status --short
 ```
 
-Expected: `capture-environment-lock: PASS`; five `OK` checksum lines; the Debian snapshot reflects the approved current server and does not contain a forbidden package. Review every version change before proceeding.
+Expected: `capture-environment-lock: PASS: first-baseline-created` for the first baseline, or `tracked-baseline-unchanged` only for a clean pre-existing approved baseline. Five `OK` lines follow. Review the complete Debian snapshot and all four other manifests; stop on any forbidden package, unexpected version, resource identity change, or dirty/partial prior baseline.
 
-- [ ] **Step 5: Run the canonical verifier and the focused test**
+Safe rollback before commit distinguishes the two cases:
 
-```bash
-source .phase1-run.env
-bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"
-bash tests/environment/test_verify_environment.sh
-```
+1. If `artifacts/environment` was already tracked before this task, preserve it byte-for-byte. Never move, delete, or rewrite it; correct the underlying environment or authority conflict instead.
+2. If this is the first untracked baseline created by this step and review rejects it before commit, run `test -z "$(git ls-files artifacts/environment)"`, then move it with plain `mv -- artifacts/environment "artifacts/environment.rejected-$PHASE1_RUN_ID"` after confirming the quarantine target is absent. Do not use `git mv` for an untracked directory.
+3. If the first baseline has already been committed, revert the focused Task 10 commit instead of manually editing tracked manifests. Preserve every runtime evidence directory.
 
-Expected: final lines `verify-environment: PASS` and `verify-environment-test: PASS`; every required artifact is present (and non-empty except the explicitly allowed empty new-package list); both SHA manifests verify; `result.json.status` is `passed`; failures is empty. Fifteen child-command records each contain exact argv, log path, start/end UTC, command exit code, and capture exit code; `result.json.exit_codes` has those fifteen zero entries plus `verify_environment: 0`, rather than one aggregate value. The canonical command is not piped to a file inside the tree while that tree is being hashed. Any intermediate error removes the prior SHA manifest, records the failed command metadata and a failed `result.json`, and exits nonzero.
-
-Evidence: the complete required final evidence set listed in the file map, rooted at `$PHASE1_EVIDENCE_ROOT`, plus the reviewed six-file tracked lock under `artifacts/environment`.
-
-Safe rollback: preserve the full acceptance directory. Do not replace the prior approved environment lock. If this is the first baseline and review rejects it, move exactly `artifacts/environment` to `artifacts/environment.rejected-$PHASE1_RUN_ID` with `git mv`, record the reason, and revert Task 10. Roll back the underlying task that caused the mismatch rather than editing captured versions by hand.
-
-- [ ] **Step 6: Commit Task 10, then re-verify that exact commit**
+- [ ] **Step 6: Commit the verifier implementation and reviewed lock**
 
 ```bash
-git add scripts/capture_environment_lock.sh scripts/verify_environment.sh tests/environment/test_verify_environment.sh artifacts/environment
+git add \
+  scripts/capture_environment_lock.sh \
+  scripts/verify_environment.sh \
+  scripts/check_environment_seal.sh \
+  tests/environment/test_verify_environment.sh \
+  artifacts/environment
 git diff --cached --check
+git diff --cached --stat
 git commit -m "test: verify phase one environment baseline"
 verified_commit="$(git rev-parse HEAD)"
-source .phase1-run.env
-bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"
-test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_ROOT/result.json")" = "$verified_commit"
+test -z "$(git status --porcelain=v1 --untracked-files=all -- \
+  scripts/capture_environment_lock.sh \
+  scripts/verify_environment.sh \
+  scripts/check_environment_seal.sh \
+  tests/environment/test_verify_environment.sh \
+  artifacts/environment)"
 ```
 
-Expected: the post-commit verifier prints `verify-environment: PASS`, and evidence `git_commit` equals the Task 10 commit exactly.
+Expected: one focused implementation/lock commit exists before any live seal. `verified_commit` is the exact code and tracked lock that the immutable evidence will identify.
+
+- [ ] **Step 7: Perform the one live canonical seal, then use only the read-only checker**
+
+Run exactly once for this acceptance run:
+
+```bash
+source .phase1-run.env
+verified_commit="$(git rev-parse HEAD)"
+test -d "$PHASE1_EVIDENCE_ROOT"
+test ! -e "$PHASE1_EVIDENCE_FINAL"
+test ! -e "$PHASE1_EVIDENCE_ROOT/SHA256SUMS"
+bash scripts/verify_environment.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"
+test ! -e "$PHASE1_EVIDENCE_ROOT"
+test -d "$PHASE1_EVIDENCE_FINAL"
+bash scripts/check_environment_seal.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"
+test "$(
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' \
+    "$PHASE1_EVIDENCE_FINAL/result.json"
+)" = "$verified_commit"
+```
+
+Expected: final lines `verify-environment: PASS` and `check-environment-seal: PASS`; `result.json.status` is `passed`, failures is empty, every command/capture exit is zero, the recursive path set exactly matches `SHA256SUMS`, the staging path no longer exists, and `result.json.git_commit` is the already committed Task 10 implementation/lock commit. Do not call `verify_environment.sh` again for this run; all later checks use `check_environment_seal.sh`.
+
+If the command fails before `SHA256SUMS` is created, preserve the failed unsealed staging tree and start a new acceptance run after correcting the cause. If it fails after checksum creation or atomic publication, preserve that sealed state and stop for operator review; never delete, repair, or reseal it.
+
+Evidence: the immutable complete set rooted at `$PHASE1_EVIDENCE_FINAL`, plus the reviewed tracked six-file lock under `artifacts/environment`.
 
 ---
 
@@ -3481,26 +5672,27 @@ Expected: the post-commit verifier prints `verify-environment: PASS`, and eviden
 - Modify: `docs/HANDOFF.md`
 
 **Interfaces:**
-- Consumes: the immutable Task 10 implementation verification record, `$PHASE1_EVIDENCE_ROOT/result.json`, `$PHASE1_EVIDENCE_ROOT/SHA256SUMS`, all verification commands, current Git status, and service state.
+- Consumes: the immutable Task 10 implementation verification record, `$PHASE1_EVIDENCE_FINAL/result.json`, `$PHASE1_EVIDENCE_FINAL/SHA256SUMS`, all verification commands, current Git status, and service state.
 - Produces: a documentation-only synchronization commit that names the earlier verified implementation commit and a deterministic Phase 2 resume entry. It does not rewrite the immutable environment result to pretend that the later documentation commit was environment-tested.
 
 - [ ] **Step 1: Capture the exact dynamic values before editing**
 
 ```bash
 source .phase1-run.env
-verified_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_ROOT/result.json")"
-verified_at="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_at"])' "$PHASE1_EVIDENCE_ROOT/result.json")"
-verified_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$PHASE1_EVIDENCE_ROOT/result.json")"
+verified_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_FINAL/result.json")"
+verified_at="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_at"])' "$PHASE1_EVIDENCE_FINAL/result.json")"
+verified_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$PHASE1_EVIDENCE_FINAL/result.json")"
 repo_root="$(git rev-parse --show-toplevel)"
 branch_name="$(git branch --show-current)"
-verification_command="$(printf 'bash scripts/verify_environment.sh --evidence-dir %q' "$PHASE1_EVIDENCE_ROOT")"
+verification_command="$(printf 'bash scripts/verify_environment.sh --evidence-dir %q' "$PHASE1_EVIDENCE_FINAL")"
+seal_check_command="$(printf 'bash scripts/check_environment_seal.sh --evidence-dir %q' "$PHASE1_EVIDENCE_FINAL")"
 status_commit_command='git log -1 --format=%H -- docs/PROJECT_STATUS.md docs/HANDOFF.md'
-resume_command="$(printf 'cd %q && source .phase1-run.env && (cd %q && sha256sum -c SHA256SUMS)' "$repo_root" "$PHASE1_EVIDENCE_ROOT")"
-printf 'verified_commit=%s\nverified_at=%s\nverified_status=%s\nrepo_root=%s\nbranch=%s\nevidence=%s\nverification_command=%s\nstatus_commit_command=%s\nresume_command=%s\n' \
-  "$verified_commit" "$verified_at" "$verified_status" "$repo_root" "$branch_name" "$PHASE1_EVIDENCE_ROOT" "$verification_command" "$status_commit_command" "$resume_command"
+resume_command="$(printf 'cd %q && source .phase1-run.env && bash scripts/check_environment_seal.sh --evidence-dir %q' "$repo_root" "$PHASE1_EVIDENCE_FINAL")"
+printf 'verified_commit=%s\nverified_at=%s\nverified_status=%s\nrepo_root=%s\nbranch=%s\nevidence=%s\nverification_command=%s\nseal_check_command=%s\nstatus_commit_command=%s\nresume_command=%s\n' \
+  "$verified_commit" "$verified_at" "$verified_status" "$repo_root" "$branch_name" "$PHASE1_EVIDENCE_FINAL" "$verification_command" "$seal_check_command" "$status_commit_command" "$resume_command"
 test "$verified_status" = passed
 test "$(git rev-parse HEAD)" = "$verified_commit"
-(cd "$PHASE1_EVIDENCE_ROOT" && sha256sum -c SHA256SUMS)
+bash scripts/check_environment_seal.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"
 git status --short
 ```
 
@@ -3515,6 +5707,7 @@ Keep the document's existing headings, but make its current fact set exactly equ
 - Verified implementation commit: the literal `verified_commit` printed in Step 1.
 - Verification time: the literal UTC `verified_at` printed in Step 1.
 - Verification command: the exact `verification_command` line printed in Step 1.
+- Read-only seal check: the exact `seal_check_command` line printed in Step 1; this is the only evidence command used after the one-shot verifier.
 - Result: `passed`; `result.json` and `SHA256SUMS` both verified.
 - Evidence scope: `result.json.git_commit` intentionally identifies the verified Task 10 implementation commit. The later status/handoff commit is documentation-only and must not be represented as an environment implementation commit.
 - Status-document commit: resolve the current value with the exact literal `status_commit_command` printed in Step 1; the document does not embed its own commit hash because that would be self-referential.
@@ -3535,7 +5728,8 @@ Keep the existing recovery structure, and make it exactly equivalent to:
 - Branch: the literal branch printed in Step 1.
 - Verified environment implementation commit: the literal `verified_commit` printed in Step 1.
 - Status synchronization commit: resolve it from Git with the exact literal `status_commit_command` printed in Step 1; it is documentation-only and later than the verified implementation commit.
-- Last successful command: the exact `verification_command` line printed in Step 1.
+- Canonical one-shot verification command: the exact `verification_command` line printed in Step 1; do not rerun it for this acceptance run.
+- Last successful command: the exact read-only `seal_check_command` line printed in Step 1.
 - Result: passed at the literal UTC verification time.
 - Evidence: the literal environment evidence path; `result.json` status passed; `SHA256SUMS` verified.
 - Runtime services: none.
@@ -3552,9 +5746,9 @@ Insert literal paths and values from Step 1. Do not claim Nginx, Gateway, fronte
 
 ```bash
 source .phase1-run.env
-verified_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_ROOT/result.json")"
-rg -n 'Phase 1|environment baseline|环境基线|verify_environment.sh|result.json|SHA256SUMS|Phase 2|Gazebo' docs/PROJECT_STATUS.md docs/HANDOFF.md
-rg -n -F "$PHASE1_EVIDENCE_ROOT" docs/PROJECT_STATUS.md docs/HANDOFF.md
+verified_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_FINAL/result.json")"
+rg -n 'Phase 1|environment baseline|环境基线|verify_environment.sh|check_environment_seal.sh|result.json|SHA256SUMS|Phase 2|Gazebo' docs/PROJECT_STATUS.md docs/HANDOFF.md
+rg -n -F "$PHASE1_EVIDENCE_FINAL" docs/PROJECT_STATUS.md docs/HANDOFF.md
 git diff --check
 git add docs/PROJECT_STATUS.md docs/HANDOFF.md
 git diff --cached --check
@@ -3573,20 +5767,20 @@ Safe rollback: revert only the status/handoff commit. Never change environment e
 
 ```bash
 source .phase1-run.env
-verified_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_ROOT/result.json")"
+verified_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_FINAL/result.json")"
 status_commit="$(git rev-parse HEAD)"
-evidence_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_ROOT/result.json")"
+evidence_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$PHASE1_EVIDENCE_FINAL/result.json")"
 test "$evidence_commit" = "$verified_commit"
 test "$status_commit" != "$verified_commit"
 test "$(git diff --name-only "$verified_commit" "$status_commit" | LC_ALL=C sort)" = $'docs/HANDOFF.md\ndocs/PROJECT_STATUS.md'
-(cd "$PHASE1_EVIDENCE_ROOT" && sha256sum -c SHA256SUMS)
+bash scripts/check_environment_seal.sh --evidence-dir "$PHASE1_EVIDENCE_FINAL"
 bash scripts/verify_documentation_gate.sh
 git status --short
 ```
 
 Expected: environment evidence still refers exactly to the Task 10 implementation commit and all checksums pass without rewriting any evidence. The current HEAD differs only by the two status documents, and the documentation gate passes at that documentation-only HEAD. Only unrelated pre-existing changes, if any, remain.
 
-Evidence: the immutable `$PHASE1_EVIDENCE_ROOT/result.json`, `$PHASE1_EVIDENCE_ROOT/SHA256SUMS`, the literal Git diff between implementation and status commits, and the two committed current-state documents.
+Evidence: the immutable `$PHASE1_EVIDENCE_FINAL/result.json`, `$PHASE1_EVIDENCE_FINAL/SHA256SUMS`, the literal Git diff between implementation and status commits, and the two committed current-state documents.
 
 ---
 
@@ -3612,13 +5806,17 @@ required_paths = (
     "scripts/verify_documentation_gate.sh",
     "scripts/audit_host.sh",
     "scripts/install_host.sh",
+    "scripts/rollback_host.sh",
     "scripts/download_phase1_resources.sh",
+    "scripts/verify_phase1_resources.sh",
     "scripts/setup_ros_workspace.sh",
     "scripts/setup_python_env.sh",
     "scripts/setup_gateway_env.sh",
     "scripts/setup_web_env.sh",
     "scripts/smoke_headless_egl.sh",
     "scripts/verify_environment.sh",
+    "scripts/check_environment_seal.sh",
+    "scripts/lib/venv_provenance.py",
     "requirements.lock",
     "requirements-web.lock",
     "web/frontend/package-lock.json",
@@ -3674,6 +5872,74 @@ PY
 ```
 
 Expected: exactly `plan-command-safety: PASS`.
+
+Before requesting the final independent plan review, mechanically extract every exact tracked-file code block into a fresh temporary Git repository and run the guarded controller behavior probes:
+
+```bash
+review_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+review_root="/tmp/phase1-plan-review-$review_id"
+test ! -e "$review_root"
+install -d -m 0700 "$review_root"
+cleanup_plan_review() {
+  case "$review_root" in
+    /tmp/phase1-plan-review-*) find "$review_root" -depth -delete ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_plan_review EXIT
+python3 - "$review_root" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+lines = Path("docs/plans/PHASE-01-ENVIRONMENT.md").read_text(encoding="utf-8").splitlines()
+pattern = re.compile(
+    r"^Create `([^`]+)`(?: with this exact(?: tab-separated)? content,?[^:]*|):$"
+)
+created = []
+for index, line in enumerate(lines):
+    match = pattern.match(line)
+    if not match:
+        continue
+    relative = match.group(1)
+    start = index + 1
+    while start < len(lines) and not lines[start].startswith("```"):
+        start += 1
+    assert start < len(lines), relative
+    fence = lines[start][: len(lines[start]) - len(lines[start].lstrip("`"))]
+    end = start + 1
+    while end < len(lines) and lines[end] != fence:
+        end += 1
+    assert end < len(lines), relative
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines[start + 1 : end]) + "\n", encoding="utf-8")
+    created.append(relative)
+assert len(created) == 40, created
+print("plan-extracted-files: PASS: 40")
+PY
+(
+  cd "$review_root"
+  chmod +x scripts/*.sh tests/environment/*.sh tests/environment/fixtures/fake_host_command.py
+  git init -q
+  git config user.name 'Phase 1 Plan Validator'
+  git config user.email validator@example.invalid
+  git add .
+  git commit -qm baseline
+  bash tests/environment/test_audit_host.sh
+  bash tests/environment/test_install_host.sh
+  bash tests/environment/test_phase1_resources.sh
+  bash tests/environment/test_verify_environment.sh
+)
+printf '%s\n' 'phase1-plan-controller-behavior: PASS'
+trap - EXIT
+cleanup_plan_review
+```
+
+Expected final lines include `audit-host-test: PASS`, `install-host-test: PASS`, `phase1-resource-test: PASS`, `verify-environment-test: PASS`, and `phase1-plan-controller-behavior: PASS`. Negative cases intentionally print rejection messages or Python assertion tracebacks before their enclosing test reaches its PASS line.
+
+Only after these behavior probes and all syntax/static checks pass may the final independent review begin. Record the reviewed plan SHA-256 and the final Critical/Important/Minor counts. In `.superpowers/sdd/task-5-report.md`, explicitly mark any earlier narrower “0 findings” conclusion as superseded by the later controller-level review and its remediation; never present the earlier conclusion as the final review result.
 
 Run final Markdown and diff checks:
 
