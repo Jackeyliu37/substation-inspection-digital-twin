@@ -46,18 +46,92 @@ git rev-parse HEAD > "$acceptance_root/git_commit.txt"
 最终执行：
 
 ```bash
-checksum_work="$(mktemp)"
+set -euo pipefail
+
+checksum_found_nul=
+checksum_expected_nul=
+checksum_expected_lines=
+checksum_work=
+checksum_actual_unsorted=
+checksum_actual_lines=
+checksum_install_work=
+checksum_cleanup() {
+  local cleanup_path
+  for cleanup_path in \
+    "$checksum_found_nul" \
+    "$checksum_expected_nul" \
+    "$checksum_expected_lines" \
+    "$checksum_work" \
+    "$checksum_actual_unsorted" \
+    "$checksum_actual_lines" \
+    "$checksum_install_work"; do
+    if test -n "$cleanup_path" && test -e "$cleanup_path"; then
+      unlink -- "$cleanup_path"
+    fi
+  done
+}
+trap checksum_cleanup EXIT
+
+checksum_found_nul="$(mktemp --tmpdir=/tmp)"
+checksum_expected_nul="$(mktemp --tmpdir=/tmp)"
+checksum_expected_lines="$(mktemp --tmpdir=/tmp)"
+checksum_work="$(mktemp --tmpdir=/tmp)"
+checksum_actual_unsorted="$(mktemp --tmpdir=/tmp)"
+checksum_actual_lines="$(mktemp --tmpdir=/tmp)"
+
 find "$acceptance_root" -type f ! -path "$acceptance_root/SHA256SUMS" -printf '%P\0' \
-  | LC_ALL=C sort -z \
-  | while IFS= read -r -d '' relative_path; do
-      (cd "$acceptance_root" && sha256sum -- "$relative_path")
-    done > "$checksum_work"
-install -m 0640 "$checksum_work" "$acceptance_root/SHA256SUMS"
-unlink "$checksum_work"
-(cd "$acceptance_root" && sha256sum -c SHA256SUMS)
+  > "$checksum_found_nul"
+LC_ALL=C sort -z "$checksum_found_nul" > "$checksum_expected_nul"
+mapfile -d '' -t checksum_paths < "$checksum_expected_nul"
+
+for relative_path in "${checksum_paths[@]}"; do
+  if [[ "$relative_path" == *$'\n'* || "$relative_path" == *'\'* ]]; then
+    printf 'checksum: unsupported newline or backslash in path: %q\n' "$relative_path" >&2
+    exit 1
+  fi
+  printf '%s\n' "$relative_path" >> "$checksum_expected_lines"
+  (cd "$acceptance_root" && sha256sum -- "$relative_path") >> "$checksum_work"
+done
+
+LC_ALL=C awk '
+  length($0) < 66 || substr($0, 65, 2) != "  " {
+    print "checksum: malformed SHA256SUMS entry" > "/dev/stderr"
+    exit 1
+  }
+  { print substr($0, 67) }
+' "$checksum_work" > "$checksum_actual_unsorted"
+LC_ALL=C sort "$checksum_actual_unsorted" > "$checksum_actual_lines"
+
+checksum_expected_count="$(wc -l < "$checksum_expected_lines")"
+checksum_actual_count="$(wc -l < "$checksum_actual_lines")"
+printf 'checksum-expected-count=%s\n' "$checksum_expected_count"
+printf 'checksum-actual-count=%s\n' "$checksum_actual_count"
+if test "$checksum_expected_count" -ne "$checksum_actual_count"; then
+  printf '%s\n' 'checksum: expected and actual entry counts differ' >&2
+  exit 1
+fi
+if ! cmp --silent "$checksum_expected_lines" "$checksum_actual_lines"; then
+  diff -u "$checksum_expected_lines" "$checksum_actual_lines" >&2 || true
+  printf '%s\n' 'checksum: expected and actual path sets differ' >&2
+  exit 1
+fi
+
+(cd "$acceptance_root" && sha256sum -c "$checksum_work")
+checksum_install_dir="$(dirname -- "$acceptance_root")"
+checksum_install_work="$(mktemp --tmpdir="$checksum_install_dir")"
+install -m 0640 "$checksum_work" "$checksum_install_work"
+mv -f -- "$checksum_install_work" "$acceptance_root/SHA256SUMS"
+checksum_install_work=
+if ! (cd "$acceptance_root" && sha256sum -c SHA256SUMS); then
+  unlink -- "$acceptance_root/SHA256SUMS"
+  exit 1
+fi
+
+trap - EXIT
+checksum_cleanup
 ```
 
-`SHA256SUMS` 必须使用相对路径、按字节序稳定排序，并明确排除自身；临时文件生成在证据根目录之外，完成后再安装到固定位置。清单含自身、使用绝对路径、重复生成后内容变化或从非证据根目录执行校验，均为失败。
+以上内容必须作为同一个 Bash 脚本或代码块一次执行，不得逐行执行；`set -euo pipefail`、数组、trap 和临时文件状态共同构成失败关闭边界。`SHA256SUMS` 必须使用相对路径、按字节序稳定排序，并明确排除自身；发现清单、期望清单、校验输出和实际路径清单全部显式创建在 `/tmp`，不受调用者 `TMPDIR` 影响且位于固定的 `/var/lib/substation/evidence/acceptance/<acceptance_run_id>` 证据根目录之外。只有在文件集合冻结、路径与计数比较以及外部临时清单校验全部通过后，才在 `acceptance_root` 的父目录创建单一安装暂存文件；该路径仍在本 run 根目录之外，但与最终清单位于同一文件系统，`install` 成功后可通过 `mv` 原子替换 `SHA256SUMS`，失败时由 trap 按精确路径 `unlink`。完成或失败时不得使用宽泛通配删除。由于最终 `SHA256SUMS` 是换行分隔格式，文件相对路径含换行或反斜杠时必须失败，不能生成转义后难以与 NUL 清单逐项比较的清单。发现、排序、读取、子 shell、哈希、期望/实际路径集合、显式计数比较、安装/重命名或最终 `sha256sum -c` 任一步失败，均不得保留新生成的无效最终清单；清单含自身、使用绝对路径、重复生成后内容变化、遗漏/增加条目或从非证据根目录执行校验，均为失败。
 
 每层的 `result.json` 至少包含 `schema_version`、`acceptance_run_id`、`git_commit`、`started_at`、`completed_at`、`commands`、`exit_codes`、`thresholds`、`measurements`、`artifacts`、`status` 和 `failures`。`status` 只允许 `passed` 或 `failed`；不存在以 `pending` 代替失败的最终记录。
 
@@ -128,8 +202,6 @@ authority_checks = {
         "c63ed3c7f5ea33ac8e9024c467a70a62" + "b849b2ad",
         "4bf9c31b18fadcd44d5f0b6d66f82bc" + "56fa5e328",
         "Apache-" + "2.0",
-        "CC" + "0",
-        "CC0 " + "1.0",
         "CC BY-NC " + "3.0",
         "train 5," + "023；val 601；test 1,452；总计 7,076",
         "7," + "041 张",
@@ -176,11 +248,56 @@ for path, literals in authority_checks.items():
             failed = True
         else:
             print(f"baseline-literal: PASS: {path}: {literal}")
+
+def dataset_license_cell(table_text, dataset_id):
+    expected_first_cell = f"`{dataset_id}`"
+    matches = []
+    for line_number, line in enumerate(table_text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        raw_cells = stripped.split("|")
+        if len(raw_cells) > 1 and raw_cells[1].strip() == expected_first_cell:
+            matches.append((line_number, stripped))
+    if len(matches) != 1:
+        raise ValueError(f"expected exactly one row, found {len(matches)}")
+    line_number, row = matches[0]
+    if not row.endswith("|"):
+        raise ValueError(f"line {line_number}: row does not end with |")
+    cells = [cell.strip() for cell in row[1:-1].split("|")]
+    if len(cells) != 6:
+        raise ValueError(f"line {line_number}: expected 6 cells, found {len(cells)}")
+    return line_number, cells[4]
+
+dataset_path = Path("docs/DATA_AND_MODELS.md")
+dataset_text = dataset_path.read_text(encoding="utf-8")
+dataset_license_checks = [
+    ("hard-hat-workers-" + "v10", "CC" + "0"),
+    ("d-" + "fire", "CC" + "0 " + "1.0"),
+]
+for dataset_id, expected_license in dataset_license_checks:
+    try:
+        line_number, actual_license = dataset_license_cell(dataset_text, dataset_id)
+    except ValueError as error:
+        print(f"dataset-license: FAIL: {dataset_path}: {dataset_id}: {error}")
+        failed = True
+        continue
+    if actual_license != expected_license and not actual_license.startswith(expected_license + "；"):
+        print(
+            f"dataset-license: FAIL: {dataset_path}:{line_number}: {dataset_id}: "
+            f"expected {expected_license}, got {actual_license}"
+        )
+        failed = True
+    else:
+        print(
+            f"dataset-license: PASS: {dataset_path}:{line_number}: {dataset_id}: "
+            f"license={actual_license}"
+        )
 raise SystemExit(1 if failed else 0)
 PY
 ```
 
-通过：三个文件非空，结构化验证器为每一个版本、数据 revision、许可、样本数、模型名和阈值分别打印一行 `PASS` 并以 0 退出。验证器只读取三份专项权威文档，所有期望值在验证器源码中拆分后运行时拼接，因此不能命中它在 `TEST_ACCEPTANCE.md` 中自己的命令文本。任一独立 literal 缺失或命令非零即失败。
+通过：三个文件非空，结构化验证器为每一个版本、数据 revision、样本数、模型名和阈值分别打印一行 `PASS`，并且从数据源 Markdown 表中精确找到唯一的 `hard-hat-workers-v10` 与 `d-fire` 行，分别验证许可单元格为 `CC0` 和 `CC0 1.0`（允许其后紧跟全角分号及用途说明），最后以 0 退出。目标数据集 ID 和许可期望值均在验证器源码中拆分后运行时拼接，验证器只读取三份专项权威文档，因此不能命中它在 `TEST_ACCEPTANCE.md` 中自己的命令文本。任一独立 literal 缺失、目标行缺失/重复/格式错误、许可不同或命令非零即失败。
 
 ### 4.2 未填标记、边界与一致性扫描
 
