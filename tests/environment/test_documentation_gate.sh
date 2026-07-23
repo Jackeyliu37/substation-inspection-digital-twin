@@ -5,8 +5,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 test -x scripts/verify_documentation_gate.sh
-output="$(bash scripts/verify_documentation_gate.sh)"
+output="$(bash scripts/verify_documentation_gate.sh 2>&1)"
 grep -Fx 'documentation-gate: PASS' <<<"$output"
+if grep -Fq 'rg: error' <<<"$output"; then
+  exit 1
+fi
 
 grep -Fq '公开训练数据下载和模型微调由用户在本仓库外完成' docs/DATA_AND_MODELS.md
 grep -Fq '官方 `yolo11n.pt` 仅作为开发占位/base weight' docs/DATA_AND_MODELS.md
