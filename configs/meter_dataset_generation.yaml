@@ -1,0 +1,23 @@
+schema_version: 1
+dataset_id: gazebo-meter-locator-v1
+scenario_id: gazebo-meter-locator
+global_seed: 42
+image: {width: 640, height: 480, format: rgb8}
+class_names: {0: meter}
+frames_per_group: 20
+groups_per_meter: {train: 40, val: 5, test: 5}
+meter_asset_ids: [meter-oil-01, meter-pressure-01]
+minimum_bbox_pixels: 32
+maximum_retries_per_sample: 8
+fresh_frames_after_command: 3
+view_families:
+  distances_m: [0.65, 0.85, 1.05, 1.25, 1.45]
+  yaw_degrees: [-28, -14, 0, 14, 28]
+  pitch_degrees: [-18, -9, 0, 9, 18]
+  roll_degrees: [-12, -6, 0, 6, 12]
+light_families: [bright, nominal, low, warm, cool]
+background_families: [industrial_light, industrial_dark, concrete]
+occlusion_regimes: [none, edge_left, edge_right, partial_bottom]
+postprocess:
+  brightness_scales: [0.75, 0.9, 1.0, 1.1, 1.25]
+  blur_sigmas: [0.0, 0.4, 0.8, 1.2]
