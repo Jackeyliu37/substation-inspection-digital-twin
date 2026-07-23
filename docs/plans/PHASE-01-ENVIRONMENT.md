@@ -12,7 +12,7 @@
 
 - The root project plan is the scope authority. This phase creates only the environment, repository baselines, early immutable resource downloads, tests, and evidence required by Phase 1 acceptance.
 - Use Ubuntu 24.04 LTS, ROS 2 Jazzy Jalisco, Gazebo Harmonic `gz-sim 8.x`, and Python 3.12. Stop if the host or resolved upstream versions contradict `docs/VERSION_MATRIX.md`.
-- Preserve the approved ROS upstream identities: `ros_gz 1.0.23-1`, Navigation2 `1.3.12-1`, SLAM Toolbox `2.8.5-1`, TurtleBot3 core `2.3.6-1`, and TurtleBot3 simulation `2.3.7-1`; full Noble package revisions enter the Debian manifest.
+- Preserve the approved ROS upstream identities: `ros_gz 1.0.22-1`, Navigation2 `1.3.12-1`, SLAM Toolbox `2.8.5-1`, TurtleBot3 core `2.3.6-1`, and TurtleBot3 simulation `2.3.7-1`; full Noble package revisions enter the Debian manifest.
 - Gazebo rendering is OGRE2/EGL headless only. Ubuntu desktop metapackages, GNOME/KDE shells, display managers, NoMachine, Xvfb, VirtualGL, active `Xorg`/`Xwayland`/Wayland sessions, graphical targets, and project-created X Server configuration are forbidden. Ubuntu official NVIDIA driver packages may retain inert X package dependencies only under ADR-0004 evidence.
 - Do not introduce ROS 1, Gazebo Classic, another ROS distribution, Conda CUDA, Ubuntu `nvidia-cuda-toolkit`, a global `sudo pip`, or pip CUDA packages outside the approved PyTorch CUDA 12.6 wheel source.
 - The AI environment is repository-root `.venv`; the Gateway environment is repository-root `.venv-web`; both use `python3 -m venv --system-site-packages` so ROS `rclpy` remains available.
@@ -601,7 +601,7 @@ origin=http://archive.ubuntu.com/ubuntu
 case "$package" in
   gz-harmonic) expected=8.9.0-1~noble; origin=http://packages.osrfoundation.org/gazebo/ubuntu-stable ;;
   ros-jazzy-*)
-    expected=1.0.23-1-1noble.20260701
+    expected=1.0.22-1-1noble.20260701
     case "$package" in
       ros-jazzy-navigation2|ros-jazzy-nav2-bringup) expected=1.3.12-1-1noble.20260701 ;;
       ros-jazzy-slam-toolbox) expected=2.8.5-1-1noble.20260701 ;;
@@ -962,7 +962,7 @@ for entry in apt_sources:
         forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"non-Noble suite is forbidden: {suite}"})
 
 locked_upstream = {
-    "ros-jazzy-ros-gz": "1.0.23-1",
+    "ros-jazzy-ros-gz": "1.0.22-1",
     "ros-jazzy-navigation2": "1.3.12-1",
     "ros-jazzy-nav2-bringup": "1.3.12-1",
     "ros-jazzy-slam-toolbox": "2.8.5-1",
@@ -1181,7 +1181,7 @@ grep -Fx 'gz-harmonic' <<<"$plan"
 grep -Fx 'ros-jazzy-foxglove-bridge' <<<"$plan"
 ! grep -E 'ros-.*-desktop|ubuntu-desktop|xorg|xserver-xorg|nomachine|xvfb|virtualgl|nvidia-cuda-toolkit' <<<"$plan"
 test "$(LC_ALL=C sort config/environment/apt-packages.txt | uniq -d | wc -l)" -eq 0
-rg -F '"ros-jazzy-ros-gz": "1.0.23-1"' scripts/install_host.sh
+rg -F '"ros-jazzy-ros-gz": "1.0.22-1"' scripts/install_host.sh
 rg -F '"ros-jazzy-navigation2": "1.3.12-1"' scripts/install_host.sh
 rg -F '"ros-jazzy-nav2-bringup": "1.3.12-1"' scripts/install_host.sh
 rg -F '"ros-jazzy-slam-toolbox": "2.8.5-1"' scripts/install_host.sh
@@ -1510,7 +1510,7 @@ from pathlib import Path
 
 
 LOCKED = {
-    "ros-jazzy-ros-gz": "1.0.23-1-1noble.20260701",
+    "ros-jazzy-ros-gz": "1.0.22-1-1noble.20260701",
     "ros-jazzy-navigation2": "1.3.12-1-1noble.20260701",
     "ros-jazzy-nav2-bringup": "1.3.12-1-1noble.20260701",
     "ros-jazzy-slam-toolbox": "2.8.5-1-1noble.20260701",
@@ -1982,7 +1982,7 @@ input_path = Path(sys.argv[1])
 input_kind = sys.argv[2]
 output_path = Path(sys.argv[3])
 locked_upstream = {
-    "ros-jazzy-ros-gz": "1.0.23-1",
+    "ros-jazzy-ros-gz": "1.0.22-1",
     "ros-jazzy-navigation2": "1.3.12-1",
     "ros-jazzy-nav2-bringup": "1.3.12-1",
     "ros-jazzy-slam-toolbox": "2.8.5-1",
@@ -2084,7 +2084,7 @@ validate_installed_stack() {
   driver_is_ready
   source "$(host_path /opt/ros/jazzy/setup.bash)"
   test "$ROS_DISTRO" = jazzy
-  require_upstream_version ros-jazzy-ros-gz 1.0.23-1
+  require_upstream_version ros-jazzy-ros-gz 1.0.22-1
   require_upstream_version ros-jazzy-navigation2 1.3.12-1
   require_upstream_version ros-jazzy-nav2-bringup 1.3.12-1
   require_upstream_version ros-jazzy-slam-toolbox 2.8.5-1
@@ -2834,7 +2834,7 @@ test -s "$PHASE1_EVIDENCE_ROOT/managed-files-after.tsv"
 grep -Fx 'state=PASS' "$PHASE1_EVIDENCE_ROOT/install-complete.env"
 ```
 
-Expected: every command exits 0; ROS is Jazzy, `ros_gz` upstream is 1.0.23-1, Navigation2 is 1.3.12-1, SLAM Toolbox is 2.8.5-1, TurtleBot3 core and simulation expose 2.3.6-1 and 2.3.7-1 respectively, Gazebo major is 8, and the driver meets the floor. Full Ubuntu package revisions are captured for review later; they are not silently normalized away.
+Expected: every command exits 0; ROS is Jazzy, `ros_gz` upstream is 1.0.22-1, Navigation2 is 1.3.12-1, SLAM Toolbox is 2.8.5-1, TurtleBot3 core and simulation expose 2.3.6-1 and 2.3.7-1 respectively, Gazebo major is 8, and the driver meets the floor. Full Ubuntu package revisions are captured for review later; they are not silently normalized away.
 
 Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `policy-rc.d-state.tsv`, key SHA files, and the complete before/after apt-source inventories below `$PHASE1_EVIDENCE_ROOT/apt-sources-before` and `apt-sources-after`.
 

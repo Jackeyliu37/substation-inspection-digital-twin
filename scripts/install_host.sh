@@ -184,11 +184,13 @@ download_host_file() {
     "$source_url" -o "$output_path"
 }
 
-ros_key_sha256=3a4c8d59e3a0fbb2acf338994b6102c5baa17071c4cc97f520b482a697f8a4fe
-printf '%s\n' 'install-host: downloading ROS key'
-download_host_file http://packages.ros.org/ros.key "$work_dir/ros.key"
-test "$(environment_sha256 "$work_dir/ros.key")" = "$ros_key_sha256"
-gpg --batch --yes --dearmor --output "$work_dir/ros-archive-keyring.gpg" "$work_dir/ros.key"
+ros_key_source=config/environment/ros2-archive-keyring.asc
+ros_key_sha256=0d20744b08439371d8077cddbe29573346a7de643e47c3633eb3f8c66936e3ee
+ros_keyring_sha256=4a91c49af0d6f0016108b93698782b596c27ccd836937e18e0e36c3347dc602f
+printf '%s\n' 'install-host: loading pinned ROS key'
+test "$(environment_sha256 "$ros_key_source")" = "$ros_key_sha256"
+gpg --batch --yes --dearmor --output "$work_dir/ros-archive-keyring.gpg" "$ros_key_source"
+test "$(environment_sha256 "$work_dir/ros-archive-keyring.gpg")" = "$ros_keyring_sha256"
 install_managed_file "$work_dir/ros-archive-keyring.gpg" /usr/share/keyrings/ros-archive-keyring.gpg 0644
 
 architecture="$(dpkg --print-architecture)"
@@ -212,7 +214,7 @@ mapfile -t requested_packages < config/environment/apt-packages.txt
 printf '%s\n' 'install-host: simulating apt transaction'
 apt-get --simulate install --no-install-recommends "${requested_packages[@]}" > "$evidence_dir/apt-install-simulation.txt"
 ! grep -Eq '^Remv ' "$evidence_dir/apt-install-simulation.txt"
-! grep -Eq '^Inst .*\[[^]]+\]' "$evidence_dir/apt-install-simulation.txt"
+! grep -Eq '^Inst [^[:space:]]+ \[[^]]+\]' "$evidence_dir/apt-install-simulation.txt"
 if grep -Eq "^(Inst|Remv) ${nvidia_package_regex#^}" "$evidence_dir/apt-install-simulation.txt"; then
   printf '%s\n' 'install-host: NVIDIA package transaction rejected' >&2
   exit 1
@@ -232,8 +234,12 @@ packages = sorted(requested | planned)
 ubuntu = {"http://archive.ubuntu.com/ubuntu", "http://security.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu", "https://security.ubuntu.com/ubuntu"}
 ros = {"http://packages.ros.org/ros2/ubuntu", "https://packages.ros.org/ros2/ubuntu"}
 gazebo = {"http://packages.osrfoundation.org/gazebo/ubuntu-stable", "https://packages.osrfoundation.org/gazebo/ubuntu-stable"}
+ros_tools = {
+    "python3-catkin-pkg-modules", "python3-rosdep", "python3-rosdep-modules",
+    "python3-rosdistro-modules", "python3-rospkg-modules", "python3-vcstool",
+}
 locked = {
-    "ros-jazzy-ros-gz": "1.0.23-1",
+    "ros-jazzy-ros-gz": "1.0.22-1",
     "ros-jazzy-navigation2": "1.3.12-1",
     "ros-jazzy-nav2-bringup": "1.3.12-1",
     "ros-jazzy-slam-toolbox": "2.8.5-1",
@@ -243,9 +249,9 @@ locked = {
 
 def allowed_for(package):
     base = package.split(":", 1)[0]
-    if base.startswith("ros-jazzy-"):
+    if base.startswith("ros-jazzy-") or base.startswith("python3-colcon-") or base in ros_tools:
         return ros
-    if re.match(r"^(gz-|libgz-|sdformat|libsdformat|ignition-|libignition-)", base):
+    if re.match(r"^(gz-|libgz-|sdformat|libsdformat|ignition-|libignition-|python3-(gz-|sdformat)|libogre-next-|libdart-)", base):
         return gazebo
     return ubuntu
 

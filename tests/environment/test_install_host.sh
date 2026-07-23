@@ -10,6 +10,8 @@ test "$(uniq -d config/environment/apt-packages.txt | wc -l)" -eq 0
 
 test -x scripts/install_host.sh
 test -x scripts/rollback_host.sh
+test -s config/environment/ros2-archive-keyring.asc
+test "$(sha256sum config/environment/ros2-archive-keyring.asc | awk '{print $1}')" = 0d20744b08439371d8077cddbe29573346a7de643e47c3633eb3f8c66936e3ee
 
 plan="$(bash scripts/install_host.sh --plan)"
 for package in \
@@ -28,12 +30,13 @@ done
 ! grep -E 'ros-.*-desktop|ubuntu-desktop|xorg|nomachine|xvfb|virtualgl|nvidia-cuda-toolkit' <<<"$plan"
 ! awk '/^ros-/ && $0 !~ /^ros-jazzy-/ {bad=1} END {exit bad ? 0 : 1}' config/environment/apt-packages.txt
 
-grep -Fq 'http://packages.ros.org/ros.key' scripts/install_host.sh
-grep -Fq '3a4c8d59e3a0fbb2acf338994b6102c5baa17071c4cc97f520b482a697f8a4fe' scripts/install_host.sh
+grep -Fq 'config/environment/ros2-archive-keyring.asc' scripts/install_host.sh
+grep -Fq '4a91c49af0d6f0016108b93698782b596c27ccd836937e18e0e36c3347dc602f' scripts/install_host.sh
+if grep -Fq 'packages.ros.org/ros.key' scripts/install_host.sh; then exit 1; fi
 grep -Fq 'curl --ipv4' scripts/install_host.sh
 grep -Fq -- '--connect-timeout 10' scripts/install_host.sh
 grep -Fq -- '--max-time 120' scripts/install_host.sh
-grep -Fq 'install-host: downloading ROS key' scripts/install_host.sh
+grep -Fq 'install-host: loading pinned ROS key' scripts/install_host.sh
 grep -Fq 'install-host: refreshing apt indexes' scripts/install_host.sh
 grep -Fq 'install-host: installing packages' scripts/install_host.sh
 grep -Fq 'ros_apt_uri=http://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
@@ -49,6 +52,14 @@ grep -Fq 'apt-candidates.tsv' scripts/install_host.sh
 grep -Fq 'apt-policy-origins.tsv' scripts/install_host.sh
 grep -Fq 'apt-install-simulation.txt' scripts/install_host.sh
 grep -Fq 'apt-get --simulate install' scripts/install_host.sh
+grep -Fq "^Inst [^[:space:]]+ \\[[^]]+\\]" scripts/install_host.sh
+if grep -Fq "^Inst .*\\[[^]]+\\]" scripts/install_host.sh; then exit 1; fi
+grep -Fq 'base.startswith("python3-colcon-")' scripts/install_host.sh
+for ros_python_tool in python3-catkin-pkg-modules python3-rosdep python3-rosdep-modules python3-rosdistro-modules python3-rospkg-modules python3-vcstool; do
+  grep -Fq "\"$ros_python_tool\"" scripts/install_host.sh
+done
+grep -Fq '"ros-jazzy-ros-gz": "1.0.22-1"' scripts/install_host.sh
+grep -Fq 'python3-(gz-|sdformat)|libogre-next-|libdart-' scripts/install_host.sh
 grep -Fq 'nvidia-packages-before.tsv' scripts/install_host.sh
 grep -Fq 'nvidia-packages-after.tsv' scripts/install_host.sh
 grep -Fq 'nvidia-smi-before.txt' scripts/install_host.sh

@@ -177,7 +177,7 @@ authority_checks = {
         "Ubuntu " + "24.04 LTS",
         "ROS 2 " + "Jazzy Jalisco LTS",
         "Gazebo " + "Harmonic LTS",
-        "ros_gz " + "1.0.23-1",
+        "ros_gz " + "1.0.22-1",
         "Navigation2 | `" + "1.3.12-1`",
         "SLAM Toolbox | `" + "2.8.5-1`",
         "核心 `" + "2.3.6-1`；仿真 `" + "2.3.7-1`",
