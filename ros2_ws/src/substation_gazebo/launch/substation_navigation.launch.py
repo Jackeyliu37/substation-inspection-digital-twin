@@ -17,12 +17,8 @@ from launch_ros.actions import SetParameter
 
 def generate_launch_description() -> LaunchDescription:
     gazebo_share = get_package_share_directory("substation_gazebo")
-    nav2_share = get_package_share_directory("nav2_bringup")
     world_launch = os.path.join(
         gazebo_share, "launch", "substation_world.launch.py"
-    )
-    localization_launch = os.path.join(
-        nav2_share, "launch", "localization_launch.py"
     )
     map_path = os.path.join(gazebo_share, "maps", "substation.yaml")
     params_path = os.path.join(gazebo_share, "config", "nav2_params.yaml")
@@ -37,19 +33,25 @@ def generate_launch_description() -> LaunchDescription:
             "gz_partition": gz_partition,
         }.items(),
     )
-    localization = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(localization_launch),
-        launch_arguments={
-            "map": map_path,
-            "params_file": params_path,
-            "use_sim_time": "True",
-            "autostart": "True",
-            "use_composition": "False",
-        }.items(),
-    )
     navigation_nodes = GroupAction(
         actions=[
             SetParameter("use_sim_time", True),
+            Node(
+                package="nav2_map_server",
+                executable="map_server",
+                name="map_server",
+                output="screen",
+                parameters=[params_path, {"yaml_filename": map_path}],
+                remappings=tf_remappings,
+            ),
+            Node(
+                package="nav2_amcl",
+                executable="amcl",
+                name="amcl",
+                output="screen",
+                parameters=[params_path],
+                remappings=tf_remappings,
+            ),
             Node(
                 package="nav2_controller",
                 executable="controller_server",
@@ -108,6 +110,8 @@ def generate_launch_description() -> LaunchDescription:
                     {
                         "autostart": True,
                         "node_names": [
+                            "map_server",
+                            "amcl",
                             "controller_server",
                             "smoother_server",
                             "planner_server",
@@ -131,7 +135,6 @@ def generate_launch_description() -> LaunchDescription:
             SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
             SetEnvironmentVariable("GZ_PARTITION", gz_partition),
             world,
-            localization,
             navigation_nodes,
         ]
     )

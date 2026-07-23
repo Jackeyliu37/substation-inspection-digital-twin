@@ -36,10 +36,11 @@ def test_navigation_launch_uses_map_amcl_and_minimal_nav2_stack() -> None:
     assert 'SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1")' in source
     assert 'SetEnvironmentVariable("GZ_PARTITION", gz_partition)' in source
     assert '"substation_world.launch.py"' in source
-    assert '"localization_launch.py"' in source
     assert '"substation.yaml"' in source
     assert '"nav2_params.yaml"' in source
     for package, executable in (
+        ("nav2_map_server", "map_server"),
+        ("nav2_amcl", "amcl"),
         ("nav2_controller", "controller_server"),
         ("nav2_smoother", "smoother_server"),
         ("nav2_planner", "planner_server"),
@@ -50,6 +51,10 @@ def test_navigation_launch_uses_map_amcl_and_minimal_nav2_stack() -> None:
     ):
         assert f'package="{package}"' in source
         assert f'executable="{executable}"' in source
+    assert '{"yaml_filename": map_path}' in source
+    assert '"map_server",' in source
+    assert '"amcl",' in source
+    assert '"localization_launch.py"' not in source
     assert 'package="slam_toolbox"' not in source
     assert '("cmd_vel_smoothed", "cmd_vel")' in source
 
