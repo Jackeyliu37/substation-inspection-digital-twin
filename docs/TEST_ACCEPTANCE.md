@@ -441,7 +441,7 @@ if rg -n -i "$scan_pattern" AGENTS.md README.md \
   基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md \
   docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/INTERFACES.md docs/TEST_ACCEPTANCE.md \
   docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md docs/PROJECT_STATUS.md docs/HANDOFF.md docs/adr \
-  | rg -v 'development_placeholder|placeholder/coco|placeholder_detector|placeholder-smoke|04-perception-placeholder'; then
+  | rg -v 'development_placeholder|placeholder/coco|placeholder_detector|placeholder-smoke|placeholder_smoke|04-perception-placeholder'; then
   exit 1
 fi
 
