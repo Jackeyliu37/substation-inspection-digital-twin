@@ -89,6 +89,30 @@ def test_robot_sensor_and_drive_contract() -> None:
     assert lidar.findtext("ray/range/min") == "0.12"
     assert lidar.findtext("ray/range/max") == "10.0"
 
+    laser_pose = [
+        float(value)
+        for value in robot.find(".//link[@name='laser_frame']/pose").text.split()
+    ]
+    base_collision = robot.find(
+        ".//link[@name='base_link']/collision[@name='base_collision']"
+    )
+    base_collision_pose = [
+        float(value) for value in base_collision.findtext("pose").split()
+    ]
+    base_collision_size = [
+        float(value) for value in base_collision.findtext("geometry/box/size").split()
+    ]
+    assert laser_pose[2] > base_collision_pose[2] + base_collision_size[2] / 2.0
+
+    description = ET.parse(
+        required_file(
+            "ros2_ws/src/substation_description/urdf/inspection_robot.urdf.xacro"
+        )
+    )
+    laser_origin = description.find(".//joint[@name='laser_joint']/origin")
+    assert laser_origin is not None
+    assert [float(value) for value in laser_origin.attrib["xyz"].split()] == laser_pose[:3]
+
     drive = robot.find(".//plugin[@filename='gz-sim-diff-drive-system']")
     assert drive is not None
     assert drive.findtext("topic") == "cmd_vel"
