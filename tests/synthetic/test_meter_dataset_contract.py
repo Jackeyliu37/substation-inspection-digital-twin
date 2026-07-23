@@ -118,3 +118,21 @@ def test_generator_cli_and_package_runtime_contract() -> None:
     assert {"cv_bridge", "std_msgs", "sensor_msgs", "ros_gz_interfaces", "substation_description"}.issubset(dependencies)
     setup = (PACKAGE / "setup.py").read_text(encoding="utf-8")
     assert "meter_dataset_generator = substation_gazebo.meter_dataset_generator:main" in setup
+    assert "meter_dataset_package = substation_gazebo.meter_dataset_package:main" in setup
+
+
+def test_generation_harness_is_bounded_and_process_group_scoped() -> None:
+    source = required("tests/synthetic/run_meter_dataset_generation.sh").read_text(
+        encoding="utf-8"
+    )
+    for token in (
+        "setsid env -u DISPLAY",
+        "ROS_LOCALHOST_ONLY=1",
+        "GZ_PARTITION=",
+        "check_environment_seal.sh",
+        "2700",
+        'kill -TERM -- "-$launch_pid"',
+        "meter_dataset_package package",
+    ):
+        assert token in source
+    assert "pkill" not in source and "killall" not in source

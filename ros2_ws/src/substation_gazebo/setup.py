@@ -40,6 +40,7 @@ setup(
         "console_scripts": [
             "scenario_manager = substation_gazebo.scenario_manager:main",
             "meter_dataset_generator = substation_gazebo.meter_dataset_generator:main",
+            "meter_dataset_package = substation_gazebo.meter_dataset_package:main",
         ],
     },
 )

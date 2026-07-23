@@ -397,7 +397,10 @@ class MeterDatasetGenerator(Node):
 
         _atomic_write(
             self.output_dir / "metadata.jsonl",
-            b"".join(_canonical_json(row) for row in metadata),
+            b"".join(
+                _canonical_json(row)
+                for row in sorted(metadata, key=lambda item: str(item["sample_id"]))
+            ),
         )
         complete = len(metadata) == len(self.samples) and not failure
         result = {
