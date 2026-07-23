@@ -7,11 +7,12 @@
 - Phase 0 contract snapshot commit: `d0fb12dbe794221f88abb777f31760bdee655783`
 - Phase 0 contract snapshot subject: `docs: complete phase zero contracts`
 - Status-record commit: resolve with `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md`. This record intentionally does not embed its own commit hash.
-- Phase 1 execution: fast-track documentation gate, acceptance-run initialization, lightweight host preflight, and early resource downloads are complete. No dependency installation, ROS package creation, virtual environment creation, server configuration change, or Gazebo/Nav2/Web launch has occurred.
+- Phase 1 execution: fast-track documentation gate, acceptance-run initialization, lightweight host preflight, early resource downloads, and model/data responsibility synchronization are complete. No dependency installation, ROS package creation, virtual environment creation, server configuration change, or Gazebo/Nav2/Web launch has occurred.
 - Phase 1 Task 1 implementation commit: `d049f62bd39b910c2e5fe41ace80b778f14da509` (`feat: add phase one documentation gate`).
 - Phase 1 fast-track simplification commit: `2f5b2e16c623e32746b42b7fc01626784aabf316` (`docs: simplify phase one fast track`).
 - Phase 1 lightweight host preflight commit: `9edb7a2ccbe745e9a7123a5385b514c22f10715d` (`feat: add lightweight phase one host preflight`).
 - Phase 1 resource download commit: `6e79e70274817710ddbd3b347c38bad648886549` (`feat: download phase one base resources`).
+- Model/data responsibility contract commit: `21ea620c656030ec12c902de3cbd9d547b509a39` (`docs: externalize model training inputs`).
 - Phase 1 run id: `a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca`.
 - Phase 1 evidence staging: `/var/lib/substation/evidence/acceptance/a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca/01-environment.staging`.
 - Phase 1 evidence final target: `/var/lib/substation/evidence/acceptance/a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca/01-environment`.
@@ -35,10 +36,11 @@
 - NVIDIA `595.71.05` may be retained if Phase 1 audit proves it compliant. The plan does not invoke automatic driver installation; driver noncompliance stops at `DRIVER_TRANSACTION_REQUIRED`.
 - Ubuntu official NVIDIA inert X dependencies are allowed only as package dependencies with no active graphics stack, session, display manager, virtual display or remote desktop service.
 - Phase 1 capacity means per-operation residual free space of at least `20 GiB`; full dataset capacity is a later expected-size gate.
+- Public training data download and all model fine-tuning are user-owned external work. The repository keeps official `yolo11n.pt` only as a non-production development base weight and later imports production models solely from a user-controlled immutable GitHub release or fixed commit with manifest, SHA-256, metrics, byte counts, and allowed-use metadata.
 
 ## Fast-track execution note
 
-The user clarified on 2026-07-23 that this is a personal project and requested a simplified path. Treat “Task” as an internal Phase checkpoint only; user-facing execution should be phase-based. Use the solo fast-track overlay in `docs/plans/PHASE-01-ENVIRONMENT.md`. Do not run heavyweight fake-host security matrices unless a concrete failure requires them. Keep the hard boundaries: Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless, no desktop/remote/virtual display stack, no unverified payload, no service start, no Phase 4 dataset download in Phase 1.
+The user clarified on 2026-07-23 that this is a personal project and requested a simplified path. Treat “Task” as an internal Phase checkpoint only; user-facing execution should be phase-based. Use the solo fast-track overlay in `docs/plans/PHASE-01-ENVIRONMENT.md`. Do not run heavyweight fake-host security matrices unless a concrete failure requires them. Keep the hard boundaries: Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless, no desktop/remote/virtual display stack, no unverified payload, no service start, no public dataset download, and no third-party production model search.
 
 ## First resume command after operator action
 
@@ -48,7 +50,7 @@ Run exactly:
 cd /home/jackeyliu37/substation-inspection-digital-twin && source .phase1-run.env && test -d "$PHASE1_EVIDENCE_ROOT" && sed -n '1,120p' docs/plans/PHASE-01-ENVIRONMENT.md
 ```
 
-Then continue with the environment installation/toolchain preparation checkpoint. Do not start Gazebo/Nav2/Web/Nginx services, and do not download Phase 4 datasets.
+Then continue with the environment installation/toolchain preparation checkpoint. Do not start Gazebo/Nav2/Web/Nginx services, download public training data, or search for third-party production models.
 
 ## Recovery checks
 
