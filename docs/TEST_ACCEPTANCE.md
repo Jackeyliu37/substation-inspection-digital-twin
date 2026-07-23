@@ -4,7 +4,7 @@
 
 本文是项目验证方法的唯一入口，固定测试层、命令、输入、阈值、失败判据和证据目录。没有实际命令输出、退出码、日志或产物校验值，不得把功能、阶段或项目标记完成。
 
-当前仓库处于 **Phase 0 文档门槛**：只有第 4 节静态检查可立即运行。第 5 节及之后的命令是后续阶段必须按指定路径实现的验收入口；在对应脚本、功能包、服务、数据和模型尚未创建时，它们是合同而不是当前可运行声明。Phase 0 期间不得为了试跑未来命令而安装依赖、创建 ROS 2 功能包、下载数据/模型、启动 Gazebo/Nav2/Web 服务或修改服务器配置。
+**Phase 0 文档门槛已完成，Phase 1 环境基线是当前活动阶段和下一执行阶段。** 第 4 节静态检查保持可重复运行。第 5 节及之后的命令仍是必须按指定路径实现的验收入口；某条命令只有在当前阶段计划已经创建其脚本、功能包、服务、数据或模型后才成为可运行入口，在此之前它是合同而不是已实现声明。这一逐项激活规则不改变 Phase 1 的当前状态，也不授权为了试跑尚未实现的入口而越过 `docs/plans/PHASE-01-ENVIRONMENT.md` 的测试先行顺序、安装额外依赖、创建范围外功能、下载未批准资源、启动服务或修改服务器配置。
 
 所有测试遵循以下规则：
 
@@ -139,8 +139,8 @@ checksum_cleanup
 
 | 层 | 当前状态 | 唯一入口 | 核心产物 |
 |---|---|---|---|
-| Phase 0 文档 | 当前可运行 | 第 4 节列出的 shell 检查 | `.superpowers/sdd/task-4-report.md` 与 Git diff |
-| Phase 1 主机/环境 | 未来 Phase 1 | `bash scripts/verify_environment.sh --evidence-dir "$acceptance_root/01-environment"` | 环境 JSON、Debian/Python/npm 清单、GPU/EGL 日志 |
+| Phase 0 文档 | 已完成；检查可重复运行 | 第 4 节列出的 shell 检查 | `.superpowers/sdd/task-4-report.md` 与 Git diff |
+| Phase 1 主机/环境 | 当前活动阶段；入口按计划逐项创建后激活 | `bash scripts/verify_environment.sh --evidence-dir "$acceptance_root/01-environment"` | 环境 JSON、Debian/Python/npm 清单、GPU/EGL 日志 |
 | 单元 | 对应包创建后 | `bash scripts/run_unit_tests.sh --evidence-dir "$acceptance_root/02-unit"` | JUnit、colcon test-result、覆盖率和日志 |
 | ROS 集成 | ROS 包创建后 | `bash tests/integration/run_ros_integration.sh --evidence-dir "$acceptance_root/03-ros-integration"` | launch 日志、Topic/QoS/TF/状态机断言、rosbag2 |
 | Gazebo 场景 | 世界与场景创建后 | `bash tests/scenarios/run_gazebo_scenarios.sh --evidence-dir "$acceptance_root/04-gazebo-scenarios"` | 场景真值、传感器统计、截图/帧、rosbag2、JUnit |
@@ -154,7 +154,7 @@ checksum_cleanup
 
 未来阶段激活后，入口脚本缺失、不可执行或没有生成规定产物本身就是失败；不得换用临时命令后声称合同入口通过。
 
-## 4. Phase 0 文档门槛（当前可运行）
+## 4. Phase 0 文档门槛（已完成；可重复运行）
 
 ### 4.1 文件与基线聚焦检查
 
@@ -317,7 +317,7 @@ git diff --check
 
 只有以下条件全部满足，最终文档门槛任务才可宣布 Phase 0 通过：AGENTS、README、项目计划、架构、部署、接口、版本、数据/模型、测试、三个 ADR、Phase 1 计划、PROJECT_STATUS 和 HANDOFF 全部存在；链接/路径/命令经复核；无规范冲突；检查输出被记录。Task 4 自身只负责前三份专项规范，不提前创建或更新由最终门槛任务集中维护的状态与交接文档。
 
-## 5. Phase 1 主机与环境验收（未来）
+## 5. Phase 1 主机与环境验收（当前活动阶段；入口逐项激活）
 
 ### 5.1 唯一命令
 

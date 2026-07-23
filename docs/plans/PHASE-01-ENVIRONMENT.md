@@ -331,8 +331,8 @@ from pathlib import Path
 
 contract = Path("docs/TEST_ACCEPTANCE.md").read_text(encoding="utf-8")
 try:
-    phase0 = contract.split("## 4. Phase 0 文档门槛（当前可运行）", 1)[1].split(
-        "## 5. Phase 1 主机与环境验收（未来）", 1
+    phase0 = contract.split("## 4. Phase 0 文档门槛（已完成；可重复运行）", 1)[1].split(
+        "## 5. Phase 1 主机与环境验收（当前活动阶段；入口逐项激活）", 1
     )[0]
 except IndexError as error:
     raise SystemExit("documentation-gate: Phase 0 authority section not found") from error

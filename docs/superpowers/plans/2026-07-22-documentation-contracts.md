@@ -237,47 +237,66 @@ git commit -m "docs: plan phase one environment baseline"
 - Consumes: all previous documentation outputs and the current Git commit/test evidence.
 - Produces: a truthful current snapshot, a deterministic resume command, and checked completion boxes for this plan.
 
-- [x] **Step 1: Record current phase and next action**
+- [x] **Step 1: Synchronize the current phase in entry and acceptance documents**
 
-Set phase 0 to complete only after all checks pass; set active/next phase to environment baseline; record the exact commit, verification time in UTC, commands, results, blockers, and next three actions.
+Update `README.md` and `docs/TEST_ACCEPTANCE.md` to state that Phase 0 is complete and Phase 1 is active/next. Clarify that future acceptance commands become runnable only as their planned files are created; until then they remain contracts, not implemented claims.
 
-- [x] **Step 2: Write the handoff recovery path**
+- [x] **Step 2: Commit an exact reproducible Phase 0 gate**
 
-Record repository path, branch/commit, last command, current services (`none` for this documentation-only phase), artifacts, uncommitted changes, and the first resume command:
+The gate must enumerate every Phase 0 deliverable explicitly, keep concrete unresolved markers, and avoid treating the generic Chinese noun used in legitimate explanatory text as an unresolved marker.
+
+- [ ] **Step 3: Run the exact committed Phase 0 gate**
+
+Run this exact block from the committed plan without substitution:
+
+```bash
+set -euo pipefail
+phase0_files=(
+  AGENTS.md
+  README.md
+  基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md
+  docs/ARCHITECTURE.md
+  docs/DEPLOYMENT.md
+  docs/INTERFACES.md
+  docs/TEST_ACCEPTANCE.md
+  docs/VERSION_MATRIX.md
+  docs/DATA_AND_MODELS.md
+  docs/PROJECT_STATUS.md
+  docs/HANDOFF.md
+  docs/plans/PHASE-01-ENVIRONMENT.md
+  docs/adr/0001-headless-gazebo.md
+  docs/adr/0002-server-web-deployment.md
+  docs/adr/0003-multimodel-perception.md
+)
+for file in "${phase0_files[@]}"; do
+  test -s "$file"
+done
+scan_pattern='T''BD|T''ODO|F''IXME|待''补充|待''确认|待''定|以后再''定'
+if rg -n -i "$scan_pattern" "${phase0_files[@]}"; then
+  exit 1
+fi
+git diff --check
+printf '%s\n' 'phase0-documentation-gate: PASS'
+```
+
+Expected: literal stdout `phase0-documentation-gate: PASS`, no marker matches, and exit code 0.
+
+- [ ] **Step 4: Record the verified snapshot in status and handoff**
+
+After committing Step 1 and Step 2, run the exact Step 3 block at the clean commit. Record that commit as `verified_snapshot_commit`, the UTC verification time, the full exact commands, literal outputs, service state, clean status, blockers, next three actions, and this exact first resume command in `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md`:
 
 ```bash
 cd /home/jackeyliu37/substation-inspection-digital-twin && sed -n '1,240p' docs/plans/PHASE-01-ENVIRONMENT.md
 ```
 
-- [x] **Step 3: Run the complete phase-0 gate**
+- [ ] **Step 5: Commit bookkeeping and verify clean handoff**
 
-Run:
+Commit the status record separately from the verified snapshot. Explain that the later commit is bookkeeping and was not the commit tested by the recorded snapshot gate. Then run:
 
 ```bash
-test -f AGENTS.md && test -f README.md
-for file in docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/INTERFACES.md docs/TEST_ACCEPTANCE.md docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md docs/PROJECT_STATUS.md docs/HANDOFF.md docs/plans/PHASE-01-ENVIRONMENT.md docs/adr/0001-headless-gazebo.md docs/adr/0002-server-web-deployment.md docs/adr/0003-multimodel-perception.md; do test -s "$file" || exit 1; done
-if rg -n -i 'TBD|TODO|FIXME|待补充|待确认|占位符' AGENTS.md README.md docs --glob '*.md' --glob '!superpowers/plans/2026-07-22-documentation-contracts.md'; then exit 1; fi
 git diff --check
-```
-
-Expected: exit code 0 and no placeholder matches outside this execution plan's explanatory text.
-
-- [x] **Step 4: Mark this plan complete and commit status**
-
-Change completed checkboxes in this file to `- [x]`, then run:
-
-```bash
-git add docs/PROJECT_STATUS.md docs/HANDOFF.md docs/superpowers/plans/2026-07-22-documentation-contracts.md
-git commit -m "docs: complete pre-development documentation gate"
-```
-
-- [x] **Step 5: Verify clean handoff**
-
-Run:
-
-```bash
 git status --short
 git log -6 --oneline --decorate
 ```
 
-Expected: clean worktree; latest commits show the design, repository rules, architecture/ADRs, contracts, baselines, phase-1 plan, and gate completion.
+Expected: `git diff --check` and `git status --short` have no output; the two latest commits are the status-record bookkeeping commit and its verified synchronized-document parent.
