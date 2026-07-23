@@ -4,17 +4,23 @@
 
 - Repository: `/home/jackeyliu37/substation-inspection-digital-twin`
 - Branch: `main`
-- Verified snapshot commit: `1f47bbef63458467d877ba82bb647eb4cbd7ef77`
-- Verified snapshot subject: `docs: synchronize phase zero gate and phase state`
-- Verification completed at: `2026-07-23T00:09:51Z` UTC
-- Result: `passed`
-- Status-record commit: resolve with `git log -1 --format=%H -- docs/PROJECT_STATUS.md docs/HANDOFF.md`. It is a later bookkeeping commit that records the verified snapshot; it was not substituted for the commit tested by the recorded gate.
-- Current services: `none`; `nginx.service`, `substation-gazebo.service`, `substation-core.service`, `substation-web-gateway.service`, `substation-web-frontend.service`, and `substation-foxglove-bridge.service` were all `inactive`.
-- Phase 1 execution: not started; no host mutation, dependency installation, ROS package creation, resource/model download, server configuration change, or Gazebo/Nav2/Web launch has occurred.
-- Artifacts: tracked Phase 0 Markdown and Git history plus ignored `.superpowers/sdd/task-6-report.md`. No Phase 1 runtime acceptance directory exists.
-- Verified-snapshot uncommitted work: none; the literal `git status --short` region in the output below is empty.
-- Bookkeeping worktree: after the status-record commit, `git status --short` must be empty; this is verified separately after committing.
-- Resolved review blockers: the committed gate now passes without suppressing deliverable documents, README and the acceptance authority agree on the active phase, the affected Phase 1 parser matches the new headings, and the status record identifies a fixed tested commit.
+- Phase 0 contract snapshot commit: `d0fb12dbe794221f88abb777f31760bdee655783`
+- Phase 0 contract snapshot subject: `docs: complete phase zero contracts`
+- Status-record commit: resolve with `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md`. This record intentionally does not embed its own commit hash.
+- Phase 1 execution: not started; no host mutation, dependency installation, ROS package creation, resource or model download, server configuration change, acceptance-run initialization, or Gazebo/Nav2/Web launch has occurred.
+- Phase 1 runtime artifacts: none. No `/var/lib/substation/evidence/acceptance/<run_id>/` directory has been initialized by this Phase 0 work.
+- Phase 0 final verification output: `.superpowers/sdd/final-phase0-fix-report.md` after the status-record commit. The file is ignored because it records post-commit evidence without changing the verified Git snapshot.
+
+## Fixed contract decisions to preserve
+
+- Browser clients use only Nginx plus FastAPI REST/WebSocket; they never connect directly to ROS DDS.
+- All Web-visible ROS `uint64` values and Gateway revisions are decimal strings; binary camera headers remain network-order `uint64`.
+- Evidence store is the single writer for run time mappings and evidence object identity; standard ROS messages need explicit immutable source metadata for run attribution.
+- Mission ordering uses `configs/mission_ordering.yaml` defaults, active-task hold, normal cooldown and emergency bypass exactly as specified in `docs/INTERFACES.md`.
+- Phase 1 keeps the current authorized operator checkout valid for development; the `substation` account is a later service runtime account.
+- NVIDIA `595.71.05` may be retained if Phase 1 audit proves it compliant. The plan does not run `ubuntu-drivers install`; driver noncompliance stops at `DRIVER_TRANSACTION_REQUIRED`.
+- Ubuntu official NVIDIA inert X dependencies are allowed only as package dependencies with no active graphics stack, session, display manager, virtual display or remote desktop service.
+- Phase 1 capacity means per-operation residual free space of at least `20 GiB`; full dataset capacity is a later expected-size gate.
 
 ## First resume command
 
@@ -24,79 +30,7 @@ Run exactly:
 cd /home/jackeyliu37/substation-inspection-digital-twin && sed -n '1,240p' docs/plans/PHASE-01-ENVIRONMENT.md
 ```
 
-Then execute Phase 1 immediately from Task 1, Step 1. Do not skip the failing-test step and do not install or start anything before the planned documentation gate and read-only host checks allow it.
-
-## Actual last verified-snapshot command
-
-This is the complete command actually executed immediately before the bookkeeping edits. It reads the exact gate from `verified_snapshot_commit`, verifies services, prints the empty worktree region and recent history, then records the completion UTC.
-
-```bash
-set -euo pipefail
-verified_snapshot_commit="$(git rev-parse HEAD)"
-verification_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-printf 'verified_snapshot_commit=%s\n' "$verified_snapshot_commit"
-printf 'verification_started_at=%s\n' "$verification_started_at"
-python3 - "$verified_snapshot_commit" <<'PY'
-import re
-import subprocess
-import sys
-
-commit = sys.argv[1]
-path = "docs/superpowers/plans/2026-07-22-documentation-contracts.md"
-text = subprocess.run(
-    ["git", "show", f"{commit}:{path}"],
-    check=True,
-    capture_output=True,
-    text=True,
-).stdout
-step = text.split("- [ ] **Step 3: Run the exact committed Phase 0 gate**", 1)[1].split(
-    "- [ ] **Step 4: Record the verified snapshot in status and handoff**", 1
-)[0]
-blocks = re.findall(r"```bash\n(.*?)\n```", step, flags=re.DOTALL)
-if len(blocks) != 1:
-    raise SystemExit(f"expected exactly one Step 3 Bash block, found {len(blocks)}")
-completed = subprocess.run(["bash", "-c", blocks[0]], text=True)
-raise SystemExit(completed.returncode)
-PY
-printf '%s\n' 'exact-committed-gate-exit=0'
-for unit in nginx.service substation-gazebo.service substation-core.service substation-web-gateway.service substation-web-frontend.service substation-foxglove-bridge.service; do
-  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-  printf '%s=%s\n' "$unit" "$state"
-  test "$state" != active
-done
-printf '%s\n' 'project-service-check: PASS: active=0'
-printf '%s\n' 'snapshot-git-status-begin'
-git status --short
-printf '%s\n' 'snapshot-git-status-end'
-git log -6 --oneline --decorate
-verification_completed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-printf 'verification_completed_at=%s\n' "$verification_completed_at"
-```
-
-Literal stdout; stderr was empty and exit code was `0`:
-
-```text
-verified_snapshot_commit=1f47bbef63458467d877ba82bb647eb4cbd7ef77
-verification_started_at=2026-07-23T00:09:51Z
-phase0-documentation-gate: PASS
-exact-committed-gate-exit=0
-nginx.service=inactive
-substation-gazebo.service=inactive
-substation-core.service=inactive
-substation-web-gateway.service=inactive
-substation-web-frontend.service=inactive
-substation-foxglove-bridge.service=inactive
-project-service-check: PASS: active=0
-snapshot-git-status-begin
-snapshot-git-status-end
-1f47bbe (HEAD -> main) docs: synchronize phase zero gate and phase state
-1e9a301 docs: complete pre-development documentation gate
-45419ff test: exercise installer evidence failures
-ac75067 docs: enforce phase one host trust boundaries
-8642071 docs: harden phase one environment operations
-48babf4 docs: plan phase one environment baseline
-verification_completed_at=2026-07-23T00:09:51Z
-```
+Then, only if the user asks to enter Phase 1, start Task 1 Step 1. Do not install, download, start services or initialize a Phase 1 acceptance run before the planned documentation gate/bootstrap sequence reaches that point.
 
 ## Recovery checks
 
@@ -104,11 +38,11 @@ verification_completed_at=2026-07-23T00:09:51Z
 cd /home/jackeyliu37/substation-inspection-digital-twin
 git branch --show-current
 git log -6 --oneline --decorate
-git status --short
+git status --short --untracked-files=all
 ```
 
-Expected branch is `main`; status output is empty. The first command that changes repository or host state must be the exact next command prescribed by `docs/plans/PHASE-01-ENVIRONMENT.md`.
+Expected branch is `main`; status output should be empty except for ignored `.superpowers/sdd/` reports when inspected with ignored-file flags.
 
 ## Next implementation action
 
-Start Phase 1 Task 1 immediately: create the failing documentation-gate test, then implement only the read-only validator, shared helpers and acceptance-run initialization defined there. Preserve Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless rendering and the FastAPI-only product browser boundary.
+Start Phase 1 Task 1 from `docs/plans/PHASE-01-ENVIRONMENT.md`: create the failing documentation-gate test, then implement only the read-only validator, shared helpers and acceptance-run initialization defined there. Preserve Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless rendering and the FastAPI-only product browser boundary.
