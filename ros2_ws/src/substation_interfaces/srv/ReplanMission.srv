@@ -1,0 +1,13 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string command_id
+string mission_id
+uint64 observed_queue_revision
+string reason
+---
+uint32 schema_version
+bool accepted
+uint64 state_revision
+uint64 queue_revision
+string error_code
+string error_message

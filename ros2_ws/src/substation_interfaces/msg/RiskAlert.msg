@@ -1,0 +1,20 @@
+uint32 SCHEMA_VERSION=1
+uint8 EVENT_OPENED=0
+uint8 EVENT_LEVEL_CHANGED=1
+uint8 EVENT_CLEARED=2
+uint8 LEVEL_NORMAL=0
+uint8 LEVEL_ATTENTION=1
+uint8 LEVEL_ALERT=2
+uint8 LEVEL_EMERGENCY=3
+
+uint32 schema_version
+std_msgs/Header header
+string alert_id
+string run_id
+string asset_id
+uint8 event_type
+uint8 previous_level
+uint8 current_level
+float32 score_0_100
+string summary
+string[] evidence_ids

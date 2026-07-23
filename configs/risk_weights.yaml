@@ -1,0 +1,10 @@
+schema_version: 1
+weights:
+  visual: 0.30
+  temperature: 0.25
+  smoke: 0.20
+  gas: 0.10
+  context: 0.15
+confirmation_frames: 3
+recovery_frames: 3
+moving_average_window: 3

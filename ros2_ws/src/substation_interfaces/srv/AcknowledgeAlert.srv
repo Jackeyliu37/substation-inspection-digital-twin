@@ -1,0 +1,14 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string command_id
+string alert_id
+uint64 observed_risk_revision
+uint64 observed_alert_revision
+string note
+---
+uint32 schema_version
+bool accepted
+uint64 risk_revision
+uint64 alert_revision
+string error_code
+string error_message

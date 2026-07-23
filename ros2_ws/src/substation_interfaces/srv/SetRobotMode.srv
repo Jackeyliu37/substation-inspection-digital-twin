@@ -1,0 +1,19 @@
+uint32 SCHEMA_VERSION=1
+uint8 MODE_AUTONOMOUS=0
+uint8 MODE_MANUAL=1
+
+uint32 schema_version
+string command_id
+string mission_id
+uint8 target_mode
+uint64 observed_state_revision
+uint64 observed_latch_revision
+string reason
+---
+uint32 schema_version
+bool accepted
+uint8 robot_mode
+uint64 state_revision
+uint64 latch_revision
+string error_code
+string error_message

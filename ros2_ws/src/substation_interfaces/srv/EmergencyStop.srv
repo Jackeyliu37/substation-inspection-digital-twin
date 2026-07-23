@@ -1,0 +1,12 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string command_id
+string reason
+---
+uint32 schema_version
+bool accepted
+bool latched
+uint64 latch_revision
+uint64 state_revision
+string error_code
+string error_message

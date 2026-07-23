@@ -1,0 +1,6 @@
+schema_version: 1
+risk_gain: 1.00
+distance_penalty: 0.25
+minimum_active_hold_s: 5.0
+normal_replan_cooldown_s: 10.0
+emergency_score_0_100: 80.0

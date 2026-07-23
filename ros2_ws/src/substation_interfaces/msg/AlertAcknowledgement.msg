@@ -1,0 +1,9 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+std_msgs/Header header
+string command_id
+string run_id
+string alert_id
+uint64 risk_revision
+uint64 alert_revision
+string note
