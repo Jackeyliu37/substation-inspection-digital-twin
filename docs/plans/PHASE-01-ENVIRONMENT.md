@@ -21,8 +21,9 @@
 - Safety detection, equipment detection, defect classification, and meter reading stay separate. The only Phase 1 model download is the immutable YOLO11n base weight; it is not a production model.
 - Instrument data remains Gazebo-generated only. Phase 1 does not add, download, or describe an external meter dataset.
 - Every manually acquired external payload in this phase, specifically the Node.js archive and `yolo11n.pt`, is written below `/var/lib/substation`, receives a SHA-256 and byte count, and is recorded in `artifacts/environment/resource-downloads.tsv`. Large payloads never enter Git.
-- Dataset source downloads are not silently mixed into the environment phase. `config/environment/resource-sources.tsv` records their immutable identities and the later Phase 4 sequence. Phase 1 immediately acquires Node.js and `yolo11n.pt`; Debian resolution is recorded in the Debian package manifest, while Python and npm resolution is recorded in their hashed lock files and reviewed freeze/version manifests.
-- `InsPLAD` is not fetched from a floating branch. Its later downloader must first resolve and commit one complete 40-character revision as required by `docs/DATA_AND_MODELS.md`.
+- Dataset source downloads are not silently mixed into the environment phase, and the user explicitly removed dataset downloading and model fine-tuning from this agent's execution scope on 2026-07-23. `config/environment/resource-sources.tsv` records public dataset identities only as external user-training references; this repository does not download them unless the user gives a later explicit instruction.
+- `InsPLAD` is not fetched from a floating branch. If it appears in a user-provided training manifest, that manifest must still name one complete 40-character revision as required by `docs/DATA_AND_MODELS.md`.
+- The official `yolo11n.pt` is the Phase 1 placeholder/base weight. Production safety, equipment, defect, and meter locator weights are accepted later only from a user-published immutable GitHub release or commit with manifest metadata, SHA-256, metrics, and allowed-use fields.
 - Do not modify original public data. Do not commit raw/derived datasets, weights, virtual environments, `node_modules`, ROS build/install/log trees, acceptance evidence, service logs, or rosbag2.
 - Tests precede implementation in every task. A test is first run against the missing or incomplete implementation and must fail for the stated reason; after the minimal implementation it must pass.
 - Initial host snapshots and source backups are write-once, and the complete evidence tree becomes immutable after its final recursive `SHA256SUMS` is published. Rollback preserves `/var/lib/substation/evidence`; it reverts tracked code or restores only explicitly recorded files/packages.
@@ -45,9 +46,10 @@ The fast-track path for the current resource-preparation push is:
 
 1. Finish Task 1 run identity and documentation gate evidence.
 2. Run a lightweight host preflight that checks the hard blockers only: Ubuntu 24.04, x86_64, memory and free-space floors, NVIDIA GPU/driver presence, forbidden desktop/remote-display/virtual-display packages, non-Jazzy ROS and Gazebo Classic packages, and absence of active project services.
-3. Prepare and download only the Phase 1 early external payloads: Node.js 24.18.0 and `yolo11n.pt`, with URL, byte count and SHA-256 evidence under the active acceptance staging directory and tracked manifests under `artifacts/environment/`.
+3. Prepare and download only the Phase 1 early external payloads: Node.js 24.18.0 and official `yolo11n.pt`, with URL, byte count and SHA-256 evidence under the active acceptance staging directory and tracked manifests under `artifacts/environment/`.
+4. Treat public training datasets and fine-tuned production weights as user-owned external training inputs. The environment phase must not download datasets or search for third-party production weights.
 
-The overlay deliberately omits heavyweight fake-host security matrices and exhaustive apt-origin simulation for this personal project. It does not relax these hard boundaries: no desktop or remote/virtual display stack, no ROS 1 or non-Jazzy ROS, no Gazebo Classic, no unverified resource payload, no service start, no dependency installation outside the active checkpoint, and no claim of Phase 1 completion until the final environment verifier is implemented and passes.
+The overlay deliberately omits heavyweight fake-host security matrices and exhaustive apt-origin simulation for this personal project. It does not relax these hard boundaries: no desktop or remote/virtual display stack, no ROS 1 or non-Jazzy ROS, no Gazebo Classic, no unverified resource payload, no dataset download, no third-party production model search/download, no service start, no dependency installation outside the active checkpoint, and no claim of Phase 1 completion until the final environment verifier is implemented and passes.
 
 ---
 
@@ -60,7 +62,7 @@ The overlay deliberately omits heavyweight fake-host security matrices and exhau
 | `.gitignore` | Exclude local virtual environments, Node/ROS build trees, local run state, large resource payloads, and runtime evidence while leaving manifests and checksums trackable. |
 | `config/environment/apt-packages.txt` | Exact explicit Debian package request set for the Ubuntu, ROS 2, Gazebo, navigation, build, SQLite, Nginx, and diagnostic baseline. |
 | `config/environment/forbidden-packages.regex` | Anchored installed-package name patterns that make headless acceptance fail. |
-| `config/environment/resource-sources.tsv` | Source identity and phase sequence for Node.js, YOLO11n, public datasets, and Gazebo synthetic resources. |
+| `config/environment/resource-sources.tsv` | Source identity and phase sequence for Node.js, official YOLO11n, user-owned public training references, and Gazebo synthetic resources. |
 | `scripts/lib/environment_common.sh` | Shared argument, repository-root, evidence-path, command, and SHA-256 helpers used by Phase 1 scripts. |
 | `scripts/verify_documentation_gate.sh` | Re-run the Phase 0 document gate without changing the host. |
 | `scripts/init_phase1_run.sh` | Create one acceptance run directory after the document gate passes and write ignored `.phase1-run.env`. |
@@ -2939,12 +2941,14 @@ Expected: the installer, rollback entry point, fake-host fixture, and behavioral
 - Create: `tests/environment/test_phase1_resources.sh`
 
 **Interfaces:**
-- Consumes: official Node.js 24.18.0 release files, the Ultralytics assets v8.4.0 YOLO11n URL, the dataset revision identities fixed by `docs/VERSION_MATRIX.md`, a pre-download capacity calculation proving expected bytes plus at least 20 GiB remaining on the affected mount, and the active unsealed evidence directory.
+- Consumes: official Node.js 24.18.0 release files, the Ultralytics assets v8.4.0 YOLO11n URL, external user-training reference identities fixed by `docs/VERSION_MATRIX.md`, a pre-download capacity calculation proving expected bytes plus at least 20 GiB remaining on the affected mount, and the active unsealed evidence directory.
 - Produces: atomically installed task-owned Node and YOLO leaves below `/var/lib/substation`, provenance markers plus YOLO `source.json`, `$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv`, and a separate checksum-only `scripts/verify_phase1_resources.sh`. The downloader preflights any locked row or existing target before persistent installation, traps every temporary path, and refuses foreign/incomplete content-addressed directories. The verifier has no network, download, repair, or manifest rewrite path.
 
 - [ ] **Step 1: Write the failing resource-governance test**
 
-Create `tests/environment/test_phase1_resources.sh` with this exact content:
+**Solo fast-track override (authoritative):** the user waived the heavyweight fake-resource behavior matrix for this personal project. The tracked `tests/environment/test_phase1_resources.sh` is the source of truth for this checkpoint: it checks the two Phase 1 download identities, all four external user-training reference rows, absence of Phase 4 dataset acquisition rows, the downloader list, Git large-file exclusion, and absence of install/start/build commands in the resource scripts; its final line is `phase1-resource-static-test: PASS`. The longer fixture below is retained only as a superseded hardening reference and must not be treated as the active acceptance contract.
+
+Superseded pre-fast-track hardening reference:
 
 ```bash
 #!/usr/bin/env bash
@@ -2958,10 +2962,11 @@ test -x scripts/verify_phase1_resources.sh
 test -s config/environment/resource-sources.tsv
 grep -F $'node-linux-x64\tphase1' config/environment/resource-sources.tsv
 grep -F $'yolo11n-base\tphase1' config/environment/resource-sources.tsv
-grep -F 'c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad' config/environment/resource-sources.tsv
-grep -F '4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328' config/environment/resource-sources.tsv
-grep -F $'hard-hat-workers-v10\tphase4' config/environment/resource-sources.tsv
-grep -F $'insplad\tphase4-resolve-commit-first' config/environment/resource-sources.tsv
+grep -F $'substation-equipment-15\texternal-user-training-reference' config/environment/resource-sources.tsv
+grep -F $'hard-hat-workers-v10\texternal-user-training-reference' config/environment/resource-sources.tsv
+grep -F $'d-fire\texternal-user-training-reference' config/environment/resource-sources.tsv
+grep -F $'insplad\texternal-user-training-reference-resolve-commit-first' config/environment/resource-sources.tsv
+! awk -F '\t' 'NR > 1 && $1 ~ /^(substation-equipment-15|hard-hat-workers-v10|d-fire|insplad)$/ && $2 ~ /^phase4/ {bad=1} END {exit bad ? 0 : 1}' config/environment/resource-sources.tsv
 grep -F $'gazebo-meter\tphase2-and-phase4-generated' config/environment/resource-sources.tsv
 bash scripts/download_phase1_resources.sh --list | grep -Fx 'node-linux-x64'
 bash scripts/download_phase1_resources.sh --list | grep -Fx 'yolo11n-base'
@@ -3079,7 +3084,7 @@ chmod +x tests/environment/test_phase1_resources.sh
 bash tests/environment/test_phase1_resources.sh
 ```
 
-Expected: exit nonzero because neither the manifest nor downloader exists.
+Historical expectation only: before the fast-track implementation this exited nonzero because neither the manifest nor downloader existed. Current execution uses the authoritative tracked static test described above.
 
 - [ ] **Step 2: Add the exact resource identity and phase sequence**
 
@@ -3089,15 +3094,15 @@ Create `config/environment/resource-sources.tsv` with this exact tab-separated c
 resource_id	phase	immutable_identity	source_url	server_storage	git_policy
 node-linux-x64	phase1	24.18.0	https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz	/var/lib/substation/downloads/node/24.18.0	manifest-and-sha-only
 yolo11n-base	phase1	ultralytics-assets-v8.4.0	https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt	/var/lib/substation/models/base/sha256-keyed	manifest-and-sha-only
-substation-equipment-15	phase4	c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad	https://huggingface.co/datasets/AndrzejDD/15-class-Substation-Equipment	/var/lib/substation/datasets/raw/substation-equipment-15/c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad	manifest-and-sha-only
-hard-hat-workers-v10	phase4	provider-version-10	https://public.roboflow.com/object-detection/hard-hat-workers/10	/var/lib/substation/datasets/raw/hard-hat-workers-v10/10	manifest-and-sha-only
-d-fire	phase4	4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328	https://github.com/gaia-solutions-on-demand/DFireDataset	/var/lib/substation/datasets/raw/d-fire/4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328	manifest-and-sha-only
-insplad	phase4-resolve-commit-first	resolve-one-40-character-commit-before-fetch	https://github.com/andreluizbvs/InsPLAD	/var/lib/substation/datasets/raw/insplad/sha40-keyed	manifest-and-sha-only
+substation-equipment-15	external-user-training-reference	c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad	https://huggingface.co/datasets/AndrzejDD/15-class-Substation-Equipment	provided-by-user-training-manifest	reference-and-provenance-only
+hard-hat-workers-v10	external-user-training-reference	provider-version-10	https://public.roboflow.com/object-detection/hard-hat-workers/10	provided-by-user-training-manifest	reference-and-provenance-only
+d-fire	external-user-training-reference	4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328	https://github.com/gaia-solutions-on-demand/DFireDataset	provided-by-user-training-manifest	reference-and-provenance-only
+insplad	external-user-training-reference-resolve-commit-first	resolve-one-40-character-commit-before-fetch	https://github.com/andreluizbvs/InsPLAD	provided-by-user-training-manifest	reference-and-provenance-only
 gazebo-meter	phase2-and-phase4-generated	generator-commit-plus-config-sha-plus-gazebo-version-plus-seeds	project-owned	/var/lib/substation/datasets/synthetic/gazebo-meter/generation-sha256	manifest-and-sha-only
 gazebo-anomalies	phase2-and-phase4-generated	generator-commit-plus-config-sha-plus-gazebo-version-plus-seeds	project-owned	/var/lib/substation/datasets/synthetic/gazebo-anomalies/generation-sha256	manifest-and-sha-only
 ```
 
-The file is an acquisition sequence, not `datasets/manifest.yaml` or `models/manifest.yaml`. Those production manifests are created only when their complete schema can be truthfully populated; this avoids inventing unmeasured file hashes or production mappings.
+The file records both the Phase 1 acquisition sequence and later external user-training references; only rows whose phase is `phase1` are downloadable by this phase. It is not `datasets/manifest.yaml` or `models/manifest.yaml`. Those production manifests are imported later from a user-published immutable GitHub model release only when their complete schema can be truthfully populated; this avoids inventing unmeasured file hashes or production mappings.
 
 - [ ] **Step 3: Implement early downloads with first-use locking**
 
@@ -3509,7 +3514,7 @@ unlink -- "$manifest_snapshot"
 bash scripts/verify_phase1_resources.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"
 ```
 
-Expected: the behavioral test prints `phase1-resource-test: PASS`; both live calls print `phase1-resources: PASS: all`; the checksum-only call prints `verify-phase1-resources: PASS`. Exactly two data rows exist; the Node leaf has its archive, official sums, and ownership marker; the YOLO content-addressed leaf has `yolo11n.pt`, `.substation-resource.json`, and `source.json`. The second identical download call performs a preflight checksum verification and leaves the manifest byte-for-byte unchanged. Any foreign target, missing marker, changed identity, stale source metadata, checksum mismatch, or leaked staging directory is a hard failure and is never repaired by the verifier.
+Expected: the static test prints `phase1-resource-static-test: PASS`; both live calls print `phase1-resources: PASS: all`; the checksum-only call prints `verify-phase1-resources: PASS`. Exactly two data rows exist; the Node leaf has its archive, official sums, and ownership marker; the YOLO content-addressed leaf has `yolo11n.pt`, `.substation-resource.json`, and `source.json`. The second identical download call performs a preflight checksum verification and leaves the manifest byte-for-byte unchanged. Checksum mismatch or missing locked metadata remains a hard failure and is never repaired by the verifier.
 
 Run the exact post-download validation:
 
@@ -6578,7 +6583,7 @@ trap - EXIT
 cleanup_plan_review
 ```
 
-Expected final lines include `audit-host-test: PASS`, `install-host-test: PASS`, `phase1-resource-test: PASS`, `verify-environment-test: PASS`, and `phase1-plan-controller-behavior: PASS`. Negative cases intentionally print rejection messages or Python assertion tracebacks before their enclosing test reaches its PASS line.
+Expected final lines include `audit-host-test: PASS`, `install-host-test: PASS`, `phase1-resource-static-test: PASS`, `verify-environment-test: PASS`, and `phase1-plan-controller-behavior: PASS`. Negative cases intentionally print rejection messages or Python assertion tracebacks before their enclosing test reaches its PASS line.
 
 Only after these behavior probes and all syntax/static checks pass may the final independent review begin. Record the reviewed plan SHA-256 and the final Critical/Important/Minor counts. In `.superpowers/sdd/task-5-report.md`, explicitly mark any earlier narrower “0 findings” conclusion as superseded by the later controller-level review and its remediation; never present the earlier conclusion as the final review result.
 

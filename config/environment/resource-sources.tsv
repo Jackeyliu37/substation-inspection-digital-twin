@@ -1,9 +1,9 @@
 resource_id	phase	immutable_identity	source_url	server_storage	git_policy
 node-linux-x64	phase1	24.18.0	https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz	/var/lib/substation/downloads/node/24.18.0	manifest-and-sha-only
 yolo11n-base	phase1	ultralytics-assets-v8.4.0	https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt	/var/lib/substation/models/base/sha256-keyed	manifest-and-sha-only
-substation-equipment-15	phase4	c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad	https://huggingface.co/datasets/AndrzejDD/15-class-Substation-Equipment	/var/lib/substation/datasets/raw/substation-equipment-15/c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad	manifest-and-sha-only
-hard-hat-workers-v10	phase4	provider-version-10	https://public.roboflow.com/object-detection/hard-hat-workers/10	/var/lib/substation/datasets/raw/hard-hat-workers-v10/10	manifest-and-sha-only
-d-fire	phase4	4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328	https://github.com/gaia-solutions-on-demand/DFireDataset	/var/lib/substation/datasets/raw/d-fire/4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328	manifest-and-sha-only
-insplad	phase4-resolve-commit-first	resolve-one-40-character-commit-before-fetch	https://github.com/andreluizbvs/InsPLAD	/var/lib/substation/datasets/raw/insplad/sha40-keyed	manifest-and-sha-only
+substation-equipment-15	external-user-training-reference	c63ed3c7f5ea33ac8e9024c467a70a62b849b2ad	https://huggingface.co/datasets/AndrzejDD/15-class-Substation-Equipment	provided-by-user-training-manifest	reference-and-provenance-only
+hard-hat-workers-v10	external-user-training-reference	provider-version-10	https://public.roboflow.com/object-detection/hard-hat-workers/10	provided-by-user-training-manifest	reference-and-provenance-only
+d-fire	external-user-training-reference	4bf9c31b18fadcd44d5f0b6d66f82bc56fa5e328	https://github.com/gaia-solutions-on-demand/DFireDataset	provided-by-user-training-manifest	reference-and-provenance-only
+insplad	external-user-training-reference-resolve-commit-first	resolve-one-40-character-commit-before-fetch	https://github.com/andreluizbvs/InsPLAD	provided-by-user-training-manifest	reference-and-provenance-only
 gazebo-meter	phase2-and-phase4-generated	generator-commit-plus-config-sha-plus-gazebo-version-plus-seeds	project-owned	/var/lib/substation/datasets/synthetic/gazebo-meter/generation-sha256	manifest-and-sha-only
 gazebo-anomalies	phase2-and-phase4-generated	generator-commit-plus-config-sha-plus-gazebo-version-plus-seeds	project-owned	/var/lib/substation/datasets/synthetic/gazebo-anomalies/generation-sha256	manifest-and-sha-only
