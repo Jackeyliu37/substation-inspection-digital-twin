@@ -58,13 +58,13 @@ export GZ_PARTITION="$partition"
 
 launch_pid=""
 cleanup() {
-  if test -n "$launch_pid" && kill -0 "$launch_pid" 2>/dev/null; then
+  if test -n "$launch_pid" && kill -0 -- "-$launch_pid" 2>/dev/null; then
     kill -TERM -- "-$launch_pid" 2>/dev/null || true
     for _ in $(seq 1 40); do
-      kill -0 "$launch_pid" 2>/dev/null || break
+      kill -0 -- "-$launch_pid" 2>/dev/null || break
       sleep 0.25
     done
-    if kill -0 "$launch_pid" 2>/dev/null; then
+    if kill -0 -- "-$launch_pid" 2>/dev/null; then
       kill -KILL -- "-$launch_pid" 2>/dev/null || true
     fi
     wait "$launch_pid" 2>/dev/null || true

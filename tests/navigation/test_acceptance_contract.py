@@ -16,6 +16,7 @@ def test_acceptance_harness_owns_runtime_and_finalizes_evidence() -> None:
     assert 'partition="phase3-$run_id"' in source
     assert "setsid env -u DISPLAY ROS_LOCALHOST_ONLY=1" in source
     assert 'kill -TERM -- "-$launch_pid"' in source
+    assert source.count('kill -0 -- "-$launch_pid"') >= 3
     assert 'launch_group="$launch_pid"' in source
     assert 'kill -0 -- "-$launch_group"' in source
     assert "trap cleanup EXIT INT TERM" in source
