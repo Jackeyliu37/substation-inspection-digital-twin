@@ -73,6 +73,7 @@ def test_navigation_configuration_has_single_transform_owner_per_mode() -> None:
     assert controller["FollowPath"]["motion_model"] == "DiffDrive"
     assert controller["FollowPath"]["vx_max"] == 0.22
     assert controller["FollowPath"]["CostCritic"]["enabled"] is True
+    assert controller["FollowPath"]["CostCritic"]["consider_footprint"] is True
 
 
 def test_every_registered_asset_has_free_map_inspection_pose() -> None:
