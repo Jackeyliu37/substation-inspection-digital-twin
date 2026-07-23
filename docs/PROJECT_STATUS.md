@@ -4,7 +4,7 @@
 
 - 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 仍为 `in_progress / production model artifacts blocked`；Phase 5～8 已完成受限开发实现与契约验证，但尚不是生产交付。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。它在真实 Gazebo 场景中触发 `combined-risk-obstacle`，确认 transformer-01 风险为 68 分 / ALERT，任务队列重排到 transformer-01 首位，证据 SHA-256 全部通过且无残留进程。
-- Phase 7 Gateway 开发检查点：`9e18d51`。FastAPI Gateway 已覆盖 health/readiness、资产/任务/地图/报告/诊断快照、命令幂等、telemetry/events/camera WebSocket 契约；尚未接入真实 rclpy 订阅、Service/Action 调用或持久报告索引。
+- Phase 7 Gateway 开发检查点：`d61a7fb`。FastAPI Gateway 已覆盖 health/readiness、资产/任务/地图/报告/诊断快照、命令幂等、telemetry/events/camera WebSocket 契约，并有可供 systemd 使用的 `python -m substation_web_gateway` 启动入口；未接入真实 rclpy 订阅、Service/Action 调用或持久报告索引时 readiness fail-closed。
 - Phase 8 前端开发检查点：`df30574`。八工作区和 REST/WebSocket-only 边界已实现；`npm test` 和 `npm run build` 已通过。主机没有可用 Chrome，尚未进行 Playwright 截图或浏览器端到端验收。
 - 本轮全量软件验证：`colcon build --symlink-install && colcon test && colcon test-result --all --verbose` 为 `138 tests, 0 errors, 0 failures, 0 skipped`；顶层 world/navigation/perception/synthetic/phase5_6/Gateway/deployment 和 documentation gate 亦通过。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。

@@ -6,7 +6,7 @@
 - Branch：`main`。
 - 当前阶段：Phase 9 集成前收口。Phase 4 官方 `yolo11n.pt` 开发占位运行时已通过 live smoke；生产集成仍等待用户在 AutoDL 训练的 safety、equipment、fault 和 meter 四个独立 artifact。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
-- Phase 7 Gateway 开发检查点：`9e18d51`，Gateway 契约测试 8 passed、部署契约 4 passed；它仍是 state seam，未连接真实 rclpy 控制面。
+- Phase 7 Gateway 开发检查点：`d61a7fb`，Gateway 契约测试和部署契约共 13 passed；`python -m substation_web_gateway --host 127.0.0.1 --port 8001` 已 loopback 冒烟。它仍是 state seam，未连接真实 rclpy 控制面，因而 `/readyz` fail-closed。
 - Phase 8 前端开发检查点：`df30574`，`npm test` 与 `npm run build` 已通过；没有 Chrome，因此没有 Playwright 浏览器证据。
 - 当前软件验证：ROS workspace `138 tests, 0 errors, 0 failures, 0 skipped`；world/navigation/perception/synthetic/phase5_6/Gateway/deployment 和 documentation gate 均已通过。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
