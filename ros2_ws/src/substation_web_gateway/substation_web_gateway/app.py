@@ -110,15 +110,15 @@ class GatewayState:
         "websocket": {"telemetry": "ok", "events": "ok", "camera": "ok"},
     })
     ready_dependencies: dict[str, bool] = field(default_factory=lambda: {
-        "ros": True,
-        "run_context": True,
-        "gazebo": True,
-        "nav2": True,
-        "storage": True,
-        "reporting": True,
-        "time_mapping": True,
-        "risk": True,
-        "mission": True,
+        "ros": False,
+        "run_context": False,
+        "gazebo": False,
+        "nav2": False,
+        "storage": False,
+        "reporting": False,
+        "time_mapping": False,
+        "risk": False,
+        "mission": False,
     })
     stream_epoch: str = field(default_factory=lambda: str(uuid.uuid4()))
     _sequence: int = 0

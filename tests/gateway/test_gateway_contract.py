@@ -157,12 +157,21 @@ def test_health_and_readiness_are_distinct():
     assert body["schema_version"] == "1.0"
     assert body["status"] == "alive"
 
+    status, _, body = _http(app, "GET", "/readyz")
+    assert status == 503
+    assert body["code"] == "NOT_READY"
+
     not_ready = create_app(state=GatewayState(ready_dependencies={"ros": False}))
     status, headers, body = _http(not_ready, "GET", "/readyz")
     assert status == 503
     assert headers["content-type"].startswith("application/problem+json")
     assert body["code"] == "NOT_READY"
     assert body["violations"] == [{"field": "ros", "reason": "unavailable"}]
+
+    ready = create_app(state=GatewayState(ready_dependencies={"ros": True, "run_context": True}))
+    status, _, body = _http(ready, "GET", "/readyz")
+    assert status == 200
+    assert body["status"] == "ready"
 
 
 def test_snapshot_uses_weak_etag_and_returns_304_without_body():
