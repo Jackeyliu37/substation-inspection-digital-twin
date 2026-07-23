@@ -75,6 +75,7 @@ def test_navigation_launch_declares_runtime_dependencies() -> None:
         "nav2_lifecycle_manager",
         "nav2_map_server",
         "nav2_planner",
+        "nav2_regulated_pure_pursuit_controller",
         "nav2_smoother",
         "nav2_velocity_smoother",
         "slam_toolbox",

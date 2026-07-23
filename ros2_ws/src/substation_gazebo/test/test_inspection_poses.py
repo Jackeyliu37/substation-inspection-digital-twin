@@ -63,7 +63,13 @@ def test_navigation_configuration_has_single_transform_owner_per_mode() -> None:
     assert nav2["local_costmap"]["local_costmap"]["ros__parameters"][
         "obstacle_layer"
     ]["scan"]["topic"] == "/scan"
-    assert nav2["controller_server"]["ros__parameters"]["FollowPath"]["max_vel_x"] == 0.22
+    controller = nav2["controller_server"]["ros__parameters"]
+    assert controller["progress_checker"]["movement_time_allowance"] == 30.0
+    assert controller["FollowPath"]["plugin"] == (
+        "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+    )
+    assert controller["FollowPath"]["desired_linear_vel"] == 0.22
+    assert controller["FollowPath"]["use_rotate_to_heading"] is True
 
 
 def test_every_registered_asset_has_free_map_inspection_pose() -> None:
