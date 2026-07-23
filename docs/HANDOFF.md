@@ -4,8 +4,8 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 2 Gazebo world 开发中；静态世界检查点已验证，场景运行时是下一项工作。
-- Phase 2 当前已验证实现提交：`c7bb2909985a51a9cb224169f2cee6b033cc2c82`。
+- 当前阶段：Phase 2 Gazebo world 开发中；场景运行时、纯无头 launch 和 acceptance 工具已通过非 live 门，Gazebo live acceptance 是下一项工作。
+- Phase 2 当前已验证运行时源码提交：`e10ea743e77ec07bee7d32a4b4f7a0f74d0cbed5`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - 状态同步提交：使用 `git log -1 --format=%H -- docs/PROJECT_STATUS.md docs/HANDOFF.md` 查询；它只修改文档，并晚于环境实现提交。
 - 验证结果：`passed`，完成时间 `2026-07-23T11:05:21Z`。
@@ -18,7 +18,8 @@
 - 最后成功的只读命令：`bash scripts/check_environment_seal.sh --evidence-dir /var/lib/substation/evidence/acceptance/d9748529-dada-4699-b738-8aa1b90fdaf1/01-environment`。
 - 首次恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && source .phase1-run.env && bash scripts/check_environment_seal.sh --evidence-dir /var/lib/substation/evidence/acceptance/d9748529-dada-4699-b738-8aa1b90fdaf1/01-environment`。
 - Phase 2 最新检查点：`python3 -m pytest -q tests/world/test_world_contract.py`，结果 `5 passed in 0.03s`。该检查点还通过两包 `colcon build/test/test-result`、SDF `gz sdf -k` 和 `check_urdf`。
-- Phase 2 恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && set +u && source /opt/ros/jazzy/setup.bash && set -u && python3 -m pytest -q tests/world/test_world_contract.py`。
+- Phase 2 运行时非 live 门：两包构建成功，`colcon test-result --verbose` 为 `22 tests, 0 errors, 0 failures, 0 skipped`，顶层 world/launch/acceptance 契约为 `11 passed`，`git diff --check` 通过。
+- Phase 2 恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && set +u && source /opt/ros/jazzy/setup.bash && set -u && export ROS_LOCALHOST_ONLY=1 && cd ros2_ws && colcon build --symlink-install --packages-select substation_description substation_gazebo && source install/setup.bash && colcon test --packages-select substation_description substation_gazebo --event-handlers console_direct+ && colcon test-result --verbose`。
 
 ## 本地状态
 
@@ -32,4 +33,4 @@
 - 浏览器只通过 Nginx 和 FastAPI REST/WebSocket，不直连 ROS DDS。
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
-- 下一实现动作：按 `docs/superpowers/plans/2026-07-23-gazebo-substation-world.md` Task 2 先写失败的场景 catalog/engine 测试，再实现运行时、headless launch 和 live acceptance；Phase 3 尚未开始。
+- 下一实现动作：提交并推送运行时检查点状态，然后按 `docs/superpowers/plans/2026-07-23-gazebo-substation-world.md` 在干净固定提交上运行无 `DISPLAY` Gazebo live acceptance；Phase 3 尚未开始。
