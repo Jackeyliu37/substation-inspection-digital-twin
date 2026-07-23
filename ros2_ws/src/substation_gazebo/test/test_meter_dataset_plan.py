@@ -44,6 +44,7 @@ def test_full_plan_is_balanced_group_isolated_and_deterministic() -> None:
 
 def test_registry_owns_meter_ranges_units_and_sensor_ids() -> None:
     config = load_generation_config(CONFIG, DEVICES)
+    assert config.fresh_frames_after_command == 1
     pressure = config.meters["meter-pressure-01"]
     oil = config.meters["meter-oil-01"]
     assert (pressure.minimum, pressure.maximum, pressure.unit) == (0.0, 2.0, "MPa")

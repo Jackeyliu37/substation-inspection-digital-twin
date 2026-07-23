@@ -123,7 +123,7 @@ groups_per_meter: {train: 40, val: 5, test: 5}
 meter_asset_ids: [meter-oil-01, meter-pressure-01]
 minimum_bbox_pixels: 32
 maximum_retries_per_sample: 8
-fresh_frames_after_command: 3
+fresh_frames_after_command: 1
 view_families:
   distances_m: [0.65, 0.85, 1.05, 1.25, 1.45]
   yaw_degrees: [-28, -14, 0, 14, 28]
