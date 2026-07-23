@@ -2,11 +2,12 @@
 
 ## 当前恢复快照
 
-- 当前阶段：Phase 1 Task 1–5 已完成，继续 Task 6 AI 虚拟环境；不要重新运行主机安装。
+- 当前阶段：Phase 1 Task 1–6 已完成，继续 Task 7 Gateway 虚拟环境；不要重新运行主机安装或 AI 环境安装。
 - 当前 acceptance run：`c2d99d10-058f-4033-aa33-89917bf74590`。
 - 当前 evidence staging：`/var/lib/substation/evidence/acceptance/c2d99d10-058f-4033-aa33-89917bf74590/01-environment.staging`。
-- 最近实现提交：`ae94eae feat: add ros workspace baseline`；最近状态同步提交应在该实现提交之后单独创建。
+- 最近实现提交：`5a30550 feat: add locked cuda ai environment`；状态同步提交应在该实现提交之后单独创建。
 - Task 5 证据已通过：`rosdep-update.log`、`rosdep-check.log`、`colcon-build.log`、`colcon-test.log`、`colcon-test-result.log`、`setup-ros-workspace.log`。
+- Task 6 证据已通过：`setup-python-env.log`、`ai-pip-freeze.txt`；`.venv/.substation-environment.json` 与 `requirements.lock` SHA-256 一致，CUDA 可用且版本为 12.6。
 
 - Repository: `/home/jackeyliu37/substation-inspection-digital-twin`
 - Branch: `main`
@@ -71,4 +72,4 @@ Expected branch is `main`; status output should be empty except for ignored `.su
 
 ## Next implementation action
 
-Proceed to Task 6: create and verify the CUDA-enabled AI virtual environment from the planned hash-locked requirements. Preserve Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless rendering and the FastAPI-only product browser boundary.
+Proceed to Task 7: create and verify the Gateway `.venv-web` from the planned hash-locked requirements. Preserve Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless rendering and the FastAPI-only product browser boundary.

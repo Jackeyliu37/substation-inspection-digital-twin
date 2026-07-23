@@ -2,8 +2,8 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 1 环境基线 fast-track；Task 1–5 已完成，下一步为 AI/Gateway 虚拟环境与前端基线。
-- Phase 1 执行状态：主机依赖已安装，空 ROS 2 工作区已完成 rosdep、colcon build/test/test-result 基线。Node.js 24.18.0 tarball 与官方 YOLO11n 占位/base weight 已锁定；公开训练数据下载和模型微调仍由用户在仓库外完成。
+- 当前阶段：Phase 1 环境基线 fast-track；Task 1–6 已完成，下一步为 Gateway 虚拟环境与前端基线。
+- Phase 1 执行状态：主机依赖、空 ROS 2 工作区和 CUDA AI 虚拟环境均已完成基线。Node.js 24.18.0 tarball 与官方 YOLO11n 占位/base weight 已锁定；公开训练数据下载和模型微调仍由用户在仓库外完成。
 - Phase 0 契约快照提交：`d0fb12dbe794221f88abb777f31760bdee655783`（`docs: complete phase zero contracts`）。
 - Phase 0 状态记录提交：运行 `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md` 获取。该提交只记录阶段事实和恢复入口；本文不嵌入自身提交哈希。
 - 当前阻塞项：无。继续保留“个人项目 fast-track”：安全审查从简，但不放宽 ROS/Gazebo/headless/哈希/证据边界。
@@ -11,11 +11,13 @@
 ## Phase 1 fast-track 当前状态
 
 - 当前 acceptance run：`c2d99d10-058f-4033-aa33-89917bf74590`；evidence staging：`/var/lib/substation/evidence/acceptance/c2d99d10-058f-4033-aa33-89917bf74590/01-environment.staging`。
-- Task 3 主机安装实现提交：`330b34a`（locale-safe 收尾与 ROS setup nounset 兼容）；Task 5 ROS 工作区实现提交：`ae94eae`。
+- Task 3 主机安装实现提交：`330b34a`（locale-safe 收尾与 ROS setup nounset 兼容）；Task 5 ROS 工作区实现提交：`ae94eae`；Task 6 AI 环境实现提交：`5a30550`。
 - Task 3 主机安装证据：`install-complete.env` 为 `state=PASS`，新增包 `1465` 个；NVIDIA 驱动保持 `595.71.05`；nginx 为 `disabled/inactive`。
 - Task 5 已通过：`bash tests/environment/test_ros_workspace.sh`、`bash scripts/setup_ros_workspace.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"`；rosdep、colcon build、colcon test、colcon test-result 均退出 0，测试结果为 `0 tests, 0 errors, 0 failures, 0 skipped`。
 - Task 5 证据：`rosdep-update.log`、`rosdep-check.log`、`colcon-build.log`、`colcon-test.log`、`colcon-test-result.log`、`setup-ros-workspace.log`。
-- 下一步：Task 6 创建并验证 CUDA AI `.venv`，随后 Task 7 Gateway `.venv-web`。
+- Task 6 已通过：锁文件包含全部 SHA-256，官方 PyTorch CUDA 12.6 wheel 身份记录在 `artifacts/environment/pytorch-cu126-wheels.tsv`；`.venv` provenance 校验、CUDA/import 验证和 foreign-venv 拒绝测试均通过。
+- Task 6 证据：`setup-python-env.log`、`ai-pip-freeze.txt`。
+- 下一步：Task 7 创建并验证 Gateway `.venv-web`，随后 Task 8 前端基线。
 
 - Documentation gate implementation commit：`d049f62bd39b910c2e5fe41ace80b778f14da509`（`feat: add phase one documentation gate`）。
 - Acceptance run identity commit：`99a2709f5a0f4d51eb7af99d3c440b06f5e28ad9`（包含 Task 1 实现及当时的阻塞状态记录；后续状态提交不替换该 evidence identity）。
