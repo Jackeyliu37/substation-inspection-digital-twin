@@ -46,6 +46,7 @@ def test_meter_world_is_headless_ogre2_camera_scene() -> None:
         "gz-sim-user-commands-system",
     }.issubset(plugins)
     assert world.find("plugin[@filename='gz-sim-sensors-system']/render_engine").text == "ogre2"
+    assert world.find("physics/max_step_size").text == "0.01"
     camera = world.find(".//sensor[@name='meter_dataset_camera'][@type='camera']")
     assert camera is not None
     assert camera.findtext("topic") == "meter_dataset/camera/image_raw"
