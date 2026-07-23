@@ -73,7 +73,13 @@ environment_prepare_owned_directory() {
   test ! -L "$parent"
   printf '%s\t0\t-\t-\t-\t-\t-\t%s\t%s\t%s\t1\n' \
     "$path" "$expected_mode" "$expected_owner" "$expected_group" >> "$manifest"
-  sudo install -d -m "$expected_mode" -o "$expected_owner" -g "$expected_group" "$path"
+  if test -w "$parent" \
+    && test "$expected_owner" = "$(id -un)" \
+    && test "$expected_group" = "$(id -gn)"; then
+    install -d -m "$expected_mode" "$path"
+  else
+    sudo install -d -m "$expected_mode" -o "$expected_owner" -g "$expected_group" "$path"
+  fi
 }
 
 environment_sha256() {
