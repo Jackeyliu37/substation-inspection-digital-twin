@@ -111,12 +111,28 @@ class Phase3NavigationProbe(Node):
         return (
             self.map_message is not None
             and self.map_message.header.frame_id == "map"
-            and self.map_message.info.resolution == 0.05
+            and math.isclose(
+                self.map_message.info.resolution, 0.05, rel_tol=0.0, abs_tol=1e-6
+            )
             and self.costmap_message is not None
             and self.costmap_count >= 2
             and self.tf_ready()
             and self.navigation.server_is_ready()
         )
+
+    def baseline_state(self) -> dict[str, object]:
+        return {
+            "map_received": self.map_message is not None,
+            "map_frame": (
+                None if self.map_message is None else self.map_message.header.frame_id
+            ),
+            "map_resolution": (
+                None if self.map_message is None else self.map_message.info.resolution
+            ),
+            "costmap_messages": self.costmap_count,
+            "map_to_odom": self.tf_ready(),
+            "navigate_to_pose_ready": self.navigation.server_is_ready(),
+        }
 
     @staticmethod
     def string_parameter(name: str, value: str) -> Parameter:
@@ -240,7 +256,11 @@ def main() -> int:
     try:
         if not node.navigation.wait_for_server(timeout_sec=120.0):
             raise RuntimeError("NavigateToPose action server unavailable")
-        node.spin_until(node.baseline_ready, 120.0, "map, TF, costmap and Nav2")
+        try:
+            node.spin_until(node.baseline_ready, 120.0, "map, TF, costmap and Nav2")
+        except RuntimeError:
+            print(json.dumps({"baseline_state": node.baseline_state()}, sort_keys=True))
+            raise
         static_goal = node.navigate("potential-transformer-01", 120.0)
 
         dynamic_id = str(uuid4())
