@@ -4,7 +4,8 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 1 环境基线已完成；Phase 2 Gazebo world 规划是下一项工作。
+- 当前阶段：Phase 2 Gazebo world 开发中；静态世界检查点已验证，场景运行时是下一项工作。
+- Phase 2 当前已验证实现提交：`c7bb2909985a51a9cb224169f2cee6b033cc2c82`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - 状态同步提交：使用 `git log -1 --format=%H -- docs/PROJECT_STATUS.md docs/HANDOFF.md` 查询；它只修改文档，并晚于环境实现提交。
 - 验证结果：`passed`，完成时间 `2026-07-23T11:05:21Z`。
@@ -16,6 +17,8 @@
 - Canonical one-shot verifier 已执行：`bash scripts/verify_environment.sh --evidence-dir /var/lib/substation/evidence/acceptance/d9748529-dada-4699-b738-8aa1b90fdaf1/01-environment`。不得为此 acceptance run 再次执行。
 - 最后成功的只读命令：`bash scripts/check_environment_seal.sh --evidence-dir /var/lib/substation/evidence/acceptance/d9748529-dada-4699-b738-8aa1b90fdaf1/01-environment`。
 - 首次恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && source .phase1-run.env && bash scripts/check_environment_seal.sh --evidence-dir /var/lib/substation/evidence/acceptance/d9748529-dada-4699-b738-8aa1b90fdaf1/01-environment`。
+- Phase 2 最新检查点：`python3 -m pytest -q tests/world/test_world_contract.py`，结果 `5 passed in 0.03s`。该检查点还通过两包 `colcon build/test/test-result`、SDF `gz sdf -k` 和 `check_urdf`。
+- Phase 2 恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && set +u && source /opt/ros/jazzy/setup.bash && set -u && python3 -m pytest -q tests/world/test_world_contract.py`。
 
 ## 本地状态
 
@@ -29,4 +32,4 @@
 - 浏览器只通过 Nginx 和 FastAPI REST/WebSocket，不直连 ROS DDS。
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
-- 下一实现动作是先创建并审查零上下文 Phase 2 Gazebo world 计划，再添加 ROS package 或产品 world。
+- 下一实现动作：按 `docs/superpowers/plans/2026-07-23-gazebo-substation-world.md` Task 2 先写失败的场景 catalog/engine 测试，再实现运行时、headless launch 和 live acceptance；Phase 3 尚未开始。

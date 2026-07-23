@@ -2,7 +2,8 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 1 环境基线已完成；下一阶段是 Phase 2 Gazebo 变电站世界规划。
+- 当前阶段：Phase 2 Gazebo 变电站世界开发中；资产注册表、机器人描述和静态世界检查点已完成。
+- Phase 2 当前已验证实现提交：`c7bb2909985a51a9cb224169f2cee6b033cc2c82`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - 验证完成时间：`2026-07-23T11:05:21Z`。
 - 验证结果：`passed`；`result.json` 和 `SHA256SUMS` 均已验证。
@@ -26,9 +27,11 @@
 - 无 `DISPLAY` 的 Gazebo Harmonic OGRE2/EGL 64×48 RGB camera probe。
 - 受审查的环境快照、一次性 verifier 和 immutable evidence seal。
 - 官方 `yolo11n.pt` 仅作开发占位；公开训练数据和模型微调仍由用户在仓库外完成。
+- Phase 2 已建立 `substation_description`、`substation_gazebo`、10 个稳定资产（8 类规范设备和 2 个仪表）、TurtleBot3 Waffle Pi 尺寸机器人、OGRE2 传感器、静态世界和 ROS bridge 配置。
+- Phase 2 静态检查点验证：`python3 -m pytest -q tests/world/test_world_contract.py`，结果 `5 passed`；两包 `colcon build/test/test-result` 为 `6 tests, 0 errors, 0 failures`，SDF 与 URDF 解析通过。
 
-## Phase 2 下一步
+## Phase 2 当前工作
 
-1. 先编写并审查 Phase 2 test-first Gazebo world 计划。
-2. 计划固定后再实现 `substation_description` 和 `substation_gazebo`。
-3. 保持现有版本和资源锁，在无 `DISPLAY` 条件下验证 `/clock`、Camera、CameraInfo、LiDAR、环境传感器、odometry、TF 和 scenario state。
+1. test-first 实现场景 catalog、事务状态机、原始环境/电量/真值发布和标准原子参数服务。
+2. 完成无 `DISPLAY` headless launch 与有界 live probe。
+3. 对固定实现提交生成 Phase 2 immutable evidence；在此之前不声明 Phase 2 完成。
