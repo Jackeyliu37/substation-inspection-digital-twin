@@ -94,7 +94,7 @@ Use dedicated assertions for a missing file, a different resolved path, and a no
 
 - [ ] **Step 2: Verify red**
 
-Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception python3 -m pytest -q ros2_ws/src/substation_perception/test/test_model_identity.py`
+Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception:$PYTHONPATH python3 -m pytest -q ros2_ws/src/substation_perception/test/test_model_identity.py`
 
 Expected: collection fails because `model_identity` does not exist.
 
@@ -182,7 +182,7 @@ Parameterized fake box values cover an unknown class index, unequal tensor lengt
 
 - [ ] **Step 2: Verify red**
 
-Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception python3 -m pytest -q ros2_ws/src/substation_perception/test/test_yolo_backend.py`
+Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception:$PYTHONPATH python3 -m pytest -q ros2_ws/src/substation_perception/test/test_yolo_backend.py`
 
 Expected: import fails because `yolo_backend` does not exist.
 
@@ -253,7 +253,7 @@ Add one test each for empty names, scores outside `[0,1]`, non-finite coordinate
 
 - [ ] **Step 2: Verify red**
 
-Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception python3 -m pytest -q ros2_ws/src/substation_perception/test/test_detection_contract.py`
+Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception:$PYTHONPATH python3 -m pytest -q ros2_ws/src/substation_perception/test/test_detection_contract.py`
 
 Expected: import fails because `detection_contract` does not exist.
 
@@ -350,7 +350,7 @@ The success test supplies one detection below and one above the confidence thres
 
 - [ ] **Step 2: Verify red**
 
-Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception python3 -m pytest -q ros2_ws/src/substation_perception/test/test_placeholder_node.py`
+Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception:$PYTHONPATH python3 -m pytest -q ros2_ws/src/substation_perception/test/test_placeholder_node.py`
 
 Expected: import fails because `placeholder_node` does not exist.
 
@@ -430,7 +430,7 @@ def test_launch_syntax_executable_and_package_dependencies():
 
 - [ ] **Step 2: Verify red**
 
-Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception python3 -m pytest -q ros2_ws/src/substation_perception/test/test_placeholder_launch.py`
+Run: `source /opt/ros/jazzy/setup.bash && PYTHONPATH=$PWD/ros2_ws/src/substation_perception:$PYTHONPATH python3 -m pytest -q ros2_ws/src/substation_perception/test/test_placeholder_launch.py`
 
 Expected: failure because the launch file does not exist.
 
