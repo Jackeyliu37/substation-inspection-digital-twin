@@ -33,6 +33,9 @@ grep -Fq '3a4c8d59e3a0fbb2acf338994b6102c5baa17071c4cc97f520b482a697f8a4fe' scri
 grep -Fq 'curl --ipv4' scripts/install_host.sh
 grep -Fq -- '--connect-timeout 10' scripts/install_host.sh
 grep -Fq -- '--max-time 120' scripts/install_host.sh
+grep -Fq 'install-host: downloading ROS key' scripts/install_host.sh
+grep -Fq 'install-host: refreshing apt indexes' scripts/install_host.sh
+grep -Fq 'install-host: installing packages' scripts/install_host.sh
 grep -Fq 'ros_apt_uri=http://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo.gpg' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo/ubuntu-stable' scripts/install_host.sh

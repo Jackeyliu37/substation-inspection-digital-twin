@@ -185,6 +185,7 @@ download_host_file() {
 }
 
 ros_key_sha256=3a4c8d59e3a0fbb2acf338994b6102c5baa17071c4cc97f520b482a697f8a4fe
+printf '%s\n' 'install-host: downloading ROS key'
 download_host_file http://packages.ros.org/ros.key "$work_dir/ros.key"
 test "$(environment_sha256 "$work_dir/ros.key")" = "$ros_key_sha256"
 gpg --batch --yes --dearmor --output "$work_dir/ros-archive-keyring.gpg" "$work_dir/ros.key"
@@ -198,14 +199,17 @@ test "$codename" = noble
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s %s main\n' "$architecture" "$ros_apt_uri" "$codename" > "$work_dir/ros2.list"
 install_managed_file "$work_dir/ros2.list" /etc/apt/sources.list.d/ros2.list 0644
 
+printf '%s\n' 'install-host: downloading Gazebo key'
 download_host_file https://packages.osrfoundation.org/gazebo.gpg "$work_dir/gazebo.gpg"
 gpg --batch --yes --dearmor --output "$work_dir/gazebo-archive-keyring.gpg" "$work_dir/gazebo.gpg"
 install_managed_file "$work_dir/gazebo-archive-keyring.gpg" /usr/share/keyrings/gazebo-archive-keyring.gpg 0644
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/gazebo-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable %s main\n' "$architecture" "$codename" > "$work_dir/gazebo-stable.list"
 install_managed_file "$work_dir/gazebo-stable.list" /etc/apt/sources.list.d/gazebo-stable.list 0644
 
+printf '%s\n' 'install-host: refreshing apt indexes'
 sudo apt-get update
 mapfile -t requested_packages < config/environment/apt-packages.txt
+printf '%s\n' 'install-host: simulating apt transaction'
 apt-get --simulate install --no-install-recommends "${requested_packages[@]}" > "$evidence_dir/apt-install-simulation.txt"
 ! grep -Eq '^Remv ' "$evidence_dir/apt-install-simulation.txt"
 ! grep -Eq '^Inst .*\[[^]]+\]' "$evidence_dir/apt-install-simulation.txt"
@@ -280,6 +284,7 @@ candidates_path.write_text("package\tcandidate\n" + "".join(f"{p}\t{v}\n" for p,
 origins_path.write_text("package\tcandidate\torigins\n" + "".join(f"{p}\t{v}\t{o}\n" for p, v, o in origin_rows), encoding="utf-8")
 PY
 
+printf '%s\n' 'install-host: installing packages'
 sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends --no-upgrade "${requested_packages[@]}"
 
 rosdep_path=/etc/ros/rosdep/sources.list.d/20-default.list
