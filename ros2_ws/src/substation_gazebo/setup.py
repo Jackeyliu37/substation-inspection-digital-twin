@@ -14,6 +14,7 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE}"]),
         (f"share/{PACKAGE}", ["package.xml"]),
         (f"share/{PACKAGE}/config", glob("config/*.yaml")),
+        (f"share/{PACKAGE}/maps", glob("maps/*")),
         (
             f"share/{PACKAGE}/config",
             ["../../../configs/meter_dataset_generation.yaml"],
