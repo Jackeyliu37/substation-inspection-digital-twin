@@ -1,0 +1,82 @@
+schema_version: 1
+nominal_values:
+  temperature_celsius: 25.0
+  smoke_0_1: 0.0
+  gas_ppm: 5.0
+  meter_reading: 0.8
+  battery_percentage: 0.95
+hidden_pose: [0.0, 0.0, -10.0, 0.0, 0.0, 0.0]
+known_props:
+  - scenario_dynamic_obstacle
+  - scenario_fire
+  - scenario_person_no_hardhat
+  - scenario_smoke
+  - scenario_unreachable_blocker
+scenarios:
+  normal:
+    parameters: {}
+    defaults: {}
+    values: {}
+    props: {}
+  ppe:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+    defaults: {asset_id: breaker-01}
+    values: {}
+    props:
+      scenario_person_no_hardhat: [0.4, 0.4, 0.0, 0.0, 0.0, 0.0]
+  fire-smoke:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+      smoke_0_1: {type: number, minimum: 0.0, maximum: 1.0, required: true}
+    defaults: {asset_id: transformer-01, smoke_0_1: 0.8}
+    values: {smoke_0_1: 0.8}
+    props:
+      scenario_fire: [4.3, 3.0, 0.45, 0.0, 0.0, 0.0]
+      scenario_smoke: [4.5, 3.0, 1.25, 0.0, 0.0, 0.0]
+  temperature-high:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+      temperature_celsius: {type: number, minimum: -50.0, maximum: 200.0, required: true}
+    defaults: {asset_id: transformer-01, temperature_celsius: 90.0}
+    values: {temperature_celsius: 90.0}
+    props:
+      scenario_fire: [4.3, 3.0, 0.45, 0.0, 0.0, 0.0]
+  gas-high:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+      gas_ppm: {type: number, minimum: 0.0, maximum: 1000.0, required: true}
+    defaults: {asset_id: transformer-01, gas_ppm: 180.0}
+    values: {gas_ppm: 180.0}
+    props: {}
+  meter-limit:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+      meter_reading: {type: number, minimum: -1000.0, maximum: 1000.0, required: true}
+    defaults: {asset_id: meter-pressure-01, meter_reading: 1.6}
+    values: {meter_reading: 1.6}
+    props: {}
+  unreachable:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+    defaults: {asset_id: glass-insulator-01}
+    values: {}
+    props:
+      scenario_unreachable_blocker: [-3.3, -2.5, 0.5, 0.0, 0.0, 1.57079632679]
+  combined-risk-obstacle:
+    parameters:
+      asset_id: {type: asset_id, required: true}
+      temperature_celsius: {type: number, minimum: -50.0, maximum: 200.0, required: true}
+      smoke_0_1: {type: number, minimum: 0.0, maximum: 1.0, required: true}
+      gas_ppm: {type: number, minimum: 0.0, maximum: 1000.0, required: true}
+      obstacle_progress_0_1: {type: number, minimum: 0.0, maximum: 1.0, required: true}
+    defaults:
+      asset_id: transformer-01
+      temperature_celsius: 90.0
+      smoke_0_1: 0.7
+      gas_ppm: 180.0
+      obstacle_progress_0_1: 0.5
+    values: {temperature_celsius: 90.0, smoke_0_1: 0.7, gas_ppm: 180.0}
+    props:
+      scenario_dynamic_obstacle: [1.5, 0.0, 0.5, 0.0, 0.0, 0.0]
+      scenario_smoke: [4.5, 3.0, 1.25, 0.0, 0.0, 0.0]

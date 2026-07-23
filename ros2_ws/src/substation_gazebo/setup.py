@@ -28,5 +28,9 @@ setup(
     description="Headless Gazebo Harmonic substation simulation.",
     license="Apache-2.0",
     tests_require=["pytest"],
+    entry_points={
+        "console_scripts": [
+            "scenario_manager = substation_gazebo.scenario_manager:main",
+        ],
+    },
 )
-
