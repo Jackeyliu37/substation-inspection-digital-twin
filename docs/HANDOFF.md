@@ -4,14 +4,14 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 2 Gazebo world 已完成；仪表数据生成器与 live smoke 已通过，下一动作是 2,000 张全量生成和 AutoDL ZIP 封装。
+- 当前阶段：Phase 2 Gazebo world 和 2,000 张仪表数据准备检查点已完成；下一动作回到 Phase 3 SLAM/Nav2，用户可并行在 AutoDL 训练。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - 状态同步提交：使用 `git log -1 --format=%H -- docs/PROJECT_STATUS.md docs/HANDOFF.md` 查询；它只修改文档，并晚于环境实现提交。
 - Phase 1 验证结果：`passed`，完成时间 `2026-07-23T11:05:21Z`；immutable evidence 为 `/var/lib/substation/evidence/acceptance/d9748529-dada-4699-b738-8aa1b90fdaf1/01-environment`。
 - Phase 2 验证结果：`passed`，run ID `170b0adb-9553-4ce4-a304-c8425cfc156d`，完成时间 `2026-07-23T12:17:08Z`；immutable evidence 为 `/var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world`。
-- 仪表数据生成器提交：`2473a99822243649d1a8835eff7e0a802543d186`；ROS 包测试为 `53 tests, 0 errors, 0 failures, 0 skipped`。
-- 最终 live smoke 已通过：run ID `3f13c799-1a37-48ec-9991-a34a23e69fef`，generation ID `b68b5a49cce51c8625cfc18282b789e07202a27b09b36131e80524f77a8ca905`，目录 `/var/lib/substation/datasets/synthetic/gazebo-meter/b68b5a49cce51c8625cfc18282b789e07202a27b09b36131e80524f77a8ca905`。
+- 仪表数据生成器提交：`be1bc2fcfd13ed42c6d3b3f5deeb273f2fb8c01c`；ROS 包测试为 `53 tests, 0 errors, 0 failures, 0 skipped`。
+- 全量数据已通过：run ID `8d51ced9-df63-430b-b7e4-0944fc2f0e96`，generation ID `a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2`，ZIP 路径 `/var/lib/substation/datasets/synthetic/gazebo-meter/a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2/gazebo-meter-locator-v1.zip`，SHA-256 `0f22438f4fa1baacdb06c7f64be65b08f78fd1b83f0891ac14f2c28c6ca0af4f`，大小 100,338,006 字节。
 - 当前运行的项目服务：无。
 
 ## 验证与恢复命令
@@ -42,4 +42,4 @@
 - 浏览器只通过 Nginx 和 FastAPI REST/WebSocket，不直连 ROS DDS。
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
-- 下一实现动作：以当前已推送干净提交运行 `tests/synthetic/run_meter_dataset_generation.sh --mode full`，生成并封装 2,000 张 AutoDL 数据；完成后回到 Phase 3 SLAM/Nav2。Phase 3 和 Phase 4 运行时均尚未开始。
+- 下一实现动作：用户按 `datasets/README.md` 上传并训练 `meter_locator`；项目代码回到 Phase 3 SLAM/Nav2。Phase 3 和 Phase 4 运行时均尚未开始。

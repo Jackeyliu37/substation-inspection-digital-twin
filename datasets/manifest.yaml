@@ -1,0 +1,41 @@
+schema_version: 1
+generated_at: '2026-07-23T15:05:27Z'
+generator_git_commit: be1bc2fcfd13ed42c6d3b3f5deeb273f2fb8c01c
+sources:
+  - dataset_id: gazebo-meter-generated
+    purpose: meter-locator
+    source_url: https://github.com/Jackeyliu37/substation-inspection-digital-twin
+    license_spdx: Apache-2.0
+    license_url: https://www.apache.org/licenses/LICENSE-2.0
+    permitted_use: Project-owned Gazebo renders permitted for meter locator training and evaluation.
+    revision_type: generated
+    revision: a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2
+    status: accepted
+    block_reason: ''
+    archive_sha256: 0f22438f4fa1baacdb06c7f64be65b08f78fd1b83f0891ac14f2c28c6ca0af4f
+    archive_size_bytes: 100338006
+    file_manifest_sha256: bc0f94409c1d646ce8c6b12e449b819240a2ad60f215ca2187d1e4ca6cee94cb
+    file_manifest_path: synthetic/gazebo-meter/a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2/dataset/gazebo-meter-locator-v1/file-manifest.tsv
+    original_splits:
+      train: 1600
+      val: 200
+      test: 200
+    class_mapping:
+      meter: meter
+    excluded_labels: {}
+derived_datasets:
+  - dataset_id: gazebo-meter-locator-v1
+    module: perception
+    source_dataset_ids: [gazebo-meter-generated]
+    conversion_git_commit: be1bc2fcfd13ed42c6d3b3f5deeb273f2fb8c01c
+    conversion_config_sha256: 7f19fc0296259248cc2344a1b3fc5110982169a65ad687d8fa081373db415ea2
+    split_manifest_sha256: bc0f94409c1d646ce8c6b12e449b819240a2ad60f215ca2187d1e4ca6cee94cb
+    content_manifest_sha256: 0bead81b64806bed47f2f8da7e206a58d63ff28b7fbb7fe3352ad0a7728746c5
+    seed_plan_sha256: 1f98f7066d6b40a1e701c6d1904a9d4b36afadb1df517ae562f367b7ec5b80a1
+    world_sha256: a24a19923e4bb4f54008e4fc9dbf3b171e489d3eb8a2fe97dd021df2c9db6403
+    registry_sha256: dd26fa67faf03e06716b917a2d67e422d5421241bccf6ce8528a3c8b9fdf32a4
+    model_sha256: 8fe25a99af47faf9393475bb1cdb89a482c321fab1deb72dfd87933566cc8118
+    sample_counts:
+      train: 1600
+      val: 200
+      test: 200

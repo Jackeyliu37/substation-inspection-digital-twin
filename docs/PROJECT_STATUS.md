@@ -2,14 +2,14 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 2 Gazebo 变电站世界已完成；Phase 4 仪表数据准备的生成器与 live smoke 已通过，正在生成 2,000 张 AutoDL 数据，随后回到 Phase 3 SLAM/Nav2。
+- 当前阶段：Phase 2 Gazebo 变电站世界和 Phase 4 仪表数据准备检查点已完成；下一阶段回到 Phase 3 SLAM/Nav2，用户可并行在 AutoDL 训练仪表定位模型。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - Phase 1 验证完成时间：`2026-07-23T11:05:21Z`。
 - Phase 2 验证完成时间：`2026-07-23T12:17:08Z`。
 - Phase 2 验证结果：`passed`；run ID 为 `170b0adb-9553-4ce4-a304-c8425cfc156d`，`result.json` 和 `SHA256SUMS` 均已验证。
-- 仪表数据生成器提交：`2473a99822243649d1a8835eff7e0a802543d186`；ROS 包测试为 `53 tests, 0 errors, 0 failures, 0 skipped`。
-- 最终 live smoke：run ID `3f13c799-1a37-48ec-9991-a34a23e69fef`，generation ID `b68b5a49cce51c8625cfc18282b789e07202a27b09b36131e80524f77a8ca905`，结果 `meter-dataset-smoke: PASS` 和 `meter-dataset-package: PASS`。
+- 仪表数据生成器提交：`be1bc2fcfd13ed42c6d3b3f5deeb273f2fb8c01c`；ROS 包测试为 `53 tests, 0 errors, 0 failures, 0 skipped`。
+- 全量数据生成结果：`passed`；run ID `8d51ced9-df63-430b-b7e4-0944fc2f0e96`，generation ID `a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2`，完成时间 `2026-07-23T15:05:27Z`。
 - 当前阻塞项：无。
 - 正在运行的项目服务：无。Gazebo、ROS 项目节点、Gateway、前端、Foxglove Bridge 和 Nginx 均未作为产品服务运行。
 
@@ -40,8 +40,9 @@
 - Phase 2 最终 live acceptance：`bash tests/world/run_phase2_acceptance.sh --run-id 170b0adb-9553-4ce4-a304-c8425cfc156d --evidence-dir /var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world.staging`，结果依次为 `phase2-topic-probe: PASS` 和 `phase2-acceptance: PASS`。
 - Phase 2 immutable evidence：`/var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world`。只读复核命令为 `(cd /var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world && sha256sum -c SHA256SUMS)`；全部 12 个证据文件通过，且没有残留 Phase 2 ROS/Gazebo 进程。
 - 仪表数据 live smoke 已在 `/var/lib/substation/datasets/synthetic/gazebo-meter/b68b5a49cce51c8625cfc18282b789e07202a27b09b36131e80524f77a8ca905` 原子发布；包含 12 张图像和标签，train/val/test 各覆盖两种仪表，ZIP SHA-256 为 `4cb11ef6ea56b0e1a961cfe87e7f74d6287dc13869601e2e131db2554131b448`，运行后无残留 ROS/Gazebo 进程。
+- 全量数据已在 `/var/lib/substation/datasets/synthetic/gazebo-meter/a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2` 原子发布；共 2,000 张 640x480 图像和标签，train/val/test 为 1600/200/200，油位/压力仪表各 1,000 张。ZIP 为 `gazebo-meter-locator-v1.zip`，SHA-256 `0f22438f4fa1baacdb06c7f64be65b08f78fd1b83f0891ac14f2c28c6ca0af4f`，大小 100,338,006 字节；逐文件校验、ZIP 测试和外层证据校验均通过，且无残留 ROS/Gazebo 进程。
 - 本状态提交晚于并且只记录已验证实现提交 `eeffd2e6ad26247987c9b3f9c922979089a90f41`，不得把后续文档提交冒充为经过 Gazebo live acceptance 的实现提交。
 
 ## 下一步
 
-立即以已推送的干净生成器提交运行 2,000 张全量生成、校验和 AutoDL ZIP 封装。该准备检查点完成后回到 Phase 3 SLAM/Nav2；当前不得声明 Phase 3 或 Phase 4 运行时行为已存在。
+用户上传 `datasets/README.md` 记录的 ZIP 到 AutoDL 并训练 `meter_locator`；项目实现同步回到 Phase 3 SLAM/Nav2。当前不得声明 Phase 3 或 Phase 4 运行时行为已存在。
