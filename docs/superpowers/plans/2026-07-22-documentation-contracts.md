@@ -245,7 +245,7 @@ Update `README.md` and `docs/TEST_ACCEPTANCE.md` to state that Phase 0 is comple
 
 The gate must enumerate every Phase 0 deliverable explicitly, keep concrete unresolved markers, and avoid treating the generic Chinese noun used in legitimate explanatory text as an unresolved marker.
 
-- [ ] **Step 3: Run the exact committed Phase 0 gate**
+- [x] **Step 3: Run the exact committed Phase 0 gate**
 
 Run this exact block from the committed plan without substitution:
 
@@ -281,7 +281,7 @@ printf '%s\n' 'phase0-documentation-gate: PASS'
 
 Expected: literal stdout `phase0-documentation-gate: PASS`, no marker matches, and exit code 0.
 
-- [ ] **Step 4: Record the verified snapshot in status and handoff**
+- [x] **Step 4: Record the verified snapshot in status and handoff**
 
 After committing Step 1 and Step 2, run the exact Step 3 block at the clean commit. Record that commit as `verified_snapshot_commit`, the UTC verification time, the full exact commands, literal outputs, service state, clean status, blockers, next three actions, and this exact first resume command in `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md`:
 
@@ -289,7 +289,7 @@ After committing Step 1 and Step 2, run the exact Step 3 block at the clean comm
 cd /home/jackeyliu37/substation-inspection-digital-twin && sed -n '1,240p' docs/plans/PHASE-01-ENVIRONMENT.md
 ```
 
-- [ ] **Step 5: Commit bookkeeping and verify clean handoff**
+- [x] **Step 5: Commit bookkeeping and verify clean handoff**
 
 Commit the status record separately from the verified snapshot. Explain that the later commit is bookkeeping and was not the commit tested by the recorded snapshot gate. Then run:
 
