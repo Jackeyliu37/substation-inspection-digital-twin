@@ -1,0 +1,24 @@
+{
+  "dependencies": {
+    "@react-three/fiber": "9.6.1",
+    "echarts": "6.1.0",
+    "next": "16.2.11",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3"
+  },
+  "name": "substation-inspection-frontend",
+  "packageManager": "npm@11.16.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev --hostname 127.0.0.1 --port 3000",
+    "start": "next start --hostname 127.0.0.1 --port 3000"
+  },
+  "version": "0.1.0"
+}
