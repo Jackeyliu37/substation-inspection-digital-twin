@@ -42,7 +42,10 @@ grep -Fq 'install-host: validating package origins' scripts/install_host.sh
 grep -Fq 'install-host: installing packages' scripts/install_host.sh
 grep -Fq 'install-host: rosdep initialization deferred to workspace setup' scripts/install_host.sh
 if grep -Eq 'sudo rosdep init|rosdep update' scripts/install_host.sh; then exit 1; fi
-grep -Fq 'ros_apt_uri=http://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
+grep -Fq 'ros_apt_uri=https://mirrors.ustc.edu.cn/ros2/ubuntu' scripts/install_host.sh
+grep -Fq '"https://mirrors.ustc.edu.cn/ros2/ubuntu"' scripts/install_host.sh
+grep -Fq 'Acquire::ForceIPv4=true' scripts/install_host.sh
+grep -Fq 'Acquire::Retries=5' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo.gpg' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo/ubuntu-stable' scripts/install_host.sh
 grep -Fq 'scripts/audit_host.sh' scripts/install_host.sh

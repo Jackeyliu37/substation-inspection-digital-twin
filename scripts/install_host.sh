@@ -196,7 +196,7 @@ install_managed_file "$work_dir/ros-archive-keyring.gpg" /usr/share/keyrings/ros
 
 architecture="$(dpkg --print-architecture)"
 codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"
-ros_apt_uri=http://packages.ros.org/ros2/ubuntu
+ros_apt_uri=https://mirrors.ustc.edu.cn/ros2/ubuntu
 test "$architecture" = amd64
 test "$codename" = noble
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s %s main\n' "$architecture" "$ros_apt_uri" "$codename" > "$work_dir/ros2.list"
@@ -209,8 +209,12 @@ install_managed_file "$work_dir/gazebo-archive-keyring.gpg" /usr/share/keyrings/
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/gazebo-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable %s main\n' "$architecture" "$codename" > "$work_dir/gazebo-stable.list"
 install_managed_file "$work_dir/gazebo-stable.list" /etc/apt/sources.list.d/gazebo-stable.list 0644
 
+apt_network_options=(
+  -o Acquire::ForceIPv4=true
+  -o Acquire::Retries=5
+)
 printf '%s\n' 'install-host: refreshing apt indexes'
-sudo apt-get update
+sudo apt-get "${apt_network_options[@]}" update
 mapfile -t requested_packages < config/environment/apt-packages.txt
 printf '%s\n' 'install-host: simulating apt transaction'
 apt-get --simulate install --no-install-recommends "${requested_packages[@]}" > "$evidence_dir/apt-install-simulation.txt"
@@ -235,7 +239,11 @@ planned = set(re.findall(r"^Inst\s+(\S+)", simulation_path.read_text(encoding="u
 packages = sorted(requested | planned)
 
 ubuntu = {"http://archive.ubuntu.com/ubuntu", "http://security.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu", "https://security.ubuntu.com/ubuntu"}
-ros = {"http://packages.ros.org/ros2/ubuntu", "https://packages.ros.org/ros2/ubuntu"}
+ros = {
+    "http://packages.ros.org/ros2/ubuntu",
+    "https://packages.ros.org/ros2/ubuntu",
+    "https://mirrors.ustc.edu.cn/ros2/ubuntu",
+}
 gazebo = {"http://packages.osrfoundation.org/gazebo/ubuntu-stable", "https://packages.osrfoundation.org/gazebo/ubuntu-stable"}
 ros_tools = {
     "python3-catkin-pkg-modules", "python3-rosdep", "python3-rosdep-modules",
@@ -294,7 +302,8 @@ origins_path.write_text("package\tcandidate\torigins\n" + "".join(f"{p}\t{v}\t{o
 PY
 
 printf '%s\n' 'install-host: installing packages'
-sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends --no-upgrade "${requested_packages[@]}"
+sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_network_options[@]}" install \
+  --yes --no-install-recommends --no-upgrade "${requested_packages[@]}"
 
 printf '%s\n' 'install-host: rosdep initialization deferred to workspace setup'
 printf 'state=DEFERRED\nreason=workspace-setup-network-step\n' > "$evidence_dir/rosdep-setup.env"
