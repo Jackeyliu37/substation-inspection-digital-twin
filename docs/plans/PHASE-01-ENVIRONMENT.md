@@ -37,6 +37,20 @@
 
 ---
 
+## Solo Fast-Track Execution Overlay
+
+The user authorized a faster solo-project execution path on 2026-07-23. In this overlay, “Task” means a Phase 1 implementation checkpoint, not the complete product task system. The detailed task list below remains a reference, but execution may combine low-risk checks when the combined checkpoint still records a fixed commit, exact commands, evidence paths, blockers, and the next action.
+
+The fast-track path for the current resource-preparation push is:
+
+1. Finish Task 1 run identity and documentation gate evidence.
+2. Run a lightweight host preflight that checks the hard blockers only: Ubuntu 24.04, x86_64, memory and free-space floors, NVIDIA GPU/driver presence, forbidden desktop/remote-display/virtual-display packages, non-Jazzy ROS and Gazebo Classic packages, and absence of active project services.
+3. Prepare and download only the Phase 1 early external payloads: Node.js 24.18.0 and `yolo11n.pt`, with URL, byte count and SHA-256 evidence under the active acceptance staging directory and tracked manifests under `artifacts/environment/`.
+
+The overlay deliberately omits heavyweight fake-host security matrices and exhaustive apt-origin simulation for this personal project. It does not relax these hard boundaries: no desktop or remote/virtual display stack, no ROS 1 or non-Jazzy ROS, no Gazebo Classic, no unverified resource payload, no service start, no dependency installation outside the active checkpoint, and no claim of Phase 1 completion until the final environment verifier is implemented and passes.
+
+---
+
 ## Exact Phase 1 File Map
 
 ### Tracked files created by this plan

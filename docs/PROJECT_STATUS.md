@@ -2,25 +2,28 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 1 环境基线已开始；Task 1 implementation 已提交，live acceptance run 初始化被当前非交互 `sudo` 环境阻塞。
-- Phase 1 执行状态：Task 1 只读 documentation gate 验证器和初始化脚本已创建。尚未安装系统依赖，未创建 ROS 2 功能包，未下载数据或模型，未启动 Gazebo、Nav2、Gateway、前端、Foxglove Bridge 或产品 Nginx 服务，也未完成 acceptance run 初始化。
+- 当前阶段：Phase 1 环境基线已开始；Task 1 documentation gate 与 acceptance run 初始化已完成。
+- Phase 1 执行状态：Task 1 只读 documentation gate 验证器、初始化脚本和唯一 acceptance staging 已创建。尚未安装系统依赖，未创建 ROS 2 功能包，未下载数据或模型，未启动 Gazebo、Nav2、Gateway、前端、Foxglove Bridge 或产品 Nginx 服务。
 - Phase 0 契约快照提交：`d0fb12dbe794221f88abb777f31760bdee655783`（`docs: complete phase zero contracts`）。
 - Phase 0 状态记录提交：运行 `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md` 获取。该提交只记录阶段事实和恢复入口；本文不嵌入自身提交哈希。
-- 当前阻塞项：`scripts/init_phase1_run.sh` 需要按计划创建 `/var/lib/substation` 与 `/opt/substation` 下的受控目录；当前执行通道无法响应 `sudo` 密码提示，`sudo -n true` 返回 `sudo: a password is required`。失败后确认 `.phase1-run.env`、`/var/lib/substation`、`/var/lib/substation/evidence/acceptance`、`/opt/substation` 和 `/opt/substation/toolchains` 均不存在。
+- 当前阻塞项：无。用户已在交互式终端完成 Task 1 初始化。下一步按 2026-07-23 用户授权的 solo fast-track，先做轻量主机预检，再准备 Node.js 24.18.0 与 `yolo11n.pt` 下载。
 
 ## Phase 1 Task 1 当前状态
 
 - Task 1 implementation commit：`d049f62bd39b910c2e5fe41ace80b778f14da509`（`feat: add phase one documentation gate`）。
-- 验证时间：`2026-07-23T04:13:36Z`。
+- Acceptance run identity commit：`99a2709f5a0f4d51eb7af99d3c440b06f5e28ad9`（包含 Task 1 实现及当时的阻塞状态记录；后续状态提交不替换该 evidence identity）。
+- 验证时间：`2026-07-23T04:13:36Z` 和交互式初始化后的续验。
+- Acceptance run id：`a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca`。
+- Evidence staging：`/var/lib/substation/evidence/acceptance/a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca/01-environment.staging`。
 - 已通过命令：
   - `bash tests/environment/test_documentation_gate.sh`，输出 `documentation-gate: PASS`。
   - `bash scripts/verify_documentation_gate.sh | tee "$gate_log"`，最终行 `documentation-gate: PASS`。
   - `git diff --check`，无输出。
-- 被阻塞命令：
-  - `bash scripts/init_phase1_run.sh --gate-log "$gate_log"`。
-  - 失败输出：`sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper` 和 `sudo: a password is required`。
-- Phase 1 evidence：尚未创建；`.phase1-run.env` 不存在。
-- 下一步：由有交互式 sudo 的操作者在同一 checkout 中运行 `docs/HANDOFF.md` 的 “Operator action required” 命令完成唯一 acceptance run 初始化，然后回来继续 Task 1 Step 6 的后半段验证。
+- 初始化命令：
+  - 用户在交互式终端运行 `bash scripts/init_phase1_run.sh --gate-log "$gate_log"`。
+  - 本会话随后运行 `source .phase1-run.env`、校验 `acceptance_run_id.txt`、`git_commit.txt`、`documentation-gate.log`、`storage-paths-before.tsv`、确认 final target 不存在，并执行 `bash tests/environment/test_documentation_gate.sh | tee "$PHASE1_EVIDENCE_ROOT/test-documentation-gate.log"`。
+- Phase 1 evidence：`documentation-gate.log`、`storage-paths-before.tsv` 和 `test-documentation-gate.log` 已在 staging 目录中。
+- 下一步：执行轻量主机预检；通过后下载 Node.js 与 YOLO11n 基础权重并记录 SHA-256。
 
 ## Phase 0 已固定的契约范围
 
@@ -50,4 +53,4 @@
 
 ## 下一步入口
 
-Phase 1 已停在 Task 1 Step 6 的 live initialization。先完成 `docs/HANDOFF.md` 中记录的交互式初始化动作；`.phase1-run.env` 存在且指向非空 `$PHASE1_EVIDENCE_ROOT` 后，再继续 Task 1 的测试日志归档、状态确认和 Task 2 只读主机审计。不得直接跳到下载、安装或服务启动。
+Phase 1 下一步是 fast-track 轻量主机预检，然后进入资源准备。不得直接启动服务；下载只限 Node.js 24.18.0 与 `yolo11n.pt`，且必须记录 URL、字节数和 SHA-256。
