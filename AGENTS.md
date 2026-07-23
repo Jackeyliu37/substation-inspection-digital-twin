@@ -9,7 +9,7 @@
 1. 用户当前明确指令；执行后同步更新项目计划和受影响规范。
 2. [项目计划](./基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md)：项目范围、最终架构和交付目标的唯一事实来源。
 3. [ADR](./docs/adr/)：已批准的具体架构选择；改变决定时新建 ADR，不覆盖历史 ADR。
-4. 专项规范：[ARCHITECTURE](./docs/ARCHITECTURE.md)、[DEPLOYMENT](./docs/DEPLOYMENT.md)、[INTERFACES](./docs/INTERFACES.md)、[TEST_ACCEPTANCE](./docs/TEST_ACCEPTANCE.md)、[VERSION_MATRIX](./docs/VERSION_MATRIX.md) 与 [DATA_AND_MODELS](./docs/DATA_AND_MODELS.md)。其中 ARCHITECTURE、INTERFACES、TEST_ACCEPTANCE 和 VERSION_MATRIX 分别约束设计、接口、验证和版本。
+4. 专项规范：[ARCHITECTURE](./docs/ARCHITECTURE.md)、[DEPLOYMENT](./docs/DEPLOYMENT.md)、[INTERFACES](./docs/INTERFACES.md)、[TEST_ACCEPTANCE](./docs/TEST_ACCEPTANCE.md)、[VERSION_MATRIX](./docs/VERSION_MATRIX.md) 与 [DATA_AND_MODELS](./docs/DATA_AND_MODELS.md)。六份文件共同构成规范层，分别约束架构、部署、接口、验证、版本以及数据/模型治理，缺一不可。
 5. 阶段计划：[PHASE-01-ENVIRONMENT](./docs/plans/PHASE-01-ENVIRONMENT.md)；只规定当前阶段的实现方式，不得扩大范围或修改架构。
 6. 当前事实与恢复入口：[PROJECT_STATUS](./docs/PROJECT_STATUS.md) 和 [HANDOFF](./docs/HANDOFF.md)；不得用它们改变需求或技术决策。
 
@@ -19,14 +19,14 @@
 
 1. 唯一目标是实现项目计划定义的变电站智能巡检系统；不得增加与验收无关的功能。
 2. 固定使用 Ubuntu 24.04、ROS 2 Jazzy 和 Gazebo Harmonic；禁止引入 ROS 1、Gazebo Classic 或其他 ROS 发行版。
-3. Gazebo 固定使用 OGRE2/EGL 纯无头模式；禁止安装 Ubuntu 桌面、Xorg、NoMachine、Xvfb 和 VirtualGL。
+3. Gazebo 固定使用 OGRE2/EGL 纯无头模式。禁止桌面元包、显示管理器、远程桌面、NoMachine、Xvfb、VirtualGL、活动 Xorg/Wayland 会话或配置 X Server；允许保留 Ubuntu 官方 NVIDIA 驱动正常工作所必需、但未启用图形会话的 X 包依赖，具体判定见 [ADR-0004](./docs/adr/0004-nvidia-headless-packaging.md)。
 4. Windows 普通使用者只访问 `http://ros-server/`；全部项目服务、源码、数据和运行证据位于 Ubuntu 服务器。
-5. 产品 Web UI 的全部状态读取和控制命令必须经过 FastAPI ROS Web Gateway；普通浏览器不得直连 ROS DDS 或发布 Topic。Foxglove Web 是通过服务器 Foxglove Bridge 提供的独立只读开发诊断路径，不是普通操作员 UI，不得发布命令或 Topic，浏览器不得直连 DDS。
+5. `ROS_LOCALHOST_ONLY=1`；产品 Gateway 与前端只绑定回环地址，Nginx 是唯一 LAN 产品监听者。产品 Web UI 的全部状态读取和控制命令必须经过 FastAPI ROS Web Gateway；普通浏览器不得直连 ROS DDS 或发布 Topic。Foxglove Web 是通过服务器 Foxglove Bridge 提供的独立只读维护诊断路径，不是普通操作员 UI，不得发布 Topic、调用 Service 或发送 Action goal，浏览器不得直连 DDS。
 6. 仪表数据只使用 Gazebo 合成数据；不得重新加入外部仪表数据集。
 7. 安全检测、设备检测、缺陷分类和仪表读数必须保持独立模块；不得合并为未经评估的大模型。
 8. 不得自行升级 [VERSION_MATRIX](./docs/VERSION_MATRIX.md) 中的版本；版本变化必须先新增 ADR，并同步项目计划、锁文件和测试基线。
 9. 每个功能必须先有测试和验收条件；没有实际命令输出、日志或产物证据时不得标记完成。
-10. [PROJECT_STATUS](./docs/PROJECT_STATUS.md) 和 [HANDOFF](./docs/HANDOFF.md) 存在后，每次任务结束必须更新它们，记录 commit、验证命令、结果和下一步；Phase 0 文档引导期间由最终文档门槛任务集中创建和更新。
+10. [PROJECT_STATUS](./docs/PROJECT_STATUS.md) 和 [HANDOFF](./docs/HANDOFF.md) 存在后，每个计划任务验证结束都必须同步更新它们，记录固定 commit、逐字验证命令、结果、阻塞项和下一步；不得把全部状态更新推迟到阶段最后一个任务。
 11. 不修改原始公开数据；转换数据、训练产物、日志和 rosbag2 不直接提交 Git，仓库只保存 manifest、脚本和校验值。
 12. 发现规范冲突时停止相关实现，明确指出冲突并先更新权威文档；不得自行选择一种解释继续开发。
 
@@ -34,7 +34,7 @@
 
 - 允许：在项目计划、ADR、专项规范和当前阶段计划的边界内创建源代码、配置、测试、文档、manifest、脚本和校验值；在 Ubuntu 服务器上执行经计划定义的构建、测试和无头验证。
 - 禁止：创建验收范围外的功能；将浏览器接入 DDS；使用远程桌面或虚拟显示栈；修改原始公开数据；提交大型转换数据、训练产物、日志或 rosbag2；以状态/交接文档替代权威决策。
-- Phase 0 文档门槛通过前，不安装系统依赖、不创建 ROS 2 功能包、不下载数据或模型、不启动 Gazebo/Nav2/Web 服务，也不修改服务器配置。
+- 修订后的 Phase 0 跨文档门槛和独立审查通过前，Phase 1 保持阻塞：不安装系统依赖、不创建 ROS 2 功能包、不下载数据或模型、不创建虚拟环境、不构建前端、不启动 Gazebo/Nav2/Web 服务，也不修改服务器配置。
 
 ## 构建、验证与完成
 
