@@ -4,7 +4,11 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 4 官方 `yolo11n.pt` 开发占位运行时已通过 live smoke；Phase 4 生产集成仍等待用户在 AutoDL 训练的 safety、equipment、fault 和 meter 四个独立 artifact。
+- 当前阶段：Phase 9 集成前收口。Phase 4 官方 `yolo11n.pt` 开发占位运行时已通过 live smoke；生产集成仍等待用户在 AutoDL 训练的 safety、equipment、fault 和 meter 四个独立 artifact。
+- Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
+- Phase 7 Gateway 开发检查点：`9e18d51`，Gateway 契约测试 8 passed、部署契约 4 passed；它仍是 state seam，未连接真实 rclpy 控制面。
+- Phase 8 前端开发检查点：`df30574`，`npm test` 与 `npm run build` 已通过；没有 Chrome，因此没有 Playwright 浏览器证据。
+- 当前软件验证：ROS workspace `138 tests, 0 errors, 0 failures, 0 skipped`；world/navigation/perception/synthetic/phase5_6/Gateway/deployment 和 documentation gate 均已通过。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -36,7 +40,7 @@
 - Phase 4 占位证据只读复核：`(cd /var/lib/substation/evidence/acceptance/e2e3c709-63ee-4c7d-a41e-f099547acced/04-perception-placeholder && sha256sum -c SHA256SUMS)`。官方权重 SHA-256 为 `0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`、大小 `5613764` 字节；验收后无残留项目进程。
 - Phase 4 首次失败 run `ceeacc8d-3c3e-4435-9704-1945a5dd6aa8` 保留 staging 证据；根因是系统 Python 没有锁定的 Ultralytics。最终修复强制 CUDA `device=0`、在身份校验失败时发布诊断、通过绝对 `.venv` 解释器运行，并按 setsid 进程组清理。
 - 本文档提交晚于已验证实现提交，仅记录 acceptance 结果；不得把文档提交冒充为经过 Gazebo live acceptance 的实现提交。
-- Phase 2 恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && set +u && source /opt/ros/jazzy/setup.bash && set -u && export ROS_LOCALHOST_ONLY=1 && cd ros2_ws && colcon build --symlink-install --packages-select substation_description substation_gazebo && source install/setup.bash && colcon test --packages-select substation_description substation_gazebo --event-handlers console_direct+ && colcon test-result --verbose`。
+- 当前 ROS 恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && set +u && source /opt/ros/jazzy/setup.bash && source install/setup.bash && set -u && export ROS_LOCALHOST_ONLY=1 && colcon build --symlink-install && colcon test --event-handlers console_direct+ && colcon test-result --all --verbose`。源代码在 `ros2_ws/src`，但本仓库从根目录执行 colcon，当前产物在根 `build/`、`install/`；不要 source 旧的 `ros2_ws/install/setup.bash`。
 
 ## 本地状态
 
@@ -51,4 +55,4 @@
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
 - 占位结果只发布到 `/perception/development/detections` 和 `/perception/development/annotated_image`；正式聚合、数字孪生、风险、Gateway、报告和证据链不得消费它们。
-- 下一实现动作：接收用户四个训练结果 ZIP，以不可变 GitHub release 或固定 commit 导入并校验，再完成 Phase 4 正式模型映射、独立 meter OpenCV 下游和生产验收。Phase 4 占位运行时已经开始并通过，但 Phase 4 本身尚未完成。
+- 下一实现动作：优先接收用户四个训练结果 ZIP，以不可变 GitHub release 或固定 commit 导入并校验；随后补报告 ROS Service、Nav2 `ExecuteInspection` 执行器/持久化、真实 Gateway ROS adapter、Playwright/Windows/Nginx/ Foxglove 集成证据。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。

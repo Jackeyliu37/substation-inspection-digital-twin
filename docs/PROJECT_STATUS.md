@@ -2,7 +2,11 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 4 官方模型占位运行时检查点已完成 live smoke；Phase 4 仍为 `in_progress / production model artifacts blocked`，下一步接收并导入用户从 AutoDL 交付的四个独立训练结果。
+- 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 仍为 `in_progress / production model artifacts blocked`；Phase 5～8 已完成受限开发实现与契约验证，但尚不是生产交付。
+- Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。它在真实 Gazebo 场景中触发 `combined-risk-obstacle`，确认 transformer-01 风险为 68 分 / ALERT，任务队列重排到 transformer-01 首位，证据 SHA-256 全部通过且无残留进程。
+- Phase 7 Gateway 开发检查点：`9e18d51`。FastAPI Gateway 已覆盖 health/readiness、资产/任务/地图/报告/诊断快照、命令幂等、telemetry/events/camera WebSocket 契约；尚未接入真实 rclpy 订阅、Service/Action 调用或持久报告索引。
+- Phase 8 前端开发检查点：`df30574`。八工作区和 REST/WebSocket-only 边界已实现；`npm test` 和 `npm run build` 已通过。主机没有可用 Chrome，尚未进行 Playwright 截图或浏览器端到端验收。
+- 本轮全量软件验证：`colcon build --symlink-install && colcon test && colcon test-result --all --verbose` 为 `138 tests, 0 errors, 0 failures, 0 skipped`；顶层 world/navigation/perception/synthetic/phase5_6/Gateway/deployment 和 documentation gate 亦通过。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`（包含 `b25c99b` 地面支撑修复、`445539c` 本地代价地图窗口修复和 `5044ce5` 动态障碍探针修复）。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -57,4 +61,15 @@
 
 ## 下一步
 
-用户在 AutoDL 完成 safety、equipment、fault 和 meter 四个独立模型后，按已约定的精简交付把四个训练结果 ZIP 发布到不可变 GitHub release 或固定 commit。本仓库收到后校验权重、训练过程摘要、类别映射和指标，导入生产映射并继续 Phase 4 正式模块、仪表 OpenCV 下游和 Gateway 集成验收。
+### 与项目计划的收口差异
+
+| 计划项 | 当前事实 | 后续条件 |
+|---|---|---|
+| Phase 4 四模型、15 FPS、指标报告 | 官方 `yolo11n.pt` 占位 smoke 已通过；生产模型未导入 | 用户交付四个不可变训练 ZIP/Release，随后校验 SHA-256、类别、训练摘要与指标 |
+| Phase 5 证据与报告 ROS 服务 | `EvidenceStore`、HTML/PDF/evidence ZIP 库和单元测试已存在；实时 risk pipeline 已通过 | 补全 reporting ROS Service、RunContext 持久化、rosbag2/报告索引与正式报告验收 |
+| Phase 6 Nav2 巡检执行 | 风险确认、队列重排、紧急停止锁存已验证 | 接入 `ExecuteInspection` 与 `/navigate_to_pose`、任务持久化、暂停/失败恢复、手动速度仲裁 |
+| Phase 7 Gateway 真实控制面 | REST/WS/SQLite 命令契约已实现 | 用 rclpy 接权威 Topic/Service/Action，完成报告 Range 下载、命令终态与真实相机帧 |
+| Phase 8 浏览器验收 | 八个工作区、契约测试和生产构建通过 | 安装/提供 Chromium 后执行 Playwright；真实 Gateway/ROS/Nginx 联调 |
+| Phase 9 部署、Windows、Foxglove、演示 | systemd/Nginx/Foxglove 配置和静态契约已提交 | 以 `/opt/substation` release 实测、Windows LAN 验收、只读 Foxglove、900 s 闭环、报告/截图/演示视频 |
+
+用户在 AutoDL 完成 safety、equipment、fault 和 meter 四个独立模型后，按已约定的精简交付把四个训练结果 ZIP 发布到不可变 GitHub release 或固定 commit。本仓库收到后校验权重、训练过程摘要、类别映射和指标，导入生产映射并继续正式模型、仪表 OpenCV 下游和全栈验收。
