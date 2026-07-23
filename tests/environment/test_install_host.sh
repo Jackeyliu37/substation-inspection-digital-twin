@@ -28,7 +28,8 @@ done
 ! grep -E 'ros-.*-desktop|ubuntu-desktop|xorg|nomachine|xvfb|virtualgl|nvidia-cuda-toolkit' <<<"$plan"
 ! awk '/^ros-/ && $0 !~ /^ros-jazzy-/ {bad=1} END {exit bad ? 0 : 1}' config/environment/apt-packages.txt
 
-grep -Fq 'https://raw.githubusercontent.com/ros/rosdistro/master/ros.key' scripts/install_host.sh
+grep -Fq 'http://packages.ros.org/ros.key' scripts/install_host.sh
+grep -Fq '3a4c8d59e3a0fbb2acf338994b6102c5baa17071c4cc97f520b482a697f8a4fe' scripts/install_host.sh
 grep -Fq 'curl --ipv4' scripts/install_host.sh
 grep -Fq -- '--connect-timeout 10' scripts/install_host.sh
 grep -Fq -- '--max-time 120' scripts/install_host.sh

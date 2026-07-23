@@ -184,7 +184,9 @@ download_host_file() {
     "$source_url" -o "$output_path"
 }
 
-download_host_file https://raw.githubusercontent.com/ros/rosdistro/master/ros.key "$work_dir/ros.key"
+ros_key_sha256=3a4c8d59e3a0fbb2acf338994b6102c5baa17071c4cc97f520b482a697f8a4fe
+download_host_file http://packages.ros.org/ros.key "$work_dir/ros.key"
+test "$(environment_sha256 "$work_dir/ros.key")" = "$ros_key_sha256"
 gpg --batch --yes --dearmor --output "$work_dir/ros-archive-keyring.gpg" "$work_dir/ros.key"
 install_managed_file "$work_dir/ros-archive-keyring.gpg" /usr/share/keyrings/ros-archive-keyring.gpg 0644
 
