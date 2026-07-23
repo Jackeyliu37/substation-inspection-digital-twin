@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -56,8 +57,23 @@ def test_launch_starts_only_placeholder_executable_with_sim_time() -> None:
     assert '"use_sim_time": True' in source
     assert '"model_path": MODEL_PATH' in source
     assert "get_package_share_directory" in source
-    assert 'AI_PYTHON = str(PACKAGE_SHARE.parents[3] / ".venv/bin/python")' in source
+    assert "def repository_root_from_share" in source
+    assert "AI_PYTHON = str(repository_root_from_share(PACKAGE_SHARE) / \".venv/bin/python\")" in source
     assert "prefix=[AI_PYTHON]" in source
+
+
+def test_repository_root_handles_root_and_ros_workspace_install_layouts() -> None:
+    spec = importlib.util.spec_from_file_location("placeholder_launch", LAUNCH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.repository_root_from_share(
+        Path("/work/project/install/substation_perception/share/substation_perception")
+    ) == Path("/work/project")
+    assert module.repository_root_from_share(
+        Path("/work/project/ros2_ws/install/substation_perception/share/substation_perception")
+    ) == Path("/work/project")
 
 
 def test_package_declares_runtime_and_launch_dependencies() -> None:

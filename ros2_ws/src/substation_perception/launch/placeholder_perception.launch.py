@@ -15,7 +15,15 @@ MODEL_PATH = (
 MODEL_SHA256 = "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
 MODEL_SIZE_BYTES = 5613764
 PACKAGE_SHARE = Path(get_package_share_directory("substation_perception"))
-AI_PYTHON = str(PACKAGE_SHARE.parents[3] / ".venv/bin/python")
+
+
+def repository_root_from_share(package_share: Path) -> Path:
+    install_root = package_share.parents[2]
+    candidate = install_root.parent
+    return candidate.parent if candidate.name == "ros2_ws" else candidate
+
+
+AI_PYTHON = str(repository_root_from_share(PACKAGE_SHARE) / ".venv/bin/python")
 
 
 def generate_launch_description() -> LaunchDescription:
