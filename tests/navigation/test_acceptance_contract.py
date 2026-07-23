@@ -43,6 +43,8 @@ def test_probe_uses_nav2_action_tf_and_dynamic_local_costmap() -> None:
         '"combined-risk-obstacle"',
         '"scenario_dynamic_obstacle"',
         "GoalStatus.STATUS_SUCCEEDED",
+        '"/bt_navigator/get_state"',
+        "State.PRIMARY_STATE_ACTIVE",
         '"phase3-navigation-probe: PASS"',
     ):
         assert token in source

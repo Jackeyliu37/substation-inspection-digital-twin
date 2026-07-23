@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from action_msgs.msg import GoalStatus
 from diagnostic_msgs.msg import DiagnosticArray
+from lifecycle_msgs.msg import State
+from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
 from nav_msgs.msg import OccupancyGrid
@@ -63,11 +65,15 @@ class Phase3NavigationProbe(Node):
         self.feedback_count = 0
         self.dynamic_obstacle_active = False
         self.dynamic_obstacle_seen = False
+        self.nav2_active = False
         self.tf_buffer = Buffer(cache_time=Duration(seconds=30.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.navigation = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         self.scenario_client = self.create_client(
             SetParametersAtomically, "/scenario_manager/set_parameters_atomically"
+        )
+        self.nav2_state_client = self.create_client(
+            GetState, "/bt_navigator/get_state"
         )
         self.create_subscription(
             OccupancyGrid, "/map", self.on_map, qos(1, transient=True)
@@ -117,7 +123,7 @@ class Phase3NavigationProbe(Node):
             and self.costmap_message is not None
             and self.costmap_count >= 2
             and self.tf_ready()
-            and self.navigation.server_is_ready()
+            and self.nav2_active
         )
 
     def baseline_state(self) -> dict[str, object]:
@@ -132,7 +138,25 @@ class Phase3NavigationProbe(Node):
             "costmap_messages": self.costmap_count,
             "map_to_odom": self.tf_ready(),
             "navigate_to_pose_ready": self.navigation.server_is_ready(),
+            "bt_navigator_active": self.nav2_active,
         }
+
+    def wait_for_nav2_active(self, timeout: float) -> None:
+        if not self.nav2_state_client.wait_for_service(timeout_sec=timeout):
+            raise RuntimeError("bt_navigator lifecycle service unavailable")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            future = self.nav2_state_client.call_async(GetState.Request())
+            self.spin_until(future.done, 5.0, "bt_navigator lifecycle response")
+            response = future.result()
+            if (
+                response is not None
+                and response.current_state.id == State.PRIMARY_STATE_ACTIVE
+            ):
+                self.nav2_active = True
+                return
+            rclpy.spin_once(self, timeout_sec=0.1)
+        raise RuntimeError("timeout waiting for bt_navigator active")
 
     @staticmethod
     def string_parameter(name: str, value: str) -> Parameter:
@@ -256,6 +280,7 @@ def main() -> int:
     try:
         if not node.navigation.wait_for_server(timeout_sec=120.0):
             raise RuntimeError("NavigateToPose action server unavailable")
+        node.wait_for_nav2_active(120.0)
         try:
             node.spin_until(node.baseline_ready, 120.0, "map, TF, costmap and Nav2")
         except RuntimeError:
