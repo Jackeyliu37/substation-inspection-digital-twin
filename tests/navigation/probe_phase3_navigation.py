@@ -63,6 +63,7 @@ class Phase3NavigationProbe(Node):
         self.costmap_count = 0
         self.scenario_states: list[dict[str, str]] = []
         self.feedback_count = 0
+        self.active_asset_id: str | None = None
         self.dynamic_obstacle_active = False
         self.dynamic_obstacle_seen = False
         self.nav2_active = False
@@ -194,7 +195,29 @@ class Phase3NavigationProbe(Node):
             for state in self.scenario_states
         )
 
+    def on_navigation_feedback(self, message) -> None:
+        self.feedback_count += 1
+        if self.feedback_count % 20 != 0:
+            return
+        feedback = message.feedback
+        position = feedback.current_pose.pose.position
+        print(
+            json.dumps(
+                {
+                    "event": "navigation-feedback",
+                    "asset_id": self.active_asset_id,
+                    "x": position.x,
+                    "y": position.y,
+                    "distance_remaining": feedback.distance_remaining,
+                    "number_of_recoveries": feedback.number_of_recoveries,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
     def navigate(self, asset_id: str, timeout: float) -> dict[str, object]:
+        self.active_asset_id = asset_id
         now = self.get_clock().now().to_msg()
         goal = NavigateToPose.Goal()
         goal.pose = pose_stamped(
@@ -204,9 +227,7 @@ class Phase3NavigationProbe(Node):
             stamp_nanosec=now.nanosec,
         )
         send_future = self.navigation.send_goal_async(
-            goal, feedback_callback=lambda _: setattr(
-                self, "feedback_count", self.feedback_count + 1
-            )
+            goal, feedback_callback=self.on_navigation_feedback
         )
         self.spin_until(send_future.done, 10.0, f"goal acceptance {asset_id}")
         handle = send_future.result()
