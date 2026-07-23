@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -140,3 +141,19 @@ def test_robot_description_has_contract_frames_with_unique_parents() -> None:
     assert '<parent link="camera_link"/>' in xacro
     assert '<child link="camera_optical_frame"/>' in xacro
     assert 'rpy="-1.57079632679 0 -1.57079632679"' in xacro
+
+
+def test_asset_tf_broadcaster_uses_rclpy_logger_signature() -> None:
+    source = required_file(
+        "ros2_ws/src/substation_description/substation_description/asset_tf_broadcaster.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    info_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "info"
+    ]
+    assert info_calls
+    assert all(len(call.args) == 1 for call in info_calls)

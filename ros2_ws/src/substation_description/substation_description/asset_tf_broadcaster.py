@@ -56,7 +56,7 @@ class AssetTfBroadcaster(Node):
             transforms.append(transform)
         broadcaster.sendTransform(transforms)
         self._broadcaster = broadcaster
-        self.get_logger().info("published %d asset transforms", len(transforms))
+        self.get_logger().info(f"published {len(transforms)} asset transforms")
 
 
 def main(args=None) -> None:
@@ -67,4 +67,3 @@ def main(args=None) -> None:
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
