@@ -2,28 +2,41 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 1 环境基线已开始；Task 1 documentation gate 与 acceptance run 初始化已完成。
-- Phase 1 执行状态：Task 1 只读 documentation gate 验证器、初始化脚本和唯一 acceptance staging 已创建。尚未安装系统依赖，未创建 ROS 2 功能包，未下载数据或模型，未启动 Gazebo、Nav2、Gateway、前端、Foxglove Bridge 或产品 Nginx 服务。
+- 当前阶段：Phase 1 环境基线 fast-track 正在进行；documentation gate、acceptance run、轻量主机预检，以及 Phase 1 早期资源下载已完成。
+- Phase 1 执行状态：已下载并锁定 Node.js 24.18.0 tarball 与 YOLO11n 基础权重。尚未安装系统依赖，未创建 ROS 2 功能包，未创建虚拟环境，未构建前端，未启动 Gazebo、Nav2、Gateway、前端、Foxglove Bridge 或产品 Nginx 服务。
 - Phase 0 契约快照提交：`d0fb12dbe794221f88abb777f31760bdee655783`（`docs: complete phase zero contracts`）。
 - Phase 0 状态记录提交：运行 `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md` 获取。该提交只记录阶段事实和恢复入口；本文不嵌入自身提交哈希。
-- 当前阻塞项：无。用户已在交互式终端完成 Task 1 初始化。下一步按 2026-07-23 用户授权的 solo fast-track，先做轻量主机预检，再准备 Node.js 24.18.0 与 `yolo11n.pt` 下载。
+- 当前阻塞项：无。下一步进入 Phase 1 环境安装/工具链准备检查点；继续保留“个人项目 fast-track”：安全审查从简，但不放宽 ROS/Gazebo/headless/哈希/证据边界。
 
-## Phase 1 Task 1 当前状态
+## Phase 1 fast-track 当前状态
 
-- Task 1 implementation commit：`d049f62bd39b910c2e5fe41ace80b778f14da509`（`feat: add phase one documentation gate`）。
+- Documentation gate implementation commit：`d049f62bd39b910c2e5fe41ace80b778f14da509`（`feat: add phase one documentation gate`）。
 - Acceptance run identity commit：`99a2709f5a0f4d51eb7af99d3c440b06f5e28ad9`（包含 Task 1 实现及当时的阻塞状态记录；后续状态提交不替换该 evidence identity）。
-- 验证时间：`2026-07-23T04:13:36Z` 和交互式初始化后的续验。
+- Fast-track simplification commit：`2f5b2e16c623e32746b42b7fc01626784aabf316`（`docs: simplify phase one fast track`）。
+- Lightweight host preflight commit：`9edb7a2ccbe745e9a7123a5385b514c22f10715d`（`feat: add lightweight phase one host preflight`）。
+- Resource download implementation commit：`6e79e70274817710ddbd3b347c38bad648886549`（`feat: download phase one base resources`）。
+- 验证时间：`2026-07-23T04:13:36Z` 起，至资源下载验证完成。
 - Acceptance run id：`a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca`。
 - Evidence staging：`/var/lib/substation/evidence/acceptance/a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca/01-environment.staging`。
 - 已通过命令：
   - `bash tests/environment/test_documentation_gate.sh`，输出 `documentation-gate: PASS`。
   - `bash scripts/verify_documentation_gate.sh | tee "$gate_log"`，最终行 `documentation-gate: PASS`。
+  - `bash tests/environment/test_audit_host.sh`，输出 `audit-host-light-test: PASS`。
+  - `source .phase1-run.env && bash scripts/audit_host.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"`，生成 `host-audit.json` 且 `status` 为 `passed`。
+  - `source .phase1-run.env && bash scripts/download_phase1_resources.sh --resource all --evidence-dir "$PHASE1_EVIDENCE_ROOT"`，输出 `phase1-resources: PASS: all`。
+  - `source .phase1-run.env && bash scripts/verify_phase1_resources.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"`，输出 `verify-phase1-resources: PASS`。
+  - `bash tests/environment/test_phase1_resources.sh`，输出 `phase1-resource-static-test: PASS`。
   - `git diff --check`，无输出。
 - 初始化命令：
   - 用户在交互式终端运行 `bash scripts/init_phase1_run.sh --gate-log "$gate_log"`。
   - 本会话随后运行 `source .phase1-run.env`、校验 `acceptance_run_id.txt`、`git_commit.txt`、`documentation-gate.log`、`storage-paths-before.tsv`、确认 final target 不存在，并执行 `bash tests/environment/test_documentation_gate.sh | tee "$PHASE1_EVIDENCE_ROOT/test-documentation-gate.log"`。
-- Phase 1 evidence：`documentation-gate.log`、`storage-paths-before.tsv` 和 `test-documentation-gate.log` 已在 staging 目录中。
-- 下一步：执行轻量主机预检；通过后下载 Node.js 与 YOLO11n 基础权重并记录 SHA-256。
+- 轻量主机预检结论：Ubuntu `24.04.4 LTS`、`x86_64`、物理内存 `16654860288` bytes、仓库和 `/var/lib/substation`、`/opt/substation` 均保留超过 `20 GiB` free；GPU 为 `NVIDIA GeForce RTX 3060 Ti`，driver `595.71.05`；forbidden packages、active project services、active graphics processes 均为空。
+- Phase 1 资源 manifest：`artifacts/environment/resource-downloads.tsv`。
+- Phase 1 evidence：`documentation-gate.log`、`storage-paths-before.tsv`、`test-documentation-gate.log`、`host-audit.json`、`download-phase1-resources.log`、`resource-downloads.tsv` 已在 staging 目录中。
+- 下载资源：
+  - `node-linux-x64`：revision `24.18.0`，size `31511588`，SHA-256 `55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742`，路径 `/var/lib/substation/downloads/node/24.18.0/node-v24.18.0-linux-x64.tar.xz`。
+  - `yolo11n-base`：revision `v8.4.0`，size `5613764`，SHA-256 `0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1`，路径 `/var/lib/substation/models/base/0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1/yolo11n.pt`。
+- 下一步：进入 Phase 1 环境安装/工具链准备检查点。不得启动 Gazebo/Nav2/Web/Nginx 服务；不得下载 Phase 4 数据集。
 
 ## Phase 0 已固定的契约范围
 
@@ -53,4 +66,4 @@
 
 ## 下一步入口
 
-Phase 1 下一步是 fast-track 轻量主机预检，然后进入资源准备。不得直接启动服务；下载只限 Node.js 24.18.0 与 `yolo11n.pt`，且必须记录 URL、字节数和 SHA-256。
+Phase 1 下一步是环境安装/工具链准备检查点。继续使用 fast-track：只做计划内依赖、锁文件、空 ROS workspace、AI/Gateway venv、前端 baseline 和 EGL smoke 所需步骤；不得启动产品服务或下载 Phase 4 数据集。
