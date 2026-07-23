@@ -121,6 +121,27 @@ def test_robot_sensor_and_drive_contract() -> None:
     assert drive.findtext("child_frame_id") == "base_footprint"
     assert drive.findtext("odom_publisher_frequency") == "30"
 
+    world = ET.parse(
+        required_file("ros2_ws/src/substation_gazebo/worlds/substation_world.sdf")
+    )
+    ground = world.find(".//world/model[@name='yard_ground']/link/collision")
+    robot_include = world.find(".//world/include[name='inspection_robot']/pose")
+    model_pose = robot.findtext("model/pose")
+    base_link_pose = robot.findtext(".//link[@name='base_link']/pose")
+    wheel_pose = robot.findtext(".//link[@name='wheel_left_link']/pose")
+    wheel_radius = float(
+        robot.findtext(
+            ".//link[@name='wheel_left_link']/collision/geometry/cylinder/radius"
+        )
+    )
+    ground_size_z = float(ground.findtext("geometry/box/size").split()[2])
+    ground_top = ground_size_z / 2.0
+    assert [float(value) for value in model_pose.split()][2] == 0.0
+    assert float(robot_include.text.split()[2]) == ground_top
+    base_z = float(base_link_pose.split()[2])
+    wheel_z = float(wheel_pose.split()[2])
+    assert abs(base_z + wheel_z - wheel_radius) < 1e-6
+
 
 def test_bridge_has_exact_core_topics_and_directions() -> None:
     bridge = yaml.safe_load(
