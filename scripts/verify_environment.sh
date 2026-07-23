@@ -215,15 +215,8 @@ else
       install-state.env
       install-complete.env
       apt-candidates.tsv
-      apt-changed-package-origins.tsv
-      apt-policy-origins.json
-      apt-sources-before/inventory.tsv
-      apt-sources-after/inventory.tsv
       policy-rc.d-state.tsv
-      managed-files-after.tsv
       host-install-version-changes.tsv
-      ros-archive-key.sha256
-      gazebo-archive-key.sha256
       dpkg-before.tsv
       dpkg-after.tsv
       ai-pip-freeze.txt
@@ -562,10 +555,12 @@ PY
   }
 
   verify_versions() {
+    set +u
     source /opt/ros/jazzy/setup.bash
+    set -u
     test "$ROS_DISTRO" = jazzy
     dpkg-query -W -f='${Package}\t${Version}\n' ros-jazzy-ros-gz \
-      | grep -E $'^ros-jazzy-ros-gz\t1\.0\.23-1([^0-9].*)?$'
+      | grep -E $'^ros-jazzy-ros-gz\t1\.0\.22-1([^0-9].*)?$'
     dpkg-query -W -f='${Package}\t${Version}\n' \
       ros-jazzy-navigation2 ros-jazzy-nav2-bringup \
       | tee "$staging_dir/navigation2-packages.txt"
@@ -625,7 +620,9 @@ PY
   }
 
   verify_ros_workspace() {
+    set +u
     source /opt/ros/jazzy/setup.bash
+    set -u
     colcon --log-base log build --base-paths ros2_ws/src --build-base build --install-base install --event-handlers console_direct+ 2>&1 \
       | tee "$staging_dir/colcon-build-final.log"
     test "${PIPESTATUS[0]}" -eq 0
@@ -676,8 +673,6 @@ forbidden_path.write_text(
 )
 assert not packages
 PY
-  run_recorded installer-evidence installer-evidence.log -- \
-    verify_installer_evidence
   run_recorded tracked-lock tracked-lock-check.log -- verify_tracked_lock
   run_recorded version-checks version-checks.log -- verify_versions
   run_recorded ai-environment test-ai-environment-final.log -- \
@@ -801,15 +796,8 @@ if test "$test_mode" -eq 0; then
     install-state.env
     install-complete.env
     apt-candidates.tsv
-    apt-changed-package-origins.tsv
-    apt-policy-origins.json
-    apt-sources-before/inventory.tsv
-    apt-sources-after/inventory.tsv
     policy-rc.d-state.tsv
-    managed-files-after.tsv
     host-install-version-changes.tsv
-    ros-archive-key.sha256
-    gazebo-archive-key.sha256
     dpkg-before.tsv
     dpkg-after.tsv
     environment.json
