@@ -61,10 +61,10 @@ on its own.
 
 Robot footprint is a 0.30 m by 0.32 m polygon, with 0.25 m costmap inflation.
 The global costmap uses the saved map plus a static layer; the local costmap
-uses `/scan` as an obstacle layer and rolls with the robot.  Regulated Pure
-Pursuit follows the global path at a conservative 0.22 m/s and rotates to the
-path heading before translating.  Recovery behavior may clear costmaps and
-rotate, but never changes scenarios or static-map files.
+uses `/scan` as an obstacle layer and rolls with the robot.  MPPI optimizes
+locally around those runtime obstacles with a conservative 0.22 m/s forward
+limit.  Recovery behavior may clear costmaps and rotate, but never changes
+scenarios or static-map files.
 
 Every launch forces headless, localhost-only execution, takes a caller-supplied
 unique `gz_partition`, and owns only its process group.  Acceptance cleanup

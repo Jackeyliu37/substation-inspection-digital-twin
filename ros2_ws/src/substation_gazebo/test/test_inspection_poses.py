@@ -67,10 +67,11 @@ def test_navigation_configuration_has_single_transform_owner_per_mode() -> None:
     assert controller["failure_tolerance"] == 5.0
     assert controller["progress_checker"]["movement_time_allowance"] == 30.0
     assert controller["FollowPath"]["plugin"] == (
-        "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+        "nav2_mppi_controller::MPPIController"
     )
-    assert controller["FollowPath"]["desired_linear_vel"] == 0.22
-    assert controller["FollowPath"]["use_rotate_to_heading"] is True
+    assert controller["FollowPath"]["motion_model"] == "DiffDrive"
+    assert controller["FollowPath"]["vx_max"] == 0.22
+    assert controller["FollowPath"]["CostCritic"]["enabled"] is True
 
 
 def test_every_registered_asset_has_free_map_inspection_pose() -> None:
