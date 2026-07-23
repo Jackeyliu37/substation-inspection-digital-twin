@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "tests/navigation/run_phase3_acceptance.sh"
 PROBE = ROOT / "tests/navigation/probe_phase3_navigation.py"
+
+
+def load_probe_module():
+    gazebo_package = ROOT / "ros2_ws/src/substation_gazebo"
+    description_package = ROOT / "ros2_ws/src/substation_description"
+    sys.path.insert(0, str(gazebo_package))
+    sys.path.insert(0, str(description_package))
+    spec = importlib.util.spec_from_file_location("phase3_navigation_probe", PROBE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_acceptance_harness_owns_runtime_and_finalizes_evidence() -> None:
@@ -50,3 +65,33 @@ def test_probe_uses_nav2_action_tf_and_dynamic_local_costmap() -> None:
         '"phase3-navigation-probe: PASS"',
     ):
         assert token in source
+
+
+def test_probe_finds_lethal_surface_cell_away_from_obstacle_center() -> None:
+    module = load_probe_module()
+    probe = module.Phase3NavigationProbe.__new__(module.Phase3NavigationProbe)
+    transform = SimpleNamespace(
+        transform=SimpleNamespace(
+            translation=SimpleNamespace(x=0.0, y=0.0),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        )
+    )
+    probe.tf_buffer = SimpleNamespace(
+        lookup_transform=lambda target, source, stamp: transform
+    )
+    metadata = SimpleNamespace(
+        origin=SimpleNamespace(position=SimpleNamespace(x=0.5, y=-1.0)),
+        resolution=0.05,
+        size_x=40,
+        size_y=40,
+    )
+    data = [0] * (metadata.size_x * metadata.size_y)
+    obstacle_center_column = 20
+    obstacle_center_row = 20
+    obstacle_surface_row = obstacle_center_row + 8
+    data[obstacle_surface_row * metadata.size_x + obstacle_center_column] = 254
+    message = SimpleNamespace(
+        header=SimpleNamespace(frame_id="odom"), metadata=metadata, data=data
+    )
+
+    assert probe.obstacle_cell_is_lethal(message)

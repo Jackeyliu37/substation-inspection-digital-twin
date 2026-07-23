@@ -30,6 +30,7 @@ from substation_gazebo.inspection_poses import load_inspection_poses, pose_stamp
 
 DYNAMIC_OBSTACLE_X = 1.5
 DYNAMIC_OBSTACLE_Y = 0.0
+DYNAMIC_OBSTACLE_SEARCH_RADIUS_M = 0.5
 
 
 def qos(depth: int, transient: bool = False) -> QoSProfile:
@@ -279,9 +280,16 @@ class Phase3NavigationProbe(Node):
         row = int((y - metadata.origin.position.y) / metadata.resolution)
         if not (0 <= column < metadata.size_x and 0 <= row < metadata.size_y):
             return False
-        for nearby_row in range(max(0, row - 2), min(metadata.size_y, row + 3)):
+        search_radius = math.ceil(
+            DYNAMIC_OBSTACLE_SEARCH_RADIUS_M / metadata.resolution
+        )
+        for nearby_row in range(
+            max(0, row - search_radius),
+            min(metadata.size_y, row + search_radius + 1),
+        ):
             for nearby_column in range(
-                max(0, column - 2), min(metadata.size_x, column + 3)
+                max(0, column - search_radius),
+                min(metadata.size_x, column + search_radius + 1),
             ):
                 index = nearby_row * metadata.size_x + nearby_column
                 if message.data[index] >= 254:
