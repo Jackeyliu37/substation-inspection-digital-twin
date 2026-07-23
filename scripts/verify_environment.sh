@@ -659,8 +659,9 @@ from pathlib import Path
 audit_path, disk_path, forbidden_path = map(Path, sys.argv[1:])
 data = json.loads(audit_path.read_text(encoding="utf-8"))
 assert data["status"] == "passed"
+disk_free_bytes = min(item["free_bytes"] for item in data["disks"])
 disk_path.write_text(
-    f"disk_free_bytes={data['disk_free_bytes']}\n"
+    f"disk_free_bytes={disk_free_bytes}\n"
     f"memory_bytes={data['memory_bytes']}\n",
     encoding="utf-8",
 )
@@ -700,6 +701,7 @@ from pathlib import Path
 
 output, audit_path, commit = sys.argv[1:]
 audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
+disk_free_bytes = min(item["free_bytes"] for item in audit["disks"])
 
 def command(*args):
     return subprocess.run(
@@ -712,7 +714,7 @@ document = {
     "ubuntu": audit["os"],
     "architecture": audit["architecture"],
     "memory_bytes": audit["memory_bytes"],
-    "disk_free_bytes": audit["disk_free_bytes"],
+    "disk_free_bytes": disk_free_bytes,
     "gpu": audit["gpu"],
     "python": command("python3", "--version"),
     "ros_distro": "jazzy",
@@ -733,7 +735,7 @@ import sys
 from pathlib import Path
 audit = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(json.dumps({
-    "disk_free_bytes": audit["disk_free_bytes"],
+    "disk_free_bytes": min(item["free_bytes"] for item in audit["disks"]),
     "memory_bytes": audit["memory_bytes"],
     "driver_version": audit["gpu"]["driver_version"],
 }, sort_keys=True))
