@@ -21,6 +21,8 @@ done
 [[ -n "$reason" && -n "$timeout_s" && "$timeout_s" =~ ^[0-9]+$ ]] || usage
 [[ "$evidence_dir" = /* ]] || usage
 install -d -m 0750 "$evidence_dir"
+reason_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$reason")"
+idempotency_key="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 
 # The emergency-stop request is intentionally the first barrier. Missing ROS
 # services fail closed; the script never reports a safe stop from a timeout.
@@ -28,8 +30,8 @@ emergency_stop=false
 nav2_active_goals=-1
 cmd_vel_zero=false
 if command -v curl >/dev/null 2>&1 && curl -fsS --max-time "$timeout_s" \
-    -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
-    -d "{\"reason\":$(printf '%q' "$reason")}" \
+    -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: $idempotency_key" \
+    -d "{\"reason\":$reason_json}" \
     http://127.0.0.1:8000/api/v1/robot/emergency-stop >/dev/null 2>&1; then
     emergency_stop=true
 fi
