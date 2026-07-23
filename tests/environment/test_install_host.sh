@@ -29,7 +29,7 @@ done
 ! awk '/^ros-/ && $0 !~ /^ros-jazzy-/ {bad=1} END {exit bad ? 0 : 1}' config/environment/apt-packages.txt
 
 grep -Fq 'https://raw.githubusercontent.com/ros/rosdistro/master/ros.key' scripts/install_host.sh
-grep -Fq 'https://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
+grep -Fq 'ros_apt_uri=http://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo.gpg' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo/ubuntu-stable' scripts/install_host.sh
 grep -Fq 'scripts/audit_host.sh' scripts/install_host.sh
@@ -69,6 +69,7 @@ grep -Fq 'allowed_managed_paths' scripts/rollback_host.sh
 grep -Fq 'nginx_enabled_before' scripts/rollback_host.sh
 grep -Fq 'nginx_active_before' scripts/rollback_host.sh
 grep -Fq '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' scripts/rollback_host.sh
+grep -Fq '[a-z0-9_]+=' scripts/rollback_host.sh
 grep -Fq 'evidence_run_id' scripts/lib/environment_common.sh
 
 printf '%s\n' 'install-host-static-test: PASS'

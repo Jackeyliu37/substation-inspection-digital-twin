@@ -39,7 +39,7 @@ expected = {
 }
 values = {}
 for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    if not re.fullmatch(r"[a-z_]+=[A-Za-z0-9_.:+-]+", line):
+    if not re.fullmatch(r"[a-z0-9_]+=[A-Za-z0-9_.:+-]+", line):
         raise SystemExit("unsafe install-state line")
     key, value = line.split("=", 1)
     if key in values:

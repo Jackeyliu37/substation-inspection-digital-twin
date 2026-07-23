@@ -182,9 +182,10 @@ install_managed_file "$work_dir/ros-archive-keyring.gpg" /usr/share/keyrings/ros
 
 architecture="$(dpkg --print-architecture)"
 codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"
+ros_apt_uri=http://packages.ros.org/ros2/ubuntu
 test "$architecture" = amd64
 test "$codename" = noble
-printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://packages.ros.org/ros2/ubuntu %s main\n' "$architecture" "$codename" > "$work_dir/ros2.list"
+printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s %s main\n' "$architecture" "$ros_apt_uri" "$codename" > "$work_dir/ros2.list"
 install_managed_file "$work_dir/ros2.list" /etc/apt/sources.list.d/ros2.list 0644
 
 curl --fail --location --silent --show-error https://packages.osrfoundation.org/gazebo.gpg -o "$work_dir/gazebo.gpg"
