@@ -1,0 +1,18 @@
+[Unit]
+Description=Substation read-only Foxglove diagnostics bridge
+After=ros2.service
+
+[Service]
+Type=simple
+User=substation
+Group=substation
+WorkingDirectory=/opt/substation/current
+Environment=ROS_LOCALHOST_ONLY=1
+ExecStart=/opt/ros/jazzy/bin/ros2 run foxglove_bridge foxglove_bridge --address 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+
+# Deliberately no [Install] section: maintenance must enable this explicitly.

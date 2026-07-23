@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf '%s\n' 'usage: substation-safe-stop --reason REASON --timeout-s SECONDS --evidence-dir ABSOLUTE_DIR' >&2
+    exit 2
+}
+
+reason=""
+timeout_s=""
+evidence_dir=""
+while (($#)); do
+    case "$1" in
+        --reason) shift; reason="${1:-}" ;;
+        --timeout-s) shift; timeout_s="${1:-}" ;;
+        --evidence-dir) shift; evidence_dir="${1:-}" ;;
+        *) usage ;;
+    esac
+    shift
+done
+[[ -n "$reason" && -n "$timeout_s" && "$timeout_s" =~ ^[0-9]+$ ]] || usage
+[[ "$evidence_dir" = /* ]] || usage
+install -d -m 0750 "$evidence_dir"
+
+# The emergency-stop request is intentionally the first barrier. Missing ROS
+# services fail closed; the script never reports a safe stop from a timeout.
+emergency_stop=false
+nav2_active_goals=-1
+cmd_vel_zero=false
+if command -v curl >/dev/null 2>&1 && curl -fsS --max-time "$timeout_s" \
+    -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+    -d "{\"reason\":$(printf '%q' "$reason")}" \
+    http://127.0.0.1:8000/api/v1/robot/emergency-stop >/dev/null 2>&1; then
+    emergency_stop=true
+fi
+
+result="$evidence_dir/safe-stop-result.json"
+if [[ "$emergency_stop" != true ]]; then
+    printf '{"emergency_stop_latched":false,"nav2_active_goals":%d,"cmd_vel_zero":false,"reason":"SAFE_STOP_EMERGENCY_STOP_UNAVAILABLE"}\n' "$nav2_active_goals" > "$result"
+    exit 1
+fi
+
+# A successful product deployment replaces these conservative probes with
+# authenticated ROS observations before marking the stop safe.
+if command -v ros2 >/dev/null 2>&1 && [[ -n "${SUBSTATION_SAFE_STOP_PROBE:-}" ]]; then
+    "$SUBSTATION_SAFE_STOP_PROBE" "$timeout_s" && nav2_active_goals=0 && cmd_vel_zero=true
+fi
+if [[ "$nav2_active_goals" -ne 0 || "$cmd_vel_zero" != true ]]; then
+    printf '{"emergency_stop_latched":true,"nav2_active_goals":%d,"cmd_vel_zero":false,"reason":"SAFE_STOP_BARRIERS_UNCONFIRMED"}\n' "$nav2_active_goals" > "$result"
+    exit 1
+fi
+printf '{"emergency_stop_latched":true,"nav2_active_goals":0,"cmd_vel_zero":true,"reason":"%s"}\n' "$reason" > "$result"
+sha256sum "$result" > "$evidence_dir/SHA256SUMS"
