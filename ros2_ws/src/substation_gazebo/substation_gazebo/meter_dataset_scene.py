@@ -23,6 +23,7 @@ BACKGROUND_MODELS = {
 
 @dataclass(frozen=True)
 class SceneState:
+    scene_group_id: str | None = None
     active_meter: str | None = None
     active_background: str | None = None
     occluder_visible: bool = False
@@ -33,6 +34,7 @@ def scene_commands(
 ) -> tuple[tuple[SceneCommand, ...], SceneState]:
     active_meter = METER_MODELS[sample.asset_id]
     active_background = BACKGROUND_MODELS[sample.background_family]
+    same_group = previous.scene_group_id == sample.scene_group_id
     occluder_pose = {
         "edge_left": (
             sample.distance_m - 0.08,
@@ -61,39 +63,41 @@ def scene_commands(
     }.get(sample.occlusion_regime)
 
     commands: list[SceneCommand] = []
-    if previous.active_meter is not None and previous.active_meter != active_meter:
+    if not same_group and previous.active_meter is not None and previous.active_meter != active_meter:
         commands.append((previous.active_meter, HIDDEN_POSE))
-    if (
+    if not same_group and (
         previous.active_background is not None
         and previous.active_background != active_background
     ):
         commands.append((previous.active_background, HIDDEN_POSE))
-    if previous.occluder_visible and occluder_pose is None:
+    if not same_group and previous.occluder_visible and occluder_pose is None:
         commands.append(("meter_occluder", HIDDEN_POSE))
 
-    commands.append(
-        (
-            active_background,
-            (sample.distance_m + 0.10, 0.0, CAMERA_HEIGHT_M, 0.0, 0.0, 0.0),
-        )
-    )
-    commands.append(
-        (
-            active_meter,
+    if not same_group:
+        commands.append(
             (
-                sample.distance_m,
-                0.0,
-                CAMERA_HEIGHT_M,
-                sample.roll_radians,
-                -1.5707963267948966 + sample.pitch_radians,
-                sample.yaw_radians,
-            ),
+                active_background,
+                (sample.distance_m + 0.10, 0.0, CAMERA_HEIGHT_M, 0.0, 0.0, 0.0),
+            )
         )
-    )
-    if occluder_pose is not None:
-        commands.append(("meter_occluder", occluder_pose))
+        commands.append(
+            (
+                active_meter,
+                (
+                    sample.distance_m,
+                    0.0,
+                    CAMERA_HEIGHT_M,
+                    sample.roll_radians,
+                    -1.5707963267948966 + sample.pitch_radians,
+                    sample.yaw_radians,
+                ),
+            )
+        )
+        if occluder_pose is not None:
+            commands.append(("meter_occluder", occluder_pose))
 
     return tuple(commands), SceneState(
+        scene_group_id=sample.scene_group_id,
         active_meter=active_meter,
         active_background=active_background,
         occluder_visible=occluder_pose is not None,

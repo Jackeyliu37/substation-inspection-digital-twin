@@ -21,10 +21,7 @@ def test_scene_commands_only_hide_previously_visible_models() -> None:
     ]
 
     repeat_commands, repeat_state = scene_commands(config.samples[1], state)
-    assert [name for name, _pose in repeat_commands] == [
-        "background_industrial_light",
-        "synthetic_meter_oil",
-    ]
+    assert repeat_commands == ()
     assert repeat_state == state
 
     pressure = next(
@@ -35,3 +32,15 @@ def test_scene_commands_only_hide_previously_visible_models() -> None:
     assert names[:2] == ["synthetic_meter_oil", "background_industrial_light"]
     assert names[-2:] == ["background_industrial_dark", "synthetic_meter_pressure"]
     assert switched_state.active_meter == "synthetic_meter_pressure"
+
+
+def test_group_pose_is_constant_across_frames() -> None:
+    config = load_generation_config(CONFIG, DEVICES)
+    first, second = config.samples[0], config.samples[1]
+    assert first.scene_group_id == second.scene_group_id
+    assert (first.distance_m, first.yaw_radians, first.pitch_radians, first.roll_radians) == (
+        second.distance_m,
+        second.yaw_radians,
+        second.pitch_radians,
+        second.roll_radians,
+    )

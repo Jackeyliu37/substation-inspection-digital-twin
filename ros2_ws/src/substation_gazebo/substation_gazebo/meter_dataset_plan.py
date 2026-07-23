@@ -229,12 +229,16 @@ def build_sample_plan(config: GenerationConfig) -> tuple[SamplePlan, ...]:
                 light = _choice(config.light_families, family_index, 2)
                 background = _choice(config.background_families, family_index, 2)
                 occlusion = _choice(config.occlusion_regimes, family_index, 3)
+                group_rng = random.Random(_seed(config.global_seed, group_id, 0))
+                group_distance = base_distance + group_rng.uniform(-0.025, 0.025)
+                group_yaw = base_yaw + group_rng.uniform(-0.02, 0.02)
+                group_pitch = base_pitch + group_rng.uniform(-0.02, 0.02)
+                group_roll = base_roll + group_rng.uniform(-0.015, 0.015)
                 for frame_index in range(config.frames_per_group):
                     seed = _seed(config.global_seed, group_id, frame_index)
                     if seed in used_seeds:
                         _fail("SEED_DUPLICATE", str(seed))
                     used_seeds.add(seed)
-                    rng = random.Random(seed)
                     normalized = frame_index / (config.frames_per_group - 1)
                     reading = meter.minimum + normalized * (meter.maximum - meter.minimum)
                     sample_id = f"{asset_id}-{split}-g{group_index:02d}-f{frame_index:02d}"
@@ -253,10 +257,10 @@ def build_sample_plan(config: GenerationConfig) -> tuple[SamplePlan, ...]:
                             reading=reading,
                             normalized_reading=normalized,
                             needle_angle_radians=NEEDLE_MIN + normalized * (NEEDLE_MAX - NEEDLE_MIN),
-                            distance_m=base_distance + rng.uniform(-0.025, 0.025),
-                            yaw_radians=base_yaw + rng.uniform(-0.02, 0.02),
-                            pitch_radians=base_pitch + rng.uniform(-0.02, 0.02),
-                            roll_radians=base_roll + rng.uniform(-0.015, 0.015),
+                            distance_m=group_distance,
+                            yaw_radians=group_yaw,
+                            pitch_radians=group_pitch,
+                            roll_radians=group_roll,
                             light_family=light,
                             background_family=background,
                             occlusion_regime=occlusion,
