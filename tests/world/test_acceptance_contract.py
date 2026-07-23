@@ -80,3 +80,16 @@ def test_probe_accepts_float32_scan_contract_boundaries() -> None:
     state = ProbeState()
     module.Phase2Probe.on_scan(state, message)
     assert state.scan_valid
+
+
+def test_probe_waits_for_new_terminal_replay_state() -> None:
+    module = load_probe_module()
+    probe = object.__new__(module.Phase2Probe)
+    probe.states = [
+        {"command_id": "command-1", "status": "applied"},
+        {"command_id": "command-1", "status": "applying"},
+    ]
+
+    assert probe.matching_state_after(1, "command-1", "applied") is None
+    probe.states.append({"command_id": "command-1", "status": "applied"})
+    assert probe.matching_state_after(1, "command-1", "applied") == probe.states[-1]

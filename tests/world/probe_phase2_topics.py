@@ -326,6 +326,14 @@ class Phase2Probe(Node):
                 return state
         return None
 
+    def matching_state_after(
+        self, start_index: int, command_id: str, status: str
+    ) -> dict[str, str] | None:
+        for state in reversed(self.states[start_index:]):
+            if state.get("command_id") == command_id and state.get("status") == status:
+                return state
+        return None
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -355,8 +363,13 @@ def main() -> int:
 
         state_count = len(node.states)
         node.apply_command(high_id, "temperature-high", "trigger", high_json)
-        node.spin_until(lambda: len(node.states) > state_count, 10.0, "idempotent replay")
-        replay_state = node.matching_state(high_id, "applied")
+        node.spin_until(
+            lambda: node.matching_state_after(state_count, high_id, "applied")
+            is not None,
+            10.0,
+            "idempotent replay",
+        )
+        replay_state = node.matching_state_after(state_count, high_id, "applied")
         assert replay_state is not None
         if int(replay_state["scenario_revision"]) != high_revision:
             raise RuntimeError("idempotent replay changed revision")
