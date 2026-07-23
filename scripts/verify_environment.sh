@@ -597,6 +597,9 @@ PY
   }
 
   capture_ai_lock() {
+    set +u
+    source /opt/ros/jazzy/setup.bash
+    set -u
     .venv/bin/python -m pip freeze --all | LC_ALL=C sort \
       > "$staging_dir/ai-pip-freeze-final.txt"
     cmp artifacts/environment/ai-pip-freeze.txt \
@@ -605,6 +608,9 @@ PY
   }
 
   capture_gateway_lock() {
+    set +u
+    source /opt/ros/jazzy/setup.bash
+    set -u
     .venv-web/bin/python -m pip freeze --all | LC_ALL=C sort \
       > "$staging_dir/gateway-pip-freeze-final.txt"
     cmp artifacts/environment/gateway-pip-freeze.txt \
