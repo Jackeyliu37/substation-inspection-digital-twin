@@ -25,25 +25,17 @@ from std_msgs.msg import Float64
 
 from .meter_dataset_plan import GenerationConfig, SamplePlan, load_generation_config
 from .meter_dataset_projection import CameraIntrinsics, Pose3D, project_dial, validate_projection
+from .meter_dataset_scene import SceneState, scene_commands
 
 
-HIDDEN_POSE = (0.0, 0.0, -10.0, 0.0, 0.0, 0.0)
-CAMERA_HEIGHT_M = 1.2
 DIAL_RADIUS_M = 0.18
 WAIT_SECONDS = 5.0
+POSE_CALL_SECONDS = 1.0
+POSE_ATTEMPTS = 4
 RUN_SECONDS = 40.0 * 60.0
-METER_MODELS = {
-    "meter-pressure-01": "synthetic_meter_pressure",
-    "meter-oil-01": "synthetic_meter_oil",
-}
 NEEDLE_TOPICS = {
     "meter-pressure-01": "/meter_dataset/pressure/needle_cmd",
     "meter-oil-01": "/meter_dataset/oil/needle_cmd",
-}
-BACKGROUND_MODELS = {
-    "industrial_light": "background_industrial_light",
-    "industrial_dark": "background_industrial_dark",
-    "concrete": "background_concrete",
 }
 
 
@@ -166,6 +158,7 @@ class MeterDatasetGenerator(Node):
         self.latest_camera_info: CameraIntrinsics | None = None
         self.latest_joint_positions: tuple[float, ...] = ()
         self.image_sequence = 0
+        self.scene_state = SceneState()
 
         sensor_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -240,41 +233,19 @@ class MeterDatasetGenerator(Node):
         request.pose.orientation.y = qy
         request.pose.orientation.z = qz
         request.pose.orientation.w = qw
-        response = self.pose_client.call(request, timeout_sec=WAIT_SECONDS)
-        if response is None or not response.success:
-            _fail("POSE_SET_FAILED", name)
+        for attempt in range(POSE_ATTEMPTS):
+            response = self.pose_client.call(request, timeout_sec=POSE_CALL_SECONDS)
+            if response is not None and response.success:
+                return
+            if attempt + 1 < POSE_ATTEMPTS:
+                time.sleep(0.05)
+        _fail("POSE_SET_FAILED", name)
 
     def _arrange_scene(self, sample: SamplePlan) -> None:
-        active_meter = METER_MODELS[sample.asset_id]
-        active_background = BACKGROUND_MODELS[sample.background_family]
-        for model in METER_MODELS.values():
-            self._set_pose(model, HIDDEN_POSE)
-        for model in BACKGROUND_MODELS.values():
-            self._set_pose(model, HIDDEN_POSE)
-        self._set_pose("meter_occluder", HIDDEN_POSE)
-
-        self._set_pose(
-            active_background,
-            (sample.distance_m + 0.10, 0.0, CAMERA_HEIGHT_M, 0.0, 0.0, 0.0),
-        )
-        self._set_pose(
-            active_meter,
-            (
-                sample.distance_m,
-                0.0,
-                CAMERA_HEIGHT_M,
-                sample.roll_radians,
-                -math.pi / 2.0 + sample.pitch_radians,
-                sample.yaw_radians,
-            ),
-        )
-        occluder = {
-            "edge_left": (sample.distance_m - 0.08, 0.16, CAMERA_HEIGHT_M, 0.0, 0.0, 0.0),
-            "edge_right": (sample.distance_m - 0.08, -0.16, CAMERA_HEIGHT_M, 0.0, 0.0, 0.0),
-            "partial_bottom": (sample.distance_m - 0.08, 0.0, CAMERA_HEIGHT_M - 0.18, 0.0, 0.0, 0.0),
-        }.get(sample.occlusion_regime)
-        if occluder is not None:
-            self._set_pose("meter_occluder", occluder)
+        commands, next_state = scene_commands(sample, self.scene_state)
+        for model, pose in commands:
+            self._set_pose(model, pose)
+        self.scene_state = next_state
 
     def _publish_needle_and_wait(self, sample: SamplePlan) -> None:
         publisher = self.needle_publishers[sample.asset_id]
