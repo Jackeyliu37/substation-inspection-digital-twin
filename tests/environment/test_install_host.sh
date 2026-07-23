@@ -38,7 +38,10 @@ grep -Fq -- '--connect-timeout 10' scripts/install_host.sh
 grep -Fq -- '--max-time 120' scripts/install_host.sh
 grep -Fq 'install-host: loading pinned ROS key' scripts/install_host.sh
 grep -Fq 'install-host: refreshing apt indexes' scripts/install_host.sh
+grep -Fq 'install-host: validating package origins' scripts/install_host.sh
 grep -Fq 'install-host: installing packages' scripts/install_host.sh
+grep -Fq 'install-host: rosdep initialization deferred to workspace setup' scripts/install_host.sh
+if grep -Eq 'sudo rosdep init|rosdep update' scripts/install_host.sh; then exit 1; fi
 grep -Fq 'ros_apt_uri=http://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo.gpg' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo/ubuntu-stable' scripts/install_host.sh
@@ -70,7 +73,7 @@ grep -Fq 'linux-(modules|objects|signatures)-nvidia-' scripts/install_host.sh
 grep -Fq '${db:Status-Abbrev}' scripts/install_host.sh
 grep -Fq 'new_packages_sha256=' scripts/install_host.sh
 grep -Fq 'policy_mode_before=' scripts/install_host.sh
-grep -Fq '/etc/ros/rosdep/sources.list.d/20-default.list' scripts/install_host.sh
+grep -Fq 'rosdep-setup.env' scripts/install_host.sh
 grep -Fq 'nginx_enabled_before=' scripts/install_host.sh
 grep -Fq 'nginx_active_before=' scripts/install_host.sh
 grep -Fq 'nginx must be inactive before Phase 1 install' scripts/install_host.sh

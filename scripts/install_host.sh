@@ -42,6 +42,7 @@ initial_artifacts=(
   nvidia-packages-after.tsv
   nvidia-smi-before.txt
   nvidia-smi-after.txt
+  rosdep-setup.env
 )
 for artifact in "${initial_artifacts[@]}"; do
   test ! -e "$evidence_dir/$artifact" || {
@@ -220,6 +221,8 @@ if grep -Eq "^(Inst|Remv) ${nvidia_package_regex#^}" "$evidence_dir/apt-install-
   exit 1
 fi
 
+planned_package_count="$(awk '$1 == "Inst" {count++} END {print count + 0}' "$evidence_dir/apt-install-simulation.txt")"
+printf 'install-host: validating package origins (%s packages)\n' "$planned_package_count"
 python3 - config/environment/apt-packages.txt "$evidence_dir/apt-install-simulation.txt" "$evidence_dir/apt-candidates.tsv" "$evidence_dir/apt-policy-origins.tsv" <<'PY'
 import re
 import subprocess
@@ -293,20 +296,8 @@ PY
 printf '%s\n' 'install-host: installing packages'
 sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends --no-upgrade "${requested_packages[@]}"
 
-rosdep_path=/etc/ros/rosdep/sources.list.d/20-default.list
-rosdep_existed=0
-rosdep_before=-
-if test -e "$rosdep_path"; then
-  test -f "$rosdep_path"
-  rosdep_existed=1
-  rosdep_before="$(sudo sha256sum "$rosdep_path" | awk '{print $1}')"
-else
-  sudo rosdep init
-fi
-rosdep_after="$(sudo sha256sum "$rosdep_path" | awk '{print $1}')"
-if test "$rosdep_existed" -eq 1; then test "$rosdep_before" = "$rosdep_after"; fi
-printf '%s\t%s\t%s\t%s\n' "$rosdep_path" "$rosdep_existed" "$rosdep_before" "$rosdep_after" >> "$managed_manifest"
-rosdep update --rosdistro jazzy
+printf '%s\n' 'install-host: rosdep initialization deferred to workspace setup'
+printf 'state=DEFERRED\nreason=workspace-setup-network-step\n' > "$evidence_dir/rosdep-setup.env"
 
 if systemctl list-unit-files --type=service --no-legend 2>/dev/null | grep -q '^nginx\.service'; then
   sudo systemctl disable --now nginx.service
@@ -342,10 +333,11 @@ grep -Eq '(^|[^0-9])8\.[0-9]' "$evidence_dir/gazebo-versions.txt"
 restore_policy
 printf 'path\texisted_before\tmode_before\tsha256_before\trestored\n%s\t%s\t%s\t%s\t1\n' \
   "$policy_path" "$policy_existed_before" "$policy_mode_before" "$policy_sha_before" > "$evidence_dir/policy-rc.d-state.tsv"
-printf 'state=PASS\ninstall_state_sha256=%s\nmanaged_files_sha256=%s\nnew_packages_sha256=%s\ndpkg_after_sha256=%s\n' \
+printf 'state=PASS\ninstall_state_sha256=%s\nmanaged_files_sha256=%s\nnew_packages_sha256=%s\ndpkg_after_sha256=%s\nrosdep_setup_sha256=%s\n' \
   "$(sha256sum "$evidence_dir/install-state.env" | awk '{print $1}')" \
   "$(sha256sum "$managed_manifest" | awk '{print $1}')" \
   "$(sha256sum "$evidence_dir/host-install-new-packages.txt" | awk '{print $1}')" \
-  "$(sha256sum "$evidence_dir/dpkg-after.tsv" | awk '{print $1}')" > "$evidence_dir/install-complete.env"
+  "$(sha256sum "$evidence_dir/dpkg-after.tsv" | awk '{print $1}')" \
+  "$(sha256sum "$evidence_dir/rosdep-setup.env" | awk '{print $1}')" > "$evidence_dir/install-complete.env"
 
 printf '%s\n' 'install-host: PASS'
