@@ -18,4 +18,5 @@ setup(
     description="Risk scoring and alert ownership.",
     license="Apache-2.0",
     tests_require=["pytest"],
+    entry_points={"console_scripts": ["risk = substation_risk.risk_node:main"]},
 )

@@ -17,4 +17,5 @@ setup(
     description="Semantic asset state owner.",
     license="Apache-2.0",
     tests_require=["pytest"],
+    entry_points={"console_scripts": ["digital_twin = substation_digital_twin.twin_node:main"]},
 )

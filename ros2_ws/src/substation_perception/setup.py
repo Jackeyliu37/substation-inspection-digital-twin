@@ -24,6 +24,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "environment_normalizer = substation_perception.environment_normalizer:main",
             "placeholder_detector = substation_perception.placeholder_node:main",
         ],
     },

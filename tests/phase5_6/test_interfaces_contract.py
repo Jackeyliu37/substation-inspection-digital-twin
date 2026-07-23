@@ -24,7 +24,7 @@ def test_phase5_6_sources_do_not_consume_truth_or_placeholder_topics() -> None:
     source = "\n".join(
         path.read_text(encoding="utf-8")
         for package in ("substation_digital_twin", "substation_risk", "substation_mission")
-        for path in (ROOT / "ros2_ws/src" / package).rglob("*.py")
+        for path in (ROOT / "ros2_ws/src" / package / package).rglob("*.py")
     )
     assert "/simulation/scenario_truth" not in source
     assert "/perception/development/" not in source
