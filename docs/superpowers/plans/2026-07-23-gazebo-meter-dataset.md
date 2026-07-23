@@ -282,7 +282,7 @@ assert model_names >= {
     "meter_occluder", "background_industrial_light",
     "background_industrial_dark", "background_concrete",
 }
-assert needle_plugins == {
+assert needle_bridge_topics == {
     "/meter_dataset/pressure/needle_cmd",
     "/meter_dataset/oil/needle_cmd",
 }
@@ -304,7 +304,7 @@ Create two world-level meter instances from one repository-owned model. The mode
 
 - a 0.18 m radius case, high-contrast face, tick primitives, center hub, and needle;
 - a revolute `needle_joint` whose axis is normal to the dial face;
-- `JointPositionController` using installed `gz-sim-joint-position-controller-system` with explicit topics `/meter_dataset/pressure/needle_cmd` and `/meter_dataset/oil/needle_cmd` on the corresponding instances;
+- `JointPositionController` using installed `gz-sim-joint-position-controller-system`; the reusable model leaves `<topic>` unset so Harmonic creates instance-scoped default command topics for `synthetic_meter_pressure` and `synthetic_meter_oil`;
 - `JointStatePublisher` feedback on `/meter_dataset/joint_states`;
 - no Fuel URI, external mesh, external texture, or runtime network lookup.
 
@@ -312,7 +312,7 @@ The world includes Physics, Sensors with `<render_engine>ogre2</render_engine>`,
 
 - [ ] **Step 4: Implement bridge and launch**
 
-`meter_dataset_bridge.yaml` declares only clock, CameraInfo, joint-state feedback, and two ROS-to-Gazebo `std_msgs/msg/Float64 -> gz.msgs.Double` needle topics. RGB uses `ros_gz_image`; pose uses:
+`meter_dataset_bridge.yaml` declares only clock, CameraInfo, joint-state feedback, and two ROS-to-Gazebo `std_msgs/msg/Float64 -> gz.msgs.Double` mappings. Their ROS names are `/meter_dataset/pressure/needle_cmd` and `/meter_dataset/oil/needle_cmd`; their Gazebo names are the instance-scoped `/model/synthetic_meter_pressure/joint/needle_joint/0/cmd_pos` and `/model/synthetic_meter_oil/joint/needle_joint/0/cmd_pos`. RGB uses `ros_gz_image`; pose uses:
 
 ```text
 /world/meter_dataset/set_pose@ros_gz_interfaces/srv/SetEntityPose

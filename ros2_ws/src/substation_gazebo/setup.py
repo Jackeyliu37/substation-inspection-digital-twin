@@ -14,11 +14,19 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE}"]),
         (f"share/{PACKAGE}", ["package.xml"]),
         (f"share/{PACKAGE}/config", glob("config/*.yaml")),
+        (
+            f"share/{PACKAGE}/config",
+            ["../../../configs/meter_dataset_generation.yaml"],
+        ),
         (f"share/{PACKAGE}/launch", glob("launch/*.launch.py")),
         (f"share/{PACKAGE}/worlds", glob("worlds/*.sdf")),
         (
             f"share/{PACKAGE}/models/inspection_robot",
             glob("models/inspection_robot/*"),
+        ),
+        (
+            f"share/{PACKAGE}/models/synthetic_meter",
+            glob("models/synthetic_meter/*"),
         ),
     ],
     install_requires=["setuptools"],
@@ -31,6 +39,7 @@ setup(
     entry_points={
         "console_scripts": [
             "scenario_manager = substation_gazebo.scenario_manager:main",
+            "meter_dataset_generator = substation_gazebo.meter_dataset_generator:main",
         ],
     },
 )
