@@ -22,4 +22,9 @@ setup(
     description="Development and production-boundary perception components.",
     license="Apache-2.0",
     tests_require=["pytest"],
+    entry_points={
+        "console_scripts": [
+            "placeholder_detector = substation_perception.placeholder_node:main",
+        ],
+    },
 )
