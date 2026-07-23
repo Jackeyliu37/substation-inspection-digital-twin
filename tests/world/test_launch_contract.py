@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import subprocess
 import xml.etree.ElementTree as ET
 
 
@@ -80,3 +81,28 @@ def test_gazebo_package_declares_runtime_dependencies() -> None:
         "turtlebot3_gazebo",
         "xacro",
     }.issubset(dependencies)
+
+
+def test_workspace_packages_are_identified_as_ament_python() -> None:
+    result = subprocess.run(
+        [
+            "colcon",
+            "list",
+            "--base-paths",
+            "src/substation_description",
+            "src/substation_gazebo",
+        ],
+        cwd=ROOT / "ros2_ws",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    package_types = {
+        columns[0]: columns[2]
+        for line in result.stdout.splitlines()
+        if len(columns := line.split("\t")) == 3
+    }
+    assert package_types == {
+        "substation_description": "(ros.ament_python)",
+        "substation_gazebo": "(ros.ament_python)",
+    }
