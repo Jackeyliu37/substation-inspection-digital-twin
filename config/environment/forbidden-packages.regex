@@ -1,0 +1,7 @@
+^(ubuntu-desktop|ubuntu-desktop-minimal|kubuntu-desktop|xubuntu-desktop|lubuntu-desktop|ubuntu-unity-desktop)$
+^(gnome-shell|gnome-session|plasma-desktop|kde-plasma-desktop)$
+^(gdm3|sddm|lightdm|xdm)$
+^(nomachine|xvfb|virtualgl)$
+^ros-(?!jazzy-)[a-z0-9]+-.*$
+^(ros-jazzy-(desktop|desktop-full))$
+^(gazebo|gazebo[0-9]+|gazebo-classic|libgazebo.*)$
