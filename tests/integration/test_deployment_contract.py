@@ -22,6 +22,17 @@ def test_product_services_bind_only_to_loopback_and_keep_ros_local() -> None:
     assert "--hostname 127.0.0.1" in frontend
 
 
+def test_gateway_module_entrypoint_matches_the_systemd_command() -> None:
+    unit = read("deploy/systemd/substation-web-gateway.service")
+    entrypoint = ROOT / "ros2_ws/src/substation_web_gateway/substation_web_gateway/__main__.py"
+
+    assert "-m substation_web_gateway" in unit
+    assert entrypoint.is_file()
+    source = entrypoint.read_text(encoding="utf-8")
+    assert "--host" in source
+    assert "--port" in source
+
+
 def test_nginx_is_the_only_product_lan_entry_and_proxies_ws() -> None:
     config = read("deploy/nginx/substation.conf")
 
