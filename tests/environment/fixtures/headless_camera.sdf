@@ -1,0 +1,23 @@
+<?xml version="1.0" ?>
+<sdf version="1.10">
+  <world name="phase1_headless">
+    <physics name="1ms" type="ignored"><max_step_size>0.001</max_step_size><real_time_factor>1.0</real_time_factor></physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"><render_engine>ogre2</render_engine></plugin>
+    <gravity>0 0 -9.8</gravity>
+    <scene><ambient>0.4 0.4 0.4 1</ambient><background>0.05 0.05 0.05 1</background></scene>
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows><pose>0 0 10 0 0 0</pose><diffuse>0.8 0.8 0.8 1</diffuse><specular>0.2 0.2 0.2 1</specular><direction>-0.5 0.1 -0.9</direction>
+    </light>
+    <model name="target_box"><static>true</static><pose>3 0 0.5 0 0 0</pose><link name="link"><visual name="visual"><geometry><box><size>1 1 1</size></box></geometry><material><ambient>0.8 0.1 0.1 1</ambient><diffuse>0.8 0.1 0.1 1</diffuse></material></visual></link></model>
+    <model name="camera_probe">
+      <static>true</static><pose>0 0 1 0 0 0</pose>
+      <link name="link"><sensor name="rgb_camera" type="camera">
+        <always_on>true</always_on><update_rate>2</update_rate><topic>/phase1/camera</topic>
+        <camera><horizontal_fov>1.047</horizontal_fov><image><width>64</width><height>48</height><format>R8G8B8</format></image><clip><near>0.1</near><far>20</far></clip></camera>
+      </sensor></link>
+    </model>
+  </world>
+</sdf>
