@@ -60,11 +60,11 @@ on its own.
 ## Runtime Configuration
 
 Robot footprint is a 0.30 m by 0.32 m polygon, with 0.25 m costmap inflation.
-The global costmap uses the saved map plus a static layer; the local costmap
-uses `/scan` as an obstacle layer and rolls with the robot.  MPPI optimizes
-locally around those runtime obstacles with a conservative 0.22 m/s forward
-limit.  Recovery behavior may clear costmaps and rotate, but never changes
-scenarios or static-map files.
+The global costmap combines the saved map with a runtime `/scan` obstacle layer
+so replanning sees live blockages; the rolling local costmap observes the same
+scan independently.  MPPI optimizes locally around those runtime obstacles
+with a conservative 0.22 m/s forward limit.  Recovery behavior may clear
+costmaps and rotate, but never changes scenarios or static-map files.
 
 Every launch forces headless, localhost-only execution, takes a caller-supplied
 unique `gz_partition`, and owns only its process group.  Acceptance cleanup

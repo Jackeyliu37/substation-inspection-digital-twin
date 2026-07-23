@@ -63,6 +63,13 @@ def test_navigation_configuration_has_single_transform_owner_per_mode() -> None:
     assert nav2["local_costmap"]["local_costmap"]["ros__parameters"][
         "obstacle_layer"
     ]["scan"]["topic"] == "/scan"
+    global_costmap = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
+    assert global_costmap["plugins"] == [
+        "static_layer",
+        "obstacle_layer",
+        "inflation_layer",
+    ]
+    assert global_costmap["obstacle_layer"]["scan"]["topic"] == "/scan"
     controller = nav2["controller_server"]["ros__parameters"]
     assert controller["controller_frequency"] == 20.0
     assert controller["failure_tolerance"] == 5.0
