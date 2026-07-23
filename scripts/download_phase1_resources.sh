@@ -128,26 +128,66 @@ PY
 
 download_yolo() {
   local resource_id=yolo11n-base
-  local revision=v8.4.0
-  local source_url=https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt
-  local prior digest size target_dir target marker source_json
+  local locked_resource_manifest=artifacts/environment/resource-downloads.tsv
+  local locked_id revision digest size source_url target
+  local prior target_dir marker source_json actual_size actual_digest
+  IFS=$'\t' read -r locked_id revision digest size source_url target < <(
+    awk -F '\t' -v id="$resource_id" '$1 == id {print; exit}' "$locked_resource_manifest"
+  )
+  test "$locked_id" = "$resource_id"
+  test "$revision" = v8.4.0
+  test "$target" = "/var/lib/substation/models/base/$digest/yolo11n.pt"
+  target_dir="$(dirname -- "$target")"
+  marker="$target_dir/.substation-resource.json"
+  source_json="$target_dir/source.json"
   prior="$(manifest_row "$resource_id")"
   if test -n "$prior"; then
     printf '%s\n' "$prior" >> "$tmp_manifest"
     return
   fi
+  if test -e "$target_dir"; then
+    test -d "$target_dir" && test ! -L "$target_dir" || {
+      printf 'resource target exists with invalid provenance: %s\n' "$target_dir" >&2
+      exit 1
+    }
+    if test -s "$target" && test -s "$marker" && test -s "$source_json"; then
+      test ! -L "$target" && test ! -L "$marker" && test ! -L "$source_json" || {
+        printf 'resource target exists with invalid provenance: %s\n' "$target_dir" >&2
+        exit 1
+      }
+      actual_digest="$(environment_sha256 "$target")"
+      actual_size="$(stat -c '%s' "$target")"
+      test "$actual_digest" = "$digest"
+      test "$actual_size" = "$size"
+      python3 - "$marker" "$source_json" "$resource_id" "$revision" "$digest" "$size" "$source_url" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+marker, source_json, resource_id, revision, digest, size, source_url = sys.argv[1:]
+common = {
+    "resource_id": resource_id,
+    "revision": revision,
+    "schema_version": 1,
+    "sha256": digest,
+    "size_bytes": int(size),
+    "source_url": source_url,
+}
+assert json.loads(Path(marker).read_text(encoding="utf-8")) == common | {"owner": "phase1-resource"}
+assert json.loads(Path(source_json).read_text(encoding="utf-8")) == common
+PY
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$resource_id" "$revision" "$digest" "$size" "$source_url" "$target" >> "$tmp_manifest"
+      return
+    fi
+    printf 'resource target exists with invalid provenance: %s\n' "$target_dir" >&2
+    exit 1
+  fi
   download_tmp="$(mktemp --tmpdir=/tmp)"
   download_official_yolo_asset "$download_tmp"
-  digest="$(environment_sha256 "$download_tmp")"
-  size="$(stat -c '%s' "$download_tmp")"
-  target_dir="/var/lib/substation/models/base/$digest"
-  target="$target_dir/yolo11n.pt"
-  marker="$target_dir/.substation-resource.json"
-  source_json="$target_dir/source.json"
-  test ! -e "$target_dir" || {
-    printf 'resource target exists without locked manifest: %s\n' "$target_dir" >&2
-    exit 1
-  }
+  actual_digest="$(environment_sha256 "$download_tmp")"
+  actual_size="$(stat -c '%s' "$download_tmp")"
+  test "$actual_digest" = "$digest"
+  test "$actual_size" = "$size"
   mkdir -p "$target_dir"
   mv "$download_tmp" "$target"
   download_tmp=
