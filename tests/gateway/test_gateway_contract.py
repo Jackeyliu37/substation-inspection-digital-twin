@@ -114,6 +114,42 @@ def _websocket_rejection(app):
     return asyncio.run(invoke())
 
 
+def _websocket_open(app, path, *, subprotocols=("substation.v1",)):
+    async def invoke():
+        incoming = asyncio.Queue()
+        outgoing = []
+
+        async def receive():
+            return await incoming.get()
+
+        async def send(message):
+            outgoing.append(message)
+
+        scope = {
+            "type": "websocket",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "subprotocols": list(subprotocols),
+            "client": ("test", 1234),
+            "server": ("test", 80),
+            "scheme": "ws",
+        }
+        await incoming.put({"type": "websocket.connect"})
+        task = asyncio.create_task(app(scope, receive, send))
+        for _ in range(100):
+            if outgoing:
+                break
+            await asyncio.sleep(0)
+        assert outgoing
+        await incoming.put({"type": "websocket.disconnect", "code": 1000})
+        await task
+        return outgoing
+
+    return asyncio.run(invoke())
+
+
 def test_health_and_readiness_are_distinct():
     app = create_app()
     status, _, body = _http(app, "GET", "/healthz")
@@ -166,6 +202,51 @@ def test_system_and_idle_mission_are_snapshots_not_gateway_owned_state():
     assert mission["data"]["state"] == "idle"
     assert mission["data"]["queue_revision"] == "0"
     assert mission["data"]["tasks"] == []
+
+
+def test_map_reports_and_diagnostics_are_read_only_snapshots():
+    app = create_app()
+    status, _, body = _http(app, "GET", "/api/v1/map")
+    assert status == 503
+    assert body["code"] == "MAP_UNAVAILABLE"
+
+    state = GatewayState(
+        map_snapshot={
+            "frame_id": "map",
+            "map_revision": "3",
+            "resolution_m": 0.05,
+            "width_cells": 2,
+            "height_cells": 1,
+            "origin": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+            "encoding": "int8-row-major",
+            "data_base64": "AP8=",
+        },
+        reports=[{"report_id": "report-1", "status": "published"}],
+        diagnostics={"items": [{"name": "gateway", "status": "ok"}]},
+    )
+    app = create_app(state=state)
+    status, _, body = _http(app, "GET", "/api/v1/map")
+    assert status == 200
+    assert body["data"]["map_revision"] == "3"
+    status, _, body = _http(app, "GET", "/api/v1/reports")
+    assert status == 200
+    assert body["data"]["items"][0]["report_id"] == "report-1"
+    status, _, body = _http(app, "GET", "/api/v1/diagnostics")
+    assert status == 200
+    assert body["data"]["items"][0]["name"] == "gateway"
+
+
+def test_events_and_camera_open_without_fabricating_frames():
+    app = create_app()
+    events = _websocket_open(app, "/ws/events")
+    event_open = json.loads(next(item["text"] for item in events if item["type"] == "websocket.send"))
+    assert event_open["stream"] == "events"
+    app = create_app()
+    camera = _websocket_open(app, "/ws/camera")
+    camera_open = json.loads(next(item["text"] for item in camera if item["type"] == "websocket.send"))
+    assert camera_open["stream"] == "camera"
+    assert camera_open["payload"]["camera_available"] is False
+    assert not any(item.get("bytes") for item in camera if item["type"] == "websocket.send")
 
 
 def test_idempotency_persists_command_and_replays_exact_response():

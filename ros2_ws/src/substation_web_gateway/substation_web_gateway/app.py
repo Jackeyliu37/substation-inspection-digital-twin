@@ -78,6 +78,12 @@ class GatewayState:
     run_id: str | None = None
     snapshot_revision: int = 1
     assets: list[dict[str, Any]] = field(default_factory=list)
+    map_snapshot: dict[str, Any] | None = None
+    reports: list[dict[str, Any]] = field(default_factory=list)
+    diagnostics: dict[str, Any] = field(default_factory=lambda: {"items": []})
+    events: list[dict[str, Any]] = field(default_factory=list)
+    camera_jpeg: bytes | None = None
+    camera_metadata: dict[str, Any] = field(default_factory=dict)
     mission: dict[str, Any] = field(default_factory=lambda: {
         "mission_id": None,
         "route_id": None,
@@ -256,6 +262,21 @@ def create_app(*, state: GatewayState | None = None, db_path: str | Path = ":mem
     async def current_mission(request: Request) -> Response:
         return snapshot_response(state.mission, request)
 
+    @app.get("/api/v1/map")
+    async def map_snapshot(request: Request) -> Response:
+        if state.map_snapshot is None:
+            return _problem(request, 503, "MAP_UNAVAILABLE", "A validated map snapshot is not available.")
+        return snapshot_response(state.map_snapshot, request)
+
+    @app.get("/api/v1/reports")
+    async def reports(request: Request) -> Response:
+        items = sorted(state.reports, key=lambda item: str(item.get("report_id", "")))
+        return snapshot_response({"items": items, "next_cursor": None}, request)
+
+    @app.get("/api/v1/diagnostics")
+    async def diagnostics(request: Request) -> Response:
+        return snapshot_response(state.diagnostics, request)
+
     @app.get("/api/v1/commands/{command_id}")
     async def command_lookup(command_id: str, request: Request) -> Response:
         if not _strict_uuid(command_id):
@@ -379,6 +400,104 @@ def create_app(*, state: GatewayState | None = None, db_path: str | Path = ":mem
                     },
                 }
                 await websocket.send_json(heartbeat)
+                continue
+            if message.get("type") == "websocket.disconnect":
+                return
+
+    async def _stream_open(websocket: WebSocket, stream: str, payload: dict[str, Any]) -> str | None:
+        if "substation.v1" not in websocket.scope.get("subprotocols", []):
+            denial = Response(status_code=426, headers={"Sec-WebSocket-Protocol": "substation.v1"})
+            try:
+                await websocket.send_denial_response(denial)
+            except RuntimeError:
+                await websocket.close(code=1002)
+            return None
+        await websocket.accept(subprotocol="substation.v1")
+        connection_id = str(uuid.uuid4())
+        await websocket.send_json({
+            "schema_version": SCHEMA_VERSION,
+            "stream": stream,
+            "stream_epoch": state.stream_epoch,
+            "connection_id": connection_id,
+            "run_id": state.run_id,
+            "sequence": "0",
+            "snapshot_revision": str(state.snapshot_revision),
+            "timestamp": _utc_now(),
+            "type": "stream.open",
+            "payload": payload,
+        })
+        return connection_id
+
+    @app.websocket("/ws/events")
+    async def events(websocket: WebSocket) -> None:
+        connection_id = await _stream_open(websocket, "events", {
+            "heartbeat_interval_s": 1.0,
+            "connection_timeout_s": 5.0,
+            "replay_available": False,
+        })
+        if connection_id is None:
+            return
+        for event in state.events:
+            await websocket.send_json({
+                "schema_version": SCHEMA_VERSION,
+                "stream": "events",
+                "stream_epoch": state.stream_epoch,
+                "connection_id": connection_id,
+                "run_id": state.run_id,
+                "sequence": state.next_sequence(),
+                "snapshot_revision": str(state.snapshot_revision),
+                "timestamp": _utc_now(),
+                "type": "event",
+                "payload": event,
+            })
+        while True:
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({
+                    "schema_version": SCHEMA_VERSION,
+                    "stream": "events",
+                    "stream_epoch": state.stream_epoch,
+                    "connection_id": connection_id,
+                    "run_id": state.run_id,
+                    "sequence": state.next_sequence(),
+                    "snapshot_revision": str(state.snapshot_revision),
+                    "timestamp": _utc_now(),
+                    "type": "heartbeat",
+                    "payload": {"server_time": _utc_now(), "ready": all(state.ready_dependencies.values())},
+                })
+                continue
+            if message.get("type") == "websocket.disconnect":
+                return
+
+    @app.websocket("/ws/camera")
+    async def camera(websocket: WebSocket) -> None:
+        connection_id = await _stream_open(websocket, "camera", {
+            "heartbeat_interval_s": 1.0,
+            "connection_timeout_s": 5.0,
+            "camera_available": state.camera_jpeg is not None,
+            "media_type": "image/jpeg" if state.camera_jpeg is not None else None,
+        })
+        if connection_id is None:
+            return
+        if state.camera_jpeg is not None:
+            await websocket.send({"type": "websocket.send", "bytes": state.camera_jpeg})
+        while True:
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({
+                    "schema_version": SCHEMA_VERSION,
+                    "stream": "camera",
+                    "stream_epoch": state.stream_epoch,
+                    "connection_id": connection_id,
+                    "run_id": state.run_id,
+                    "sequence": state.next_sequence(),
+                    "snapshot_revision": str(state.snapshot_revision),
+                    "timestamp": _utc_now(),
+                    "type": "heartbeat",
+                    "payload": {"server_time": _utc_now(), "camera_available": state.camera_jpeg is not None},
+                })
                 continue
             if message.get("type") == "websocket.disconnect":
                 return
