@@ -2,11 +2,12 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 2 Gazebo 变电站世界开发中；场景运行时、纯无头 launch 和 live acceptance 工具已完成非 live 验证，等待固定提交上的 Gazebo live acceptance。
-- Phase 2 当前已验证运行时源码提交：`ce25f96c2b263c078843d345c08e6ed96ceedaf3`。
+- 当前阶段：Phase 2 Gazebo 变电站世界已完成；下一阶段为 Phase 3 SLAM/Nav2 设计与实现。
+- Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
-- 验证完成时间：`2026-07-23T11:05:21Z`。
-- 验证结果：`passed`；`result.json` 和 `SHA256SUMS` 均已验证。
+- Phase 1 验证完成时间：`2026-07-23T11:05:21Z`。
+- Phase 2 验证完成时间：`2026-07-23T12:17:08Z`。
+- Phase 2 验证结果：`passed`；run ID 为 `170b0adb-9553-4ce4-a304-c8425cfc156d`，`result.json` 和 `SHA256SUMS` 均已验证。
 - 当前阻塞项：无。
 - 正在运行的项目服务：无。Gazebo、ROS 项目节点、Gateway、前端、Foxglove Bridge 和 Nginx 均未作为产品服务运行。
 
@@ -34,9 +35,10 @@
 - 第二次 live run `06c181e5-b401-4050-a687-383e41f3b78e` 已失败并保留 staging 证据；根因是资产 TF 节点调用了 Jazzy 不支持的多参数 logger API，修复提交和回归测试已验证。
 - 第三次 live run `c3179573-892e-4e6f-b12c-72dd0e52e472` 已失败并保留 staging 证据；诊断证明全部 topic 与字段均有效，唯一根因是 probe 对 ROS `float32` 的 LiDAR 最小量程做精确相等比较，修复提交和现场值回归测试已验证。
 - 第四次 live run `ef5489db-02fb-4948-b162-4fbb9d8ec87b` 已失败并保留 staging 证据；baseline、触发和幂等 revision 已通过，根因是 probe 把幂等重放的 `applying` 事件误当终态并过早发送 reset，终态等待修复和 race 回归测试已验证。
+- Phase 2 最终 live acceptance：`bash tests/world/run_phase2_acceptance.sh --run-id 170b0adb-9553-4ce4-a304-c8425cfc156d --evidence-dir /var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world.staging`，结果依次为 `phase2-topic-probe: PASS` 和 `phase2-acceptance: PASS`。
+- Phase 2 immutable evidence：`/var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world`。只读复核命令为 `(cd /var/lib/substation/evidence/acceptance/170b0adb-9553-4ce4-a304-c8425cfc156d/02-gazebo-world && sha256sum -c SHA256SUMS)`；全部 12 个证据文件通过，且没有残留 Phase 2 ROS/Gazebo 进程。
+- 本状态提交晚于并且只记录已验证实现提交 `eeffd2e6ad26247987c9b3f9c922979089a90f41`，不得把后续文档提交冒充为经过 Gazebo live acceptance 的实现提交。
 
-## Phase 2 当前工作
+## 下一步
 
-1. 提交并推送当前运行时检查点状态。
-2. 对干净固定提交运行无 `DISPLAY` Gazebo live acceptance 并生成 Phase 2 immutable evidence。
-3. live evidence 通过后封存 Phase 2 状态并转入 Phase 3 设计；在此之前不声明 Phase 2 完成。
+编写并批准 Phase 3 SLAM/Nav2 设计和计划，使用已锁定的 Phase 2 世界，然后 test-first 实现地图生成、定位、巡检位姿和动态障碍导航。当前不得声明 Phase 3 行为已存在。
