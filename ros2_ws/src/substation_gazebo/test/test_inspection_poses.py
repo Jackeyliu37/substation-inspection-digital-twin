@@ -63,6 +63,8 @@ def test_navigation_configuration_has_single_transform_owner_per_mode() -> None:
     assert nav2["local_costmap"]["local_costmap"]["ros__parameters"][
         "obstacle_layer"
     ]["scan"]["topic"] == "/scan"
+    assert nav2["local_costmap"]["local_costmap"]["ros__parameters"]["width"] == 4
+    assert nav2["local_costmap"]["local_costmap"]["ros__parameters"]["height"] == 4
     global_costmap = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
     assert global_costmap["plugins"] == [
         "static_layer",
