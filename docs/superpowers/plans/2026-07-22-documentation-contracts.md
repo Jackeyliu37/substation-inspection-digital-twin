@@ -231,6 +231,9 @@ git commit -m "docs: plan phase one environment baseline"
 **Files:**
 - Create: `docs/PROJECT_STATUS.md`
 - Create: `docs/HANDOFF.md`
+- Modify: `README.md`
+- Modify: `docs/TEST_ACCEPTANCE.md`
+- Modify: `docs/plans/PHASE-01-ENVIRONMENT.md`
 - Modify: `docs/superpowers/plans/2026-07-22-documentation-contracts.md`
 
 **Interfaces:**
