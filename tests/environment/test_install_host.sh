@@ -29,6 +29,9 @@ done
 ! awk '/^ros-/ && $0 !~ /^ros-jazzy-/ {bad=1} END {exit bad ? 0 : 1}' config/environment/apt-packages.txt
 
 grep -Fq 'https://raw.githubusercontent.com/ros/rosdistro/master/ros.key' scripts/install_host.sh
+grep -Fq 'curl --ipv4' scripts/install_host.sh
+grep -Fq -- '--connect-timeout 10' scripts/install_host.sh
+grep -Fq -- '--max-time 120' scripts/install_host.sh
 grep -Fq 'ros_apt_uri=http://packages.ros.org/ros2/ubuntu' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo.gpg' scripts/install_host.sh
 grep -Fq 'https://packages.osrfoundation.org/gazebo/ubuntu-stable' scripts/install_host.sh
@@ -66,6 +69,8 @@ grep -Fq 'host-install-new-packages.txt' scripts/rollback_host.sh
 grep -Fq 'dpkg-after.tsv' scripts/rollback_host.sh
 grep -Fq '${db:Status-Abbrev}' scripts/rollback_host.sh
 grep -Fq 'allowed_managed_paths' scripts/rollback_host.sh
+grep -Fq 'managed_fields = ["path", "existed_before", "sha256_before", "sha256_after"]' scripts/rollback_host.sh
+if grep -Fq 'empty managed-file manifest' scripts/rollback_host.sh; then exit 1; fi
 grep -Fq 'nginx_enabled_before' scripts/rollback_host.sh
 grep -Fq 'nginx_active_before' scripts/rollback_host.sh
 grep -Fq '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' scripts/rollback_host.sh

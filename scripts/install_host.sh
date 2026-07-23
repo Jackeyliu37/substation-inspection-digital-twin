@@ -176,7 +176,15 @@ install_managed_file() {
   printf '%s\t%s\t%s\t%s\n' "$target_file" "$existed" "$before_sha" "$after_sha" >> "$managed_manifest"
 }
 
-curl --fail --location --silent --show-error https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o "$work_dir/ros.key"
+download_host_file() {
+  local source_url="$1" output_path="$2"
+  curl --ipv4 --fail --location --silent --show-error \
+    --retry 5 --retry-delay 2 --retry-all-errors \
+    --connect-timeout 10 --max-time 120 \
+    "$source_url" -o "$output_path"
+}
+
+download_host_file https://raw.githubusercontent.com/ros/rosdistro/master/ros.key "$work_dir/ros.key"
 gpg --batch --yes --dearmor --output "$work_dir/ros-archive-keyring.gpg" "$work_dir/ros.key"
 install_managed_file "$work_dir/ros-archive-keyring.gpg" /usr/share/keyrings/ros-archive-keyring.gpg 0644
 
@@ -188,7 +196,7 @@ test "$codename" = noble
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s %s main\n' "$architecture" "$ros_apt_uri" "$codename" > "$work_dir/ros2.list"
 install_managed_file "$work_dir/ros2.list" /etc/apt/sources.list.d/ros2.list 0644
 
-curl --fail --location --silent --show-error https://packages.osrfoundation.org/gazebo.gpg -o "$work_dir/gazebo.gpg"
+download_host_file https://packages.osrfoundation.org/gazebo.gpg "$work_dir/gazebo.gpg"
 gpg --batch --yes --dearmor --output "$work_dir/gazebo-archive-keyring.gpg" "$work_dir/gazebo.gpg"
 install_managed_file "$work_dir/gazebo-archive-keyring.gpg" /usr/share/keyrings/gazebo-archive-keyring.gpg 0644
 printf 'deb [arch=%s signed-by=/usr/share/keyrings/gazebo-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable %s main\n' "$architecture" "$codename" > "$work_dir/gazebo-stable.list"

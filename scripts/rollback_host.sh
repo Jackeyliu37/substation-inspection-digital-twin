@@ -75,11 +75,14 @@ import re
 import sys
 from pathlib import Path
 
-rows = list(csv.DictReader(Path(sys.argv[1]).open(encoding="utf-8"), delimiter="\t"))
+managed_fields = ["path", "existed_before", "sha256_before", "sha256_after"]
+with Path(sys.argv[1]).open(encoding="utf-8", newline="") as handle:
+    reader = csv.DictReader(handle, delimiter="\t")
+    if reader.fieldnames != managed_fields:
+        raise SystemExit(f"managed-file manifest header changed: {reader.fieldnames}")
+    rows = list(reader)
 allowed = set(sys.argv[2:])
 seen = set()
-if not rows:
-    raise SystemExit("empty managed-file manifest")
 for row in rows:
     path = row["path"]
     if path not in allowed or path in seen:
