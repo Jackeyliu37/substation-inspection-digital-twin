@@ -96,11 +96,22 @@ class YoloBackend:
         self._identity = identity
         self._model_factory = model_factory
         self._loaded_model: object | None = None
+        self._inference_device = "cuda:0"
+
+    @property
+    def inference_device(self) -> str:
+        return self._inference_device
 
     def _model(self) -> object:
         if self._loaded_model is None:
             factory = self._model_factory
             if factory is None:
+                try:
+                    import torch
+                except ImportError as error:
+                    raise BackendError("CUDA_UNAVAILABLE") from error
+                if not torch.cuda.is_available():
+                    raise BackendError("CUDA_UNAVAILABLE")
                 from ultralytics import YOLO
 
                 factory = YOLO
@@ -123,7 +134,7 @@ class YoloBackend:
 
         model = self._model()
         try:
-            results = model(image_rgb, verbose=False)  # type: ignore[operator]
+            results = model(image_rgb, verbose=False, device=0)  # type: ignore[operator]
         except BackendError:
             raise
         except Exception as error:

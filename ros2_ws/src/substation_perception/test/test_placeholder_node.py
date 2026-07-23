@@ -13,6 +13,7 @@ from substation_perception.placeholder_node import (
     LatestFrameBuffer,
     RuntimeCounters,
     make_diagnostic_status,
+    make_startup_error_status,
 )
 from substation_perception.yolo_backend import BackendError, RawDetection
 
@@ -153,7 +154,7 @@ def test_diagnostic_reports_identity_mode_counters_and_last_error(tmp_path: Path
         frames_failed=1,
     )
 
-    status = make_diagnostic_status(identity, counters, "INFERENCE_FAILED")
+    status = make_diagnostic_status(identity, counters, "INFERENCE_FAILED", "cuda:0")
     values = {item.key: item.value for item in status.values}
 
     assert status.level == DiagnosticStatus.ERROR
@@ -170,7 +171,29 @@ def test_diagnostic_reports_identity_mode_counters_and_last_error(tmp_path: Path
         "frames_replaced": "2",
         "frames_failed": "1",
         "last_error_code": "INFERENCE_FAILED",
+        "inference_device": "cuda:0",
     }
+
+
+def test_startup_identity_failure_has_a_diagnostic_status() -> None:
+    status = make_startup_error_status("MODEL_SHA256_MISMATCH")
+    values = {item.key: item.value for item in status.values}
+
+    assert status.level == DiagnosticStatus.ERROR
+    assert status.message == "MODEL_SHA256_MISMATCH"
+    assert values["runtime_mode"] == "development_placeholder"
+    assert values["production_ready"] == "false"
+    assert values["logical_model"] == "yolo11n_base"
+    assert values["last_error_code"] == "MODEL_SHA256_MISMATCH"
+    assert values["inference_device"] == ""
+
+
+def test_node_creates_diagnostic_publisher_before_identity_validation() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+
+    assert source.index("self._diagnostic_publisher =") < source.index(
+        "verify_development_placeholder("
+    )
 
 
 def test_module_has_no_production_or_truth_topics() -> None:

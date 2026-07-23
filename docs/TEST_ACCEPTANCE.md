@@ -437,13 +437,37 @@ print(f"phase0-lexical: PASS ({len(files)} files)")
 PY
 
 scan_pattern='T''BD|T''ODO|F''IXME|PLACE''HOLDER|待''定|待''补|以后再''定'
-if rg -n -i "$scan_pattern" AGENTS.md README.md \
-  基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md \
-  docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/INTERFACES.md docs/TEST_ACCEPTANCE.md \
-  docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md docs/PROJECT_STATUS.md docs/HANDOFF.md docs/adr \
-  | rg -v 'development_placeholder|placeholder/coco|placeholder_detector|placeholder-smoke|placeholder_smoke|04-perception-placeholder'; then
-  exit 1
-fi
+python3 - "$scan_pattern" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+pattern = re.compile(sys.argv[1], re.IGNORECASE)
+allowed = (
+    "development_placeholder",
+    "placeholder/coco",
+    "placeholder_detector",
+    "placeholder-smoke",
+    "placeholder_smoke",
+    "04-perception-placeholder",
+)
+files = [
+    Path("AGENTS.md"), Path("README.md"),
+    Path("基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md"),
+    Path("docs/ARCHITECTURE.md"), Path("docs/DEPLOYMENT.md"), Path("docs/INTERFACES.md"),
+    Path("docs/TEST_ACCEPTANCE.md"), Path("docs/VERSION_MATRIX.md"), Path("docs/DATA_AND_MODELS.md"),
+    Path("docs/PROJECT_STATUS.md"), Path("docs/HANDOFF.md"),
+    *sorted(Path("docs/adr").glob("*.md")),
+]
+for path in files:
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        masked = line
+        for literal in allowed:
+            masked = masked.replace(literal, "")
+        if pattern.search(masked):
+            print(f"{path}:{number}:{line}")
+            raise SystemExit(1)
+PY
 
 git diff --check
 printf '%s\n' 'phase0-gate: PASS'

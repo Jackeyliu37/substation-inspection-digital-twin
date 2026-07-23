@@ -110,6 +110,7 @@ class PlaceholderPipelineProbe(Node):
                 and values.get("logical_model") == "yolo11n_base"
                 and values.get("model_sha256") == MODEL_SHA256
                 and values.get("model_size_bytes") == "5613764"
+                and values.get("inference_device") == "cuda:0"
                 and int(values.get("frames_processed", "0")) >= 1
                 and values.get("last_error_code") == ""
             )

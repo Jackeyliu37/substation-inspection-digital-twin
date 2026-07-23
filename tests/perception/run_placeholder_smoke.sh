@@ -60,15 +60,17 @@ perception_pid=""
 stop_group() {
   local pid="$1"
   test -n "$pid" || return 0
-  if kill -0 "$pid" 2>/dev/null; then
+  if kill -0 -- "-$pid" 2>/dev/null; then
     kill -TERM -- "-$pid" 2>/dev/null || true
     for _ in $(seq 1 20); do
-      kill -0 "$pid" 2>/dev/null || break
+      kill -0 -- "-$pid" 2>/dev/null || break
       sleep 0.25
     done
-    if kill -0 "$pid" 2>/dev/null; then
+    if kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
     wait "$pid" 2>/dev/null || true
   fi
 }
@@ -107,7 +109,7 @@ done
 
 cleanup
 trap - EXIT INT TERM
-if kill -0 "$world_pid" 2>/dev/null || kill -0 "$perception_pid" 2>/dev/null; then
+if kill -0 -- "-$world_pid" 2>/dev/null || kill -0 -- "-$perception_pid" 2>/dev/null; then
   printf '%s\n' 'owned launch process remained after cleanup' >&2
   exit 1
 fi

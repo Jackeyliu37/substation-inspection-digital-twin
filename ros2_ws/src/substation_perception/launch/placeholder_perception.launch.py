@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable, UnsetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
@@ -11,7 +14,8 @@ MODEL_PATH = (
 )
 MODEL_SHA256 = "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
 MODEL_SIZE_BYTES = 5613764
-AI_PYTHON = ".venv/bin/python"
+PACKAGE_SHARE = Path(get_package_share_directory("substation_perception"))
+AI_PYTHON = str(PACKAGE_SHARE.parents[3] / ".venv/bin/python")
 
 
 def generate_launch_description() -> LaunchDescription:

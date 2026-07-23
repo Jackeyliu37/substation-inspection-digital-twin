@@ -19,6 +19,7 @@ def test_probe_observes_only_development_pipeline_topics() -> None:
         '"/perception/development/annotated_image"',
         '"/diagnostics"',
         '"backend_ready"',
+        '"inference_device"',
     ):
         assert required in source
     for forbidden in (
@@ -45,6 +46,10 @@ def test_smoke_is_bounded_headless_and_seals_external_evidence() -> None:
         "nvidia-smi",
         "sha256sum",
         "trap cleanup EXIT INT TERM",
+        'kill -0 -- "-$pid"',
+        'kill -TERM -- "-$pid"',
+        'kill -0 -- "-$world_pid"',
+        'kill -0 -- "-$perception_pid"',
         'mv -- "$evidence_dir" "$final_dir"',
         "/04-perception-placeholder.staging",
     ):

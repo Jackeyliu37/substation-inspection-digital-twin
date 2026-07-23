@@ -15,7 +15,11 @@ from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray
 
 from .detection_contract import to_development_detections
-from .model_identity import VerifiedModel, verify_development_placeholder
+from .model_identity import (
+    ModelIdentityError,
+    VerifiedModel,
+    verify_development_placeholder,
+)
 from .yolo_backend import RawDetection, YoloBackend
 
 
@@ -159,6 +163,7 @@ def make_diagnostic_status(
     identity: VerifiedModel,
     counters: RuntimeCounters,
     last_error_code: str,
+    inference_device: str,
 ) -> DiagnosticStatus:
     status = DiagnosticStatus()
     status.level = DiagnosticStatus.ERROR if last_error_code else DiagnosticStatus.OK
@@ -176,9 +181,19 @@ def make_diagnostic_status(
         "frames_replaced": str(counters.frames_replaced),
         "frames_failed": str(counters.frames_failed),
         "last_error_code": last_error_code,
+        "inference_device": inference_device,
     }
     status.values = [KeyValue(key=key, value=value) for key, value in values.items()]
     return status
+
+
+def make_startup_error_status(error_code: str) -> DiagnosticStatus:
+    return make_diagnostic_status(
+        VerifiedModel(MODEL_PATH, MODEL_SHA256, MODEL_SIZE_BYTES),
+        RuntimeCounters(),
+        error_code,
+        "",
+    )
 
 
 def _qos(depth: int, reliable: bool) -> QoSProfile:
@@ -208,24 +223,16 @@ class PlaceholderPerceptionNode(Node):
         confidence_threshold = float(
             self.declare_parameter("confidence_threshold", 0.25).value
         )
-        self.identity = verify_development_placeholder(
-            path=model_path,
-            expected_path=MODEL_PATH,
-            expected_sha256=MODEL_SHA256,
-            expected_size_bytes=MODEL_SIZE_BYTES,
-            runtime_mode=runtime_mode,
-            logical_model=logical_model,
-            production_ready=production_ready,
-        )
 
         self._buffer = LatestFrameBuffer()
         self._stop = Event()
         self._counter_lock = Lock()
         self._counters = RuntimeCounters()
         self._last_error_code = ""
-        self._processor = FrameProcessor(
-            YoloBackend(self.identity), CvBridge(), confidence_threshold
-        )
+        self.identity: VerifiedModel | None = None
+        self._backend: YoloBackend | None = None
+        self._processor: FrameProcessor | None = None
+        self._worker: Thread | None = None
 
         image_qos = _qos(depth=2, reliable=False)
         stream_qos = _qos(depth=10, reliable=True)
@@ -245,10 +252,31 @@ class PlaceholderPerceptionNode(Node):
         )
         self.create_subscription(Image, "/camera/image_raw", self._on_image, image_qos)
         self.create_timer(1.0, self._publish_diagnostic)
+        try:
+            self.identity = verify_development_placeholder(
+                path=model_path,
+                expected_path=MODEL_PATH,
+                expected_sha256=MODEL_SHA256,
+                expected_size_bytes=MODEL_SIZE_BYTES,
+                runtime_mode=runtime_mode,
+                logical_model=logical_model,
+                production_ready=production_ready,
+            )
+            self._backend = YoloBackend(self.identity)
+            self._processor = FrameProcessor(
+                self._backend, CvBridge(), confidence_threshold
+            )
+        except (ModelIdentityError, ValueError) as error:
+            self._last_error_code = str(error)
+            self.get_logger().error(self._last_error_code)
+            self._publish_diagnostic()
+            return
         self._worker = Thread(target=self._run_worker, name="placeholder-inference")
         self._worker.start()
 
     def _on_image(self, message: Image) -> None:
+        if self._processor is None:
+            return
         replaced = self._buffer.offer(message)
         with self._counter_lock:
             self._counters.frames_received += 1
@@ -259,6 +287,8 @@ class PlaceholderPerceptionNode(Node):
         while not self._stop.is_set():
             message = self._buffer.wait_and_take(self._stop)
             if message is None:
+                continue
+            if self._processor is None:
                 continue
             outcome = self._processor.process(message)
             with self._counter_lock:
@@ -280,15 +310,24 @@ class PlaceholderPerceptionNode(Node):
             last_error_code = self._last_error_code
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()
-        array.status = [
-            make_diagnostic_status(self.identity, counters, last_error_code)
-        ]
+        if self.identity is None:
+            array.status = [make_startup_error_status(last_error_code)]
+        else:
+            array.status = [
+                make_diagnostic_status(
+                    self.identity,
+                    counters,
+                    last_error_code,
+                    self._backend.inference_device if self._backend is not None else "",
+                )
+            ]
         self._diagnostic_publisher.publish(array)
 
     def destroy_node(self) -> None:
         self._stop.set()
         self._buffer.wake()
-        self._worker.join(timeout=5.0)
+        if self._worker is not None:
+            self._worker.join(timeout=5.0)
         super().destroy_node()
 
 

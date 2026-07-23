@@ -11,6 +11,19 @@ if grep -Fq 'rg: error' <<<"$output"; then
   exit 1
 fi
 
+handoff_backup="$(mktemp)"
+cp docs/HANDOFF.md "$handoff_backup"
+restore_handoff() {
+  mv -- "$handoff_backup" docs/HANDOFF.md
+}
+trap restore_handoff EXIT
+printf '%s\n' '`placeholder_smoke` TODO must fail the documentation gate.' >> docs/HANDOFF.md
+if bash scripts/verify_documentation_gate.sh >/dev/null 2>&1; then
+  exit 1
+fi
+restore_handoff
+trap - EXIT
+
 grep -Fq '公开训练数据下载和模型微调由用户在本仓库外完成' docs/DATA_AND_MODELS.md
 grep -Fq '官方 `yolo11n.pt` 仅作为开发占位/base weight' docs/DATA_AND_MODELS.md
 grep -Fq '用户发布的不可变 GitHub release 或固定 commit' docs/DATA_AND_MODELS.md

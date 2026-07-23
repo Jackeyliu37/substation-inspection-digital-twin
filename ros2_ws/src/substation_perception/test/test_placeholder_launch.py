@@ -55,7 +55,8 @@ def test_launch_starts_only_placeholder_executable_with_sim_time() -> None:
     assert 'name="placeholder_detector"' in source
     assert '"use_sim_time": True' in source
     assert '"model_path": MODEL_PATH' in source
-    assert 'AI_PYTHON = ".venv/bin/python"' in source
+    assert "get_package_share_directory" in source
+    assert 'AI_PYTHON = str(PACKAGE_SHARE.parents[3] / ".venv/bin/python")' in source
     assert "prefix=[AI_PYTHON]" in source
 
 
