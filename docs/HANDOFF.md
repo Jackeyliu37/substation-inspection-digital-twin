@@ -18,7 +18,7 @@
 - Evidence store is the single writer for run time mappings and evidence object identity; standard ROS messages need explicit immutable source metadata for run attribution.
 - Mission ordering uses `configs/mission_ordering.yaml` defaults, active-task hold, normal cooldown and emergency bypass exactly as specified in `docs/INTERFACES.md`.
 - Phase 1 keeps the current authorized operator checkout valid for development; the `substation` account is a later service runtime account.
-- NVIDIA `595.71.05` may be retained if Phase 1 audit proves it compliant. The plan does not run `ubuntu-drivers install`; driver noncompliance stops at `DRIVER_TRANSACTION_REQUIRED`.
+- NVIDIA `595.71.05` may be retained if Phase 1 audit proves it compliant. The plan does not invoke automatic driver installation; driver noncompliance stops at `DRIVER_TRANSACTION_REQUIRED`.
 - Ubuntu official NVIDIA inert X dependencies are allowed only as package dependencies with no active graphics stack, session, display manager, virtual display or remote desktop service.
 - Phase 1 capacity means per-operation residual free space of at least `20 GiB`; full dataset capacity is a later expected-size gate.
 
