@@ -1,0 +1,15 @@
+.phase1-run.env
+.venv/
+.venv-web/
+.venv.quarantine-*/
+.venv-web.quarantine-*/
+build/
+install/
+log/
+web/frontend/node_modules/
+web/frontend/.next/
+web/frontend/npm-debug.log*
+artifacts/environment/*.log
+artifacts/environment/*.json
+artifacts/environment/*.tmp
+*.rosbag2
