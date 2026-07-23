@@ -51,6 +51,8 @@ The fast-track path for the current resource-preparation push is:
 
 The overlay deliberately omits heavyweight fake-host security matrices and exhaustive apt-origin simulation for this personal project. It does not relax these hard boundaries: no desktop or remote/virtual display stack, no ROS 1 or non-Jazzy ROS, no Gazebo Classic, no unverified resource payload, no dataset download, no third-party production model search/download, no service start, no dependency installation outside the active checkpoint, and no claim of Phase 1 completion until the final environment verifier is implemented and passes.
 
+For the host-install checkpoint, this overlay is authoritative over the historical Task 3 hardening reference below. The tracked `tests/environment/test_install_host.sh` is a static plan/allowlist/source/rollback contract test and finishes with `install-host-static-test: PASS`; `tests/environment/fixtures/fake_host_command.py` is not created. The live installer still performs the real preflight, uses temporary `policy-rc.d` service suppression, records before/after package evidence, installs only the exact manifest through official ROS/OSRF sources, never changes the NVIDIA driver, leaves Nginx stopped, and requires explicit run-id confirmation for rollback.
+
 ---
 
 ## Exact Phase 1 File Map
@@ -67,8 +69,8 @@ The overlay deliberately omits heavyweight fake-host security matrices and exhau
 | `scripts/verify_documentation_gate.sh` | Re-run the Phase 0 document gate without changing the host. |
 | `scripts/init_phase1_run.sh` | Create one acceptance run directory after the document gate passes and write ignored `.phase1-run.env`. |
 | `scripts/audit_host.sh` | Read-only OS, architecture, GPU, driver, memory, disk, forbidden-package, and session audit. |
-| `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, validate every requested and changed package candidate/origin, preserve write-once before/after evidence, install the approved non-driver package set, refuse NVIDIA driver changes with `DRIVER_TRANSACTION_REQUIRED`, and leave services stopped. |
-| `scripts/rollback_host.sh` | Validate recorded backups/current state, simulate the exact package rollback transaction, then restore only recorded packages, apt sources, service state, and task-created files after explicit run-id confirmation. |
+| `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, capture requested candidates plus before/after package evidence, install the approved non-driver package set, never change the NVIDIA driver, and leave Nginx stopped. |
+| `scripts/rollback_host.sh` | Print the exact newly installed package and task-created source/key set, then remove only that recorded set after explicit run-id confirmation and current-file hash validation. |
 | `scripts/download_phase1_resources.sh` | Download and verify Node.js 24.18.0 and YOLO11n v8.4.0 into controlled server storage. |
 | `scripts/verify_phase1_resources.sh` | Read-only checksum/metadata verification of the already locked Node and YOLO resources; it has no network or repair path. |
 | `scripts/setup_ros_workspace.sh` | Source Jazzy and run the canonical colcon build/test/test-result baseline. |
@@ -93,8 +95,7 @@ The overlay deliberately omits heavyweight fake-host security matrices and exhau
 | `web/frontend/app/globals.css` | Minimal local styling; no remote asset or font fetch. |
 | `tests/environment/test_documentation_gate.sh` | Documentation gate contract test. |
 | `tests/environment/test_audit_host.sh` | Read-only audit output and no-mutation contract test. |
-| `tests/environment/test_install_host.sh` | Installer plan, package allowlist, forbidden stack, and idempotency contract test. |
-| `tests/environment/fixtures/fake_host_command.py` | PATH-injected fake apt, dpkg, systemctl, NVIDIA, sudo, and network command implementation used only against a guarded temporary filesystem root. |
+| `tests/environment/test_install_host.sh` | Fast-track installer plan, package allowlist, official source, service-suppression evidence, and rollback-boundary static contract test. |
 | `tests/environment/test_phase1_resources.sh` | Resource source identity, checksum capture, and Git-exclusion contract test. |
 | `tests/environment/test_ros_workspace.sh` | Jazzy sourcing and canonical empty-workspace colcon contract test. |
 | `tests/environment/test_ai_environment.sh` | AI lock, version, CUDA, and system-site-packages contract test. |
@@ -1146,17 +1147,18 @@ Expected: the host audit evidence remains bound to `task2_commit`; the status co
 **Files:**
 - Create: `scripts/install_host.sh`
 - Create: `scripts/rollback_host.sh`
-- Create: `tests/environment/fixtures/fake_host_command.py`
 - Create: `tests/environment/test_install_host.sh`
 - Modify: `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md` after Task 3 verification, as required for every Phase 1 task
 
 **Interfaces:**
 - Consumes: the exact Task 2 `config/environment/apt-packages.txt`, a passing preflight host audit, Ubuntu Noble official repositories with `universe` already enabled, `packages.ros.org`, `packages.osrfoundation.org`, and an already compliant Ubuntu official NVIDIA driver.
-- Produces: installed approved non-driver Debian packages, exact allowlisted-origin evidence for every requested and changed package, write-once backups for every active `sources.list`, `*.list`, and deb822 `*.sources` file and every file it mutates, temporary `policy-rc.d` service suppression with exact restoration, stopped/disabled Nginx, initialized rosdep, and `scripts/rollback_host.sh` whose apply path always passes strict inert-data state parsing and the recorded simulation before mutation. If the NVIDIA driver is absent, below `560.35.05`, non-Ubuntu, or fails headless probes, the script exits before package mutation with `install-host: DRIVER_TRANSACTION_REQUIRED`; a separate reviewed driver transaction is required and this Phase 1 task does not perform it. A guarded temporary-root seam plus PATH-injected fake commands exercises the same state machine before any real `sudo` mutation.
+- Produces under the solo fast-track overlay: installed approved non-driver Debian packages; requested candidate, before/after dpkg, new-package, managed source/key hash, run-id, and completion evidence; temporary `policy-rc.d` service suppression with restoration; stopped/disabled Nginx; initialized rosdep; and a rollback entry point that lists and removes only the recorded new packages and task-created source/key files after explicit run-id confirmation. A failed NVIDIA preflight stops before mutation; this task never changes the driver.
 
 - [ ] **Step 1: Write the failing installer contract test**
 
-Create `tests/environment/test_install_host.sh` with this exact content:
+**Solo fast-track override (authoritative):** use the tracked `tests/environment/test_install_host.sh`; it verifies the sorted exact package manifest, Jazzy-only ROS package names, forbidden-stack absence, official ROS/OSRF source identities, preflight invocation, service suppression, evidence filenames, Nginx stop, driver non-mutation, and explicit rollback boundary. Its final line is `install-host-static-test: PASS`. The longer fixture below is retained only as a superseded hardening reference.
+
+Superseded pre-fast-track hardening reference:
 
 ```bash
 #!/usr/bin/env bash
@@ -2737,22 +2739,22 @@ The rollback `--plan` and `--apply` paths first parse `install-state.env` as ine
 - [ ] **Step 5: Run behavioral tests before the host mutation**
 
 ```bash
-chmod +x scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
+chmod +x scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh
 bash tests/environment/test_install_host.sh
 LC_ALL=C sort -c config/environment/apt-packages.txt
 ```
 
-Expected: `install-host-test: PASS`; the fake-host scenarios prove fresh success, all-requested-package candidate/origin coverage, unrelated Noble external-source recording without project package leakage, changed-package origin rejection, candidate failure before target install, explicit driver-transaction refusal without driver mutation, completed read-only rerun, partial-state refusal, backup tamper refusal, tampered `install-state.env` rejection before any fake mutation or shell evaluation, temporary service suppression restoration, and simulation-gated package/source rollback. No `sudo` command touches the real host during this test.
+Expected under the solo fast-track overlay: `install-host-static-test: PASS`; no `sudo` command touches the real host during this static test. The real preflight and evidence capture occur only when the committed installer is invoked with `--apply`.
 
 - [ ] **Step 6: Commit the installer before the first live host mutation, then apply it**
 
 ```bash
-git add scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
+git add config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh
 git diff --cached --check
 git commit -m "feat: install locked ros and gazebo baseline"
 install_commit="$(git rev-parse HEAD)"
 test -z "$(git status --porcelain=v1 --untracked-files=all -- \
-  scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py)"
+  config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh)"
 ```
 
 Expected: the exact script and test implementation is committed before any real apt source, package, service or storage mutation. All subsequent evidence for this task records `install_commit` plus the SHA-256 of `scripts/install_host.sh` and `config/environment/apt-packages.txt`.
@@ -2920,15 +2922,15 @@ Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$
 - [ ] **Step 8: Commit Task 3**
 
 ```bash
-if ! git log -1 --format=%s -- scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py \
+if ! git log -1 --format=%s -- config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh \
   | grep -Fxq 'feat: install locked ros and gazebo baseline'; then
-  git add scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
+  git add config/environment/apt-packages.txt scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh
   git diff --cached --check
   git commit -m "feat: install locked ros and gazebo baseline"
 fi
 ```
 
-Expected: the installer, rollback entry point, fake-host fixture, and behavioral test exist in one focused implementation commit. A successful live run has one later documentation-only `docs/PROJECT_STATUS.md`/`docs/HANDOFF.md` synchronization commit. A `DRIVER_TRANSACTION_REQUIRED` run has the same documentation update but records Phase 1 as blocked and does not proceed to Task 4.
+Expected under the solo fast-track overlay: the exact package manifest, installer, rollback entry point, and static contract test exist in one focused implementation commit. A successful live run has one later documentation-only `docs/PROJECT_STATUS.md`/`docs/HANDOFF.md` synchronization commit. A failed preflight has the same documentation update but records Phase 1 as blocked and does not proceed.
 
 ---
 
@@ -6583,7 +6585,7 @@ trap - EXIT
 cleanup_plan_review
 ```
 
-Expected final lines include `audit-host-test: PASS`, `install-host-test: PASS`, `phase1-resource-static-test: PASS`, `verify-environment-test: PASS`, and `phase1-plan-controller-behavior: PASS`. Negative cases intentionally print rejection messages or Python assertion tracebacks before their enclosing test reaches its PASS line.
+Expected final lines under the solo fast-track overlay include `audit-host-light-test: PASS`, `install-host-static-test: PASS`, `phase1-resource-static-test: PASS`, `verify-environment-test: PASS`, and `phase1-plan-controller-behavior: PASS`. Negative cases intentionally print rejection messages or Python assertion tracebacks before their enclosing test reaches its PASS line.
 
 Only after these behavior probes and all syntax/static checks pass may the final independent review begin. Record the reviewed plan SHA-256 and the final Critical/Important/Minor counts. In `.superpowers/sdd/task-5-report.md`, explicitly mark any earlier narrower “0 findings” conclusion as superseded by the later controller-level review and its remediation; never present the earlier conclusion as the final review result.
 

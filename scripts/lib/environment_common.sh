@@ -14,13 +14,14 @@ environment_require_command() {
 
 environment_require_evidence_dir() {
   local evidence_dir="$1"
-  case "$evidence_dir" in
-    /var/lib/substation/evidence/acceptance/*/01-environment.staging) ;;
-    *)
-      printf 'invalid-evidence-dir: %s\n' "$evidence_dir" >&2
-      return 1
-      ;;
-  esac
+  local evidence_run_id
+  if [[ "$evidence_dir" =~ ^/var/lib/substation/evidence/acceptance/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/01-environment\.staging$ ]]; then
+    evidence_run_id="${BASH_REMATCH[1]}"
+  else
+    printf 'invalid-evidence-dir: %s\n' "$evidence_dir" >&2
+    return 1
+  fi
+  test -n "$evidence_run_id"
   test -d "$evidence_dir" || {
     printf 'missing-evidence-dir: %s\n' "$evidence_dir" >&2
     return 1
