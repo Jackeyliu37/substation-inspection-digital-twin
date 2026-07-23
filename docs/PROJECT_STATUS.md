@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 2 Gazebo 变电站世界已完成；下一阶段为 Phase 3 SLAM/Nav2 设计与实现。
+- 当前阶段：Phase 2 Gazebo 变电站世界已完成；按用户训练时序，先执行 Phase 4 准备检查点，生成 2,000 张单类别 Gazebo 仪表定位数据，随后回到 Phase 3 SLAM/Nav2。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - Phase 1 验证完成时间：`2026-07-23T11:05:21Z`。
@@ -41,4 +41,4 @@
 
 ## 下一步
 
-编写并批准 Phase 3 SLAM/Nav2 设计和计划，使用已锁定的 Phase 2 世界，然后 test-first 实现地图生成、定位、巡检位姿和动态障碍导航。当前不得声明 Phase 3 行为已存在。
+已批准 `docs/superpowers/specs/2026-07-23-gazebo-meter-dataset-design.md` 的单类别仪表数据方案；下一动作是编写实施计划并生成 AutoDL 可训练 ZIP。该准备检查点完成后回到 Phase 3 SLAM/Nav2；当前不得声明 Phase 3 或 Phase 4 运行时行为已存在。

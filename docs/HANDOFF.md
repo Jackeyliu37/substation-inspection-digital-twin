@@ -4,7 +4,7 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 2 Gazebo world 已完成；Phase 3 SLAM/Nav2 设计是下一项工作。
+- 当前阶段：Phase 2 Gazebo world 已完成；按用户训练时序，Phase 4 的 2,000 张单类别 Gazebo 仪表定位数据准备检查点先于 Phase 3 执行。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
 - 状态同步提交：使用 `git log -1 --format=%H -- docs/PROJECT_STATUS.md docs/HANDOFF.md` 查询；它只修改文档，并晚于环境实现提交。
@@ -40,4 +40,4 @@
 - 浏览器只通过 Nginx 和 FastAPI REST/WebSocket，不直连 ROS DDS。
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
-- 下一实现动作：编写并批准 Phase 3 SLAM/Nav2 设计和计划，使用已锁定的 Phase 2 世界，然后 test-first 实现地图生成、定位、巡检位姿和动态障碍导航；Phase 3 尚未开始。
+- 下一实现动作：按 `docs/superpowers/specs/2026-07-23-gazebo-meter-dataset-design.md` 编写实施计划并生成 AutoDL 可训练 ZIP；完成该准备检查点后回到 Phase 3 SLAM/Nav2。Phase 3 和 Phase 4 运行时均尚未开始。
