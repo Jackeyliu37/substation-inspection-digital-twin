@@ -21,10 +21,17 @@
 ```bash
 acceptance_run_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 acceptance_root="/var/lib/substation/evidence/acceptance/${acceptance_run_id}"
+test ! -e "$acceptance_root"
 install -d -m 0750 "$acceptance_root"
 printf '%s\n' "$acceptance_run_id" > "$acceptance_root/acceptance_run_id.txt"
 git rev-parse HEAD > "$acceptance_root/git_commit.txt"
+test "$(<"$acceptance_root/acceptance_run_id.txt")" = "$acceptance_run_id"
+git_commit="$(<"$acceptance_root/git_commit.txt")"
+[[ "$git_commit" =~ ^[0-9a-f]{40}$ ]]
+test "$git_commit" = "$(git rev-parse HEAD)"
 ```
+
+这两个文件是整个验收的唯一根身份，不是每层重新生成的值。创建它们前必须处在干净、已验证的实现 commit；实现、脚本、配置和 lock 的修改不得在同一 acceptance run 中继续变化。每一个层目录的 `result.json` 和每条命令记录必须逐字写入 root 的 `acceptance_run_id` 与 `git_commit`，最终聚合器必须拒绝层目录缺少、不同或自造身份。Phase 1 的唯一运行根就是一次创建的 `acceptance_run_id.txt` 与 `git_commit.txt`；状态/交接的后续文档 commit 不得替换其中的 implementation commit。
 
 每条测试命令必须把 stdout/stderr、开始/结束 UTC、退出码和参数写入对应层目录。层目录固定为：
 
@@ -231,8 +238,8 @@ authority_checks = {
         "**1 " + "second**",
         "**5 " + "seconds**",
         "风险达到 " + "60 分",
-        "不少于 " + "80 GiB",
-        "16 " + "GiB 内存",
+        "物理内存不少于 " + "15 GiB",
+        "至少 " + "20 GiB 剩余空间",
         "样本数少于 " + "100",
         "测试不足 " + "300 秒",
         "900 " + "seconds",
@@ -302,8 +309,10 @@ PY
 ### 4.2 未填标记、边界与一致性扫描
 
 ```bash
-scan_pattern='T''BD|T''ODO|F''IXME|X''XX|PLACE''HOLDER|待''定|待''补|以后再''定'
-! rg -n -i "$scan_pattern" docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md docs/TEST_ACCEPTANCE.md
+scan_pattern='T''BD|T''ODO|F''IXME|PLACE''HOLDER|待''定|待''补|以后再''定'
+if rg -n -i "$scan_pattern" docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md docs/TEST_ACCEPTANCE.md; then
+  exit 1
+fi
 rg -n '/camera/image_raw|/perception/detections|/digital_twin/assets|/risk/assets|/mission/inspection_tasks|/navigate_to_pose|/api/v1|/ws/telemetry|/ws/events|/ws/camera|substation.v1' \
   docs/INTERFACES.md docs/TEST_ACCEPTANCE.md
 rg -n 'FastAPI.*Gateway|浏览器不得直连 DDS|Foxglove Web.*只读|不能发布 Topic|不能.*Service|不能.*Action' \
@@ -315,7 +324,129 @@ git diff --check
 
 ### 4.3 Phase 0 完成判据
 
-只有以下条件全部满足，最终文档门槛任务才可宣布 Phase 0 通过：AGENTS、README、项目计划、架构、部署、接口、版本、数据/模型、测试、三个 ADR、Phase 1 计划、PROJECT_STATUS 和 HANDOFF 全部存在；链接/路径/命令经复核；无规范冲突；检查输出被记录。Task 4 自身只负责前三份专项规范，不提前创建或更新由最终门槛任务集中维护的状态与交接文档。
+只有以下条件全部满足，最终文档门槛任务才可宣布 Phase 0 通过：AGENTS、README、项目计划、架构、部署、接口、版本、数据/模型、测试、四份 ADR、Phase 1 计划、PROJECT_STATUS 和 HANDOFF 全部存在；链接/路径/命令经复核；无规范冲突；检查输出被记录。Task 4 自身只负责前三份专项规范，不提前创建或更新由最终门槛任务集中维护的状态与交接文档。
+
+### 4.4 完整可重复 Phase 0 gate
+
+以下是文档修复、独立审查和阶段状态更新前必须逐字执行的唯一完整 gate；它只读仓库和 Git 元数据，不安装、下载、启动服务或修改主机。所有输出必须原样归档到 `.superpowers/sdd/final-phase0-fix-report.md` 或当次分段报告。命令中的 Phase 1 文件只作为文档/代码块静态输入，不执行其中的未来命令。
+
+```bash
+set -euo pipefail
+
+required=(
+  AGENTS.md README.md
+  基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md
+  docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/INTERFACES.md
+  docs/TEST_ACCEPTANCE.md docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md
+  docs/PROJECT_STATUS.md docs/HANDOFF.md docs/plans/PHASE-01-ENVIRONMENT.md
+  docs/adr/0001-headless-gazebo.md docs/adr/0002-server-web-deployment.md
+  docs/adr/0003-multimodel-perception.md docs/adr/0004-nvidia-headless-packaging.md
+)
+for file in "${required[@]}"; do test -s "$file"; done
+
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+files = [
+    Path("AGENTS.md"), Path("README.md"),
+    Path("基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md"),
+    Path("docs/ARCHITECTURE.md"), Path("docs/DEPLOYMENT.md"), Path("docs/INTERFACES.md"),
+    Path("docs/TEST_ACCEPTANCE.md"), Path("docs/VERSION_MATRIX.md"), Path("docs/DATA_AND_MODELS.md"),
+    Path("docs/PROJECT_STATUS.md"), Path("docs/HANDOFF.md"),
+    Path("docs/plans/PHASE-01-ENVIRONMENT.md"),
+    Path("docs/adr/0001-headless-gazebo.md"), Path("docs/adr/0002-server-web-deployment.md"),
+    Path("docs/adr/0003-multimodel-perception.md"), Path("docs/adr/0004-nvidia-headless-packaging.md"),
+]
+
+def markdown_table_width(line):
+    in_code = False
+    escaped = False
+    separators = 0
+    for char in line:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "`":
+            in_code = not in_code
+            continue
+        if char == "|" and not in_code:
+            separators += 1
+    return separators - 1
+
+for path in files:
+    text = path.read_text(encoding="utf-8")
+    assert len(re.findall(r"^```", text, re.M)) % 2 == 0, f"unbalanced fences: {path}"
+    assert not re.search(r"[ \t]+$", text, re.M), f"trailing whitespace: {path}"
+    for block in re.findall(r"```json\n(.*?)\n```", text, re.S):
+        json.loads(block)
+    for raw in re.findall(r"(?<!!)\[[^\]]*\]\(([^)]+)\)", text):
+        target = raw.strip().split(maxsplit=1)[0].strip("<>")
+        if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+            continue
+        assert (path.parent / target.split("#", 1)[0]).resolve().exists(), (path, target)
+    table_width = None
+    for line_number, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            width = markdown_table_width(stripped)
+            divider = set(stripped.replace("|", "").replace("-", "").replace(":", "").strip()) == set()
+            if divider:
+                assert table_width is not None, (path, line_number)
+            elif table_width is None:
+                table_width = width
+            else:
+                assert width == table_width, (path, line_number, width, table_width)
+        else:
+            table_width = None
+
+interfaces = Path("docs/INTERFACES.md").read_text(encoding="utf-8")
+for literal in (
+    "/mission/set_robot_mode", "/map_updates", "/reporting/store_evidence",
+    "/mission/prioritize_asset", "/mission/edit_inspection_task", "/mission/replan",
+    "/risk/acknowledge_alert", "/mission/request_reinspection",
+    "/maintenance/reconnect_noncritical_service", "/reporting/generate_diagnostic_bundle",
+    "uint64` 编码", "TIME_MAPPING_UNAVAILABLE", "minimum_active_hold_s: 5.0",
+    "normal_replan_cooldown_s: 10.0", "emergency_score_0_100: 80.0",
+    "项目计划功能覆盖矩阵", "SERVICE_RECONNECT_FORBIDDEN",
+):
+    assert literal in interfaces, literal
+assert '"snapshot_revision": "1842"' in interfaces
+assert '"sequence": "8124"' in interfaces
+
+data = Path("docs/DATA_AND_MODELS.md").read_text(encoding="utf-8")
+for literal in ("file_manifest_path", "status: accepted|blocked|rejected", "block_reason", "meter_reader"):
+    assert literal in data, literal
+
+versions = Path("docs/VERSION_MATRIX.md").read_text(encoding="utf-8")
+for literal in ("pytorch-cu126-wheels.tsv", "resolved_url", "2.12.1+cu126", "0.27.1+cu126"):
+    assert literal in versions, literal
+
+acceptance = Path("docs/TEST_ACCEPTANCE.md").read_text(encoding="utf-8")
+for literal in (
+    "acceptance_run_id.txt", "git_commit.txt", "GZ_PARTITION", "64*48*3",
+    "combined-risk-obstacle", "物理内存不少于 15 GiB", "至少 20 GiB 剩余空间",
+    "Ubuntu 官方 NVIDIA 驱动正常工作所必需、但未启用图形会话的 X 包依赖",
+):
+    assert literal in acceptance, literal
+print(f"phase0-lexical: PASS ({len(files)} files)")
+PY
+
+scan_pattern='T''BD|T''ODO|F''IXME|PLACE''HOLDER|待''定|待''补|以后再''定'
+if rg -n -i "$scan_pattern" AGENTS.md README.md \
+  基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md \
+  docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/INTERFACES.md docs/TEST_ACCEPTANCE.md \
+  docs/VERSION_MATRIX.md docs/DATA_AND_MODELS.md docs/PROJECT_STATUS.md docs/HANDOFF.md docs/adr; then
+  exit 1
+fi
+
+git diff --check
+printf '%s\n' 'phase0-gate: PASS'
+```
 
 ## 5. Phase 1 主机与环境验收（当前活动阶段；入口逐项激活）
 
@@ -329,15 +460,17 @@ colcon --log-base log test --base-paths ros2_ws/src --build-base build --install
 colcon test-result --test-result-base build --all --verbose
 ```
 
+这三条（含 `--log-base log`、`--base-paths ros2_ws/src`、`--build-base build`、`--install-base install`、`console_direct+`、`--return-code-on-test-failure` 和 `--test-result-base build --all --verbose`）是唯一可接受的 Phase 1 colcon 验收命令，必须从仓库根目录逐字执行并将三份日志写入同一根 identity 的 `01-environment/`；`cd ros2_ws` 后省略 flags、`--symlink-install` 或其他近似命令不能替代它们。
+
 ### 5.2 硬判据
 
 - `/etc/os-release` 为 Ubuntu 24.04；ROS 2 为 Jazzy；Gazebo 为 Harmonic `gz-sim 8.x`；`ros_gz`、Nav2、SLAM Toolbox 和 TurtleBot3 与 [VERSION_MATRIX](VERSION_MATRIX.md) 一致。
 - NVIDIA 驱动版本不低于 `560.35.05`；`nvidia-smi` 成功；`.venv` 中 `torch.cuda.is_available() == True`；PyTorch/TorchVision 使用 CUDA 12.6 wheel。
 - `colcon build`、`colcon test` 和 `colcon test-result` 均无错误和失败测试。
-- 在清除 `DISPLAY` 的会话中 OGRE2/EGL 官方/最小 headless 渲染探针成功；不得安装 Ubuntu Desktop、GNOME/KDE、Xorg、显示管理器、NoMachine、Xvfb 或 VirtualGL。包清单命中任一禁用组件即失败。
+- 在清除 `DISPLAY` 的会话中 OGRE2/EGL 官方/最小 headless 渲染探针成功。探针为本次 acceptance run 设置并在 `gz sim`、`gz topic` 和订阅器中传递唯一 `GZ_PARTITION="substation-egl-${acceptance_run_id}"`；证据须记录该完整值，不能使用默认 partition 或与并发 run 混用。RGB 64×48 `R8G8B8` 帧必须导出原始 payload，严格断言 `64*48*3 = 9216` bytes、每个 byte 范围 0～255 且 `len(set(payload)) > 1`，并保存 payload SHA-256、width、height、pixel format 和 `egl.log`。只有 Topic 出现、尺寸 header 正确或纯色/空 payload 都不算 EGL 成功。不得安装 Ubuntu Desktop、GNOME/KDE、显示管理器、NoMachine、Xvfb、VirtualGL，不得存在活动 `Xorg`/`Xwayland`/Wayland 会话、图形 target 或项目新增 X Server 配置。允许 Ubuntu 官方 NVIDIA 驱动正常工作所必需、但未启用图形会话的 X 包依赖；这些 inert 依赖必须按 ADR-0004 记录精确包版本和反向依赖。禁用组件的服务/进程/会话/配置命中即失败，包清单只能拒绝桌面、远程/虚拟显示、非 Jazzy ROS、Gazebo Classic 或无法证明为官方 NVIDIA inert 依赖的图形包。
 - `.venv`、`.venv-web`、`requirements.lock`、`requirements-web.lock`、`package-lock.json` 和 Debian 环境清单的解析版本/摘要一致；禁止全局 `sudo pip` 和额外 CUDA 工具链。
 - npm 版本唯一取自 `web/frontend/package.json` 顶层 `packageManager`，其值匹配 `^npm@[0-9]+\.[0-9]+\.[0-9]+$`；`npm --prefix web/frontend --version` 必须逐字等于去掉 `npm@` 前缀后的版本。`package-lock.json` 只锁依赖树，不得被误读为 package manager 版本来源。
-- 项目分区可用空间不少于 80 GiB。16 GiB 内存是目标单机预算；低于该预算时不得声称满足计划资源基线。
+- 物理内存不少于 15 GiB。Phase 1 小资源下载、Node 解包、ROS 空工作区构建、Python/npm 安装和证据封存都必须在执行前记录预计新增字节，并证明对应挂载点完成后仍保留至少 20 GiB 剩余空间。后续大数据集或训练资源下载前另行执行容量门槛：`预计下载字节 + 预计解包/派生字节 + 20 GiB 剩余空间`；当前 Phase 1 通过不得被表述为完整数据集容量已充足。
 
 必需产物：`environment.json`、`dpkg-packages.tsv`、两个 `pip-freeze.txt`、`node-npm-versions.txt`、`gpu.txt`、`egl.log`、`forbidden-packages.txt`、`disk-memory.txt`、colcon 日志与 `SHA256SUMS`。
 
@@ -403,6 +536,7 @@ bash tests/scenarios/run_gazebo_scenarios.sh --evidence-dir "$acceptance_root/04
 | gas-high | gas ppm 进入数字孪生和风险 | 原始/归一化测量、资产快照、风险 |
 | meter-limit | 仅 Gazebo 生成仪表输入，读数、单位和 evidence_id 正确 | 自动真值、读数、误差和证据帧 |
 | unreachable | 合法不可达目标触发重试、替代观察点或跳过并记录原因 | Nav2 结果、任务 revision、报告原因 |
+| combined-risk-obstacle | 同一 ACTIVE run 中对同一资产触发至少 60 分的多模态风险，同时在当前普通路径前生成动态障碍；任务在 2 seconds 内持久化安全的重规划/替代 Nav2 goal，局部避障不得把目标移入资产或危险区，且 emergency 阈值时必须按接口 hold/cooldown bypass | 场景参数与 truth、风险/queue/state revision 时间线、Nav2 goal/路径/costmap、动态障碍状态、TF、rosbag2、证据和报告 |
 
 场景命令必须经产品 Gateway 的 `POST /api/v1/simulation/scenario`，并由 `/simulation/scenario_state` 中 matching `command_id` 确认；测试工具不得直接写感知 Topic 绕过产品链。
 
@@ -422,6 +556,7 @@ bash tests/scenarios/run_navigation_risk_acceptance.sh \
 - 一个 run 只有同时满足以下全部条件才记为成功：从该 `run_id` 首次 ACTIVE 到完成证据的单调时钟总时长不超过固定 **900 seconds**；`RunContext` 最终为 ENDED，`InspectionTaskArray.mission_state=SUCCEEDED`；`default-route` 配置的全部巡检任务均出现且 terminal state 全为 SUCCEEDED，`completed_tasks == total_tasks`，没有 SKIPPED/FAILED/CANCELLED；机器人除与地面/轮组正常接触外没有任何 Gazebo 碰撞事件，没有进入资产碰撞体或危险区，没有 `GOAL_IN_ASSET_COLLISION`、`GOAL_IN_HAZARD_ZONE`、`VELOCITY_LIMIT_EXCEEDED` 或其他安全违规；对应 HTML、PDF、evidence ZIP 和 rosbag2 已产生且 SHA-256 校验通过。完成证据时刻取 ENDED、mission SUCCEEDED、三种报告文件 ready、证据清单持久化和 rosbag2 正常关闭中的最晚单调时刻。
 - 成功率不低于 **90%**，即固定 20 个 seed 中至少 18/20 满足上述完整定义。任何超时、任务未完整 terminal、碰撞/安全违规、报告/证据缺失或脚本异常都计入失败分子；少于 20 次、改变 seed/配置摘要、分母排除失败 run 或重用同一 run_id 均失败。每个 seed 的逐条件布尔值、耗时、run_id、Git commit、route/world/model/parameter SHA-256 必须写入 `runs.jsonl`，使 18/20 可独立重算。
 - 验收观察器首次收到风险达到 60 分的样本，到任务队列优先级更新并向 Nav2 提交新合法目标，两项的单调时钟延迟都必须在 **2 seconds** 内；相应 ROS stamp 的 `/clock` 差值也不得超过 2 秒。只改变 Web 颜色、只重排队列未提交目标或只提交目标未保存 revision 均失败。
+- 单元和集成测试必须逐项证明 `configs/mission_ordering.yaml` 的 `risk_gain=1.00`、`distance_penalty=0.25`、`minimum_active_hold_s=5.0`、`normal_replan_cooldown_s=10.0`、`emergency_score_0_100=80.0`；相同 priority 以 task_id 字典序升序稳定排序。normal/attention/alert 的两次重排在 active-task hold 或 normal cooldown 内不得取消当前任务；到期后合并请求必须产生一次可审计的新 queue revision。分数达到/跨越 80.0 时必须绕过二者，立即取消普通 Nav2 goal 并提交配置的安全观察点。任何用 ROS 时钟、墙钟、排序偶然性或动态障碍替代这些判据均失败。
 - 新目标必须在 `map` 内、可通行、不在设备膨胀碰撞体或危险区内，并使用配置的安全观察距离。紧急风险可取消普通目标；普通目标不得抢占紧急任务。
 - 不可达目标必须执行配置允许的重试、替代观察点或跳过，且稳定错误码/原因进入任务快照和最终报告。
 - 每个 run 保存风险阈值 crossing、`risk_revision`、`queue_revision`、Nav2 goal/结果、路径、TF、任务状态和 rosbag2；缺任一关联字段即失败。

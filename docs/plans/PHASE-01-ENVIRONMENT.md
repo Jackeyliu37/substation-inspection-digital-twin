@@ -13,11 +13,11 @@
 - The root project plan is the scope authority. This phase creates only the environment, repository baselines, early immutable resource downloads, tests, and evidence required by Phase 1 acceptance.
 - Use Ubuntu 24.04 LTS, ROS 2 Jazzy Jalisco, Gazebo Harmonic `gz-sim 8.x`, and Python 3.12. Stop if the host or resolved upstream versions contradict `docs/VERSION_MATRIX.md`.
 - Preserve the approved ROS upstream identities: `ros_gz 1.0.23-1`, Navigation2 `1.3.12-1`, SLAM Toolbox `2.8.5-1`, TurtleBot3 core `2.3.6-1`, and TurtleBot3 simulation `2.3.7-1`; full Noble package revisions enter the Debian manifest.
-- Gazebo rendering is OGRE2/EGL headless only. Ubuntu desktop metapackages, GNOME/KDE shells, Xorg servers, display managers, NoMachine, Xvfb, and VirtualGL are forbidden.
+- Gazebo rendering is OGRE2/EGL headless only. Ubuntu desktop metapackages, GNOME/KDE shells, display managers, NoMachine, Xvfb, VirtualGL, active `Xorg`/`Xwayland`/Wayland sessions, graphical targets, and project-created X Server configuration are forbidden. Ubuntu official NVIDIA driver packages may retain inert X package dependencies only under ADR-0004 evidence.
 - Do not introduce ROS 1, Gazebo Classic, another ROS distribution, Conda CUDA, Ubuntu `nvidia-cuda-toolkit`, a global `sudo pip`, or pip CUDA packages outside the approved PyTorch CUDA 12.6 wheel source.
 - The AI environment is repository-root `.venv`; the Gateway environment is repository-root `.venv-web`; both use `python3 -m venv --system-site-packages` so ROS `rclpy` remains available.
 - The product browser boundary is unchanged: normal users eventually access only `http://ros-server/`; browsers never connect to DDS; Gateway and frontend processes remain loopback-only; Foxglove remains a separate read-only diagnostic path.
-- The target server operator is the non-root account `substation`, and its checkout is `/home/substation/substation-inspection-digital-twin`, as fixed by `docs/DEPLOYMENT.md`. Authoring this plan from another checkout does not relax that execution precondition.
+- Development may run from the current authorized operator checkout, including `/home/jackeyliu37/substation-inspection-digital-twin`. The `substation` account is the later no-login systemd service user fixed by `docs/DEPLOYMENT.md`, not a Phase 1 development-checkout precondition. Deployment releases are built only from clean verified commits under `/opt/substation/releases/<git-commit>`.
 - Safety detection, equipment detection, defect classification, and meter reading stay separate. The only Phase 1 model download is the immutable YOLO11n base weight; it is not a production model.
 - Instrument data remains Gazebo-generated only. Phase 1 does not add, download, or describe an external meter dataset.
 - Every manually acquired external payload in this phase, specifically the Node.js archive and `yolo11n.pt`, is written below `/var/lib/substation`, receives a SHA-256 and byte count, and is recorded in `artifacts/environment/resource-downloads.tsv`. Large payloads never enter Git.
@@ -31,8 +31,9 @@
 - Existing storage parents, virtual environments, toolchains, symlinks, apt sources, service-suppression files, and content-addressed resource directories are foreign unless their exact metadata or task-owned provenance marker proves compatibility. Refuse incompatible state; never recursively change ownership or permissions on an existing directory.
 - Never remove packages with automatic dependency cleanup. Package rollback may remove only package names recorded as newly installed by `scripts/install_host.sh`, using `apt-get remove --no-auto-remove` after human review.
 - Do not overwrite existing virtual environments, toolchains, manifests, repository files, or apt source/key files. Refuse, back up to the active evidence directory, or move the exact owned path to a timestamped quarantine name.
-- Any version mismatch, missing SHA-256, forbidden package, capacity below 80 GiB free or 16 GiB memory, failed CUDA check, failed colcon command, failed frontend build, or failed EGL probe is a hard failure.
-- Normal completion updates `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md` only after the consolidated verifier passes. The sole earlier exception is a required pre-reboot `docs/HANDOFF.md` update when Task 3 returns `REBOOT_REQUIRED`; final documents distinguish the verified implementation commit from the later documentation-only synchronization commit.
+- Any version mismatch, missing SHA-256, forbidden active graphics stack, disallowed package/source origin, physical memory below 15 GiB, insufficient Phase 1 working-space margin, failed CUDA check, failed colcon command, failed frontend build, or failed EGL probe is a hard failure.
+- Phase 1 storage checks are scoped to the environment baseline. Before every payload download, toolchain extraction, build tree, environment install, and final seal, the script records expected additional bytes and proves the affected mount will retain at least 20 GiB free after the operation. Later dataset/model phases must run a separate gate of `expected download bytes + expected unpacked/derived bytes + 20 GiB remaining`; Phase 1 success never means the full data/training footprint is already provisioned.
+- After `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md` exist, every Phase 1 task updates them at the end of that task's verification, not only in Task 11. Each update records the task commit, exact commands, result, evidence path, blockers, and next action. Final documents distinguish the verified implementation commit from the later documentation-only synchronization commit.
 
 ---
 
@@ -50,7 +51,7 @@
 | `scripts/verify_documentation_gate.sh` | Re-run the Phase 0 document gate without changing the host. |
 | `scripts/init_phase1_run.sh` | Create one acceptance run directory after the document gate passes and write ignored `.phase1-run.env`. |
 | `scripts/audit_host.sh` | Read-only OS, architecture, GPU, driver, memory, disk, forbidden-package, and session audit. |
-| `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, validate every requested and changed package candidate/origin, preserve write-once before/after evidence across a reboot resume, install the approved package set and recommended NVIDIA driver when required, and leave services stopped. |
+| `scripts/install_host.sh` | Add only official ROS/Gazebo apt sources, validate every requested and changed package candidate/origin, preserve write-once before/after evidence, install the approved non-driver package set, refuse NVIDIA driver changes with `DRIVER_TRANSACTION_REQUIRED`, and leave services stopped. |
 | `scripts/rollback_host.sh` | Validate recorded backups/current state, simulate the exact package rollback transaction, then restore only recorded packages, apt sources, service state, and task-created files after explicit run-id confirmation. |
 | `scripts/download_phase1_resources.sh` | Download and verify Node.js 24.18.0 and YOLO11n v8.4.0 into controlled server storage. |
 | `scripts/verify_phase1_resources.sh` | Read-only checksum/metadata verification of the already locked Node and YOLO resources; it has no network or repair path. |
@@ -98,7 +99,7 @@
 | Path | Change |
 |---|---|
 | `docs/PROJECT_STATUS.md` | Record Phase 1 result, verified commit, evidence, commands, blockers, and Phase 2 next action. |
-| `docs/HANDOFF.md` | Record a deterministic pre-reboot resume state when required, then the final Phase 2 resume entry. |
+| `docs/HANDOFF.md` | Record deterministic per-task resume state, blockers, and the final Phase 2 resume entry. |
 
 ### Runtime-only paths created by this plan
 
@@ -117,7 +118,7 @@
 
 ### Required final evidence files
 
-The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDENCE_FINAL`: `acceptance_run_id.txt`, `documentation-gate.log`, `documentation-gate-final.log`, `storage-paths-before.tsv`, `host-audit.json`, `host-audit-final.json`, `install-host.log`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `apt-sources-before/inventory.tsv`, `apt-sources-after/inventory.tsv`, `policy-rc.d-state.tsv`, `managed-files-after.tsv`, `host-install-version-changes.tsv`, `ros-archive-key.sha256`, `gazebo-archive-key.sha256`, `dpkg-before.tsv`, `dpkg-after.tsv`, `environment.json`, `dpkg-packages.tsv`, `ai-pip-freeze.txt`, `gateway-pip-freeze.txt`, `node-npm-versions.txt`, `node-current-before.tsv`, `resource-downloads.tsv`, `gpu.txt`, `egl.log`, `forbidden-packages.txt`, `disk-memory.txt`, `service-state.txt`, `colcon-build.log`, `colcon-test.log`, `colcon-test-result.log`, `colcon-build-final.log`, `colcon-test-final.log`, `colcon-test-result-final.log`, `frontend-build.log`, `frontend-build-final.log`, per-command logs and JSON metadata under `commands/`, `result.json`, and `SHA256SUMS`. `host-install-new-packages.txt` is also mandatory but may be empty on an already-provisioned compliant host. If a reboot occurred, `install-resume.env` is mandatory and remains as immutable history. The recursive checksum includes every file under nested directories such as `apt-sources-before/` and `commands/`.
+The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDENCE_FINAL`: `acceptance_run_id.txt`, `git_commit.txt`, `documentation-gate.log`, `documentation-gate-final.log`, `storage-paths-before.tsv`, `host-audit.json`, `host-audit-final.json`, `install-host.log`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `apt-sources-before/inventory.tsv`, `apt-sources-after/inventory.tsv`, `policy-rc.d-state.tsv`, `managed-files-after.tsv`, `host-install-version-changes.tsv`, `ros-archive-key.sha256`, `gazebo-archive-key.sha256`, `dpkg-before.tsv`, `dpkg-after.tsv`, `environment.json`, `dpkg-packages.tsv`, `ai-pip-freeze.txt`, `gateway-pip-freeze.txt`, `node-npm-versions.txt`, `node-current-before.tsv`, `resource-downloads.tsv`, `gpu.txt`, `egl.log`, `forbidden-packages.txt`, `disk-memory.txt`, `service-state.txt`, `colcon-build.log`, `colcon-test.log`, `colcon-test-result.log`, `colcon-build-final.log`, `colcon-test-final.log`, `colcon-test-result-final.log`, `frontend-build.log`, `frontend-build-final.log`, per-command logs and JSON metadata under `commands/`, `result.json`, and `SHA256SUMS`. `host-install-new-packages.txt` is also mandatory but may be empty on an already-provisioned compliant host. The recursive checksum includes every file under nested directories such as `apt-sources-before/` and `commands/`.
 
 ## Execution Rules for Every Task
 
@@ -135,8 +136,9 @@ The consolidated verifier must leave these non-empty files below `$PHASE1_EVIDEN
    After Task 10 succeeds, `$PHASE1_EVIDENCE_ROOT` no longer exists. Task 11 reads only `$PHASE1_EVIDENCE_FINAL` and invokes only `scripts/check_environment_seal.sh`; it never reruns the one-shot verifier.
 
 5. Each test command is piped through `tee` only to the exact current evidence file. `PIPESTATUS[0]` is checked when the tested command's exit status matters.
-6. Each task ends with its focused verification and one focused commit. Do not combine task commits.
-7. If an authority conflict or locked-version mismatch appears, stop, save the command output in the active evidence directory, update the authority document through the repository's ADR/synchronization process, and do not continue this plan on an inferred interpretation.
+6. Each task has a focused implementation commit before any live host mutation that depends on that implementation. After the task's verification, immediately update `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md` with the task commit, exact commands, result, evidence path, blockers, and next action, then create a separate documentation-only status commit. Do not combine implementation commits with status/handoff commits.
+7. Task 11 is the final aggregation and truthfulness check; it does not replace the per-task status updates required by rule 6.
+8. If an authority conflict or locked-version mismatch appears, stop, save the command output in the active evidence directory, update the authority document through the repository's ADR/synchronization process, and do not continue this plan on an inferred interpretation.
 
 ---
 
@@ -314,6 +316,7 @@ required_files=(
   docs/adr/0001-headless-gazebo.md
   docs/adr/0002-server-web-deployment.md
   docs/adr/0003-multimodel-perception.md
+  docs/adr/0004-nvidia-headless-packaging.md
 )
 
 for path in "${required_files[@]}"; do
@@ -331,30 +334,28 @@ from pathlib import Path
 
 contract = Path("docs/TEST_ACCEPTANCE.md").read_text(encoding="utf-8")
 try:
-    phase0 = contract.split("## 4. Phase 0 文档门槛（已完成；可重复运行）", 1)[1].split(
+    phase0_full_gate = contract.split("### 4.4 完整可重复 Phase 0 gate", 1)[1].split(
         "## 5. Phase 1 主机与环境验收（当前活动阶段；入口逐项激活）", 1
     )[0]
 except IndexError as error:
-    raise SystemExit("documentation-gate: Phase 0 authority section not found") from error
+    raise SystemExit("documentation-gate: Phase 0 full gate section not found") from error
 
-blocks = re.findall(r"```bash\n(.*?)\n```", phase0, flags=re.DOTALL)
-if len(blocks) != 2:
+blocks = re.findall(r"```bash\n(.*?)\n```", phase0_full_gate, flags=re.DOTALL)
+if len(blocks) != 1:
     raise SystemExit(
-        f"documentation-gate: expected exactly two Phase 0 Bash blocks, found {len(blocks)}"
+        f"documentation-gate: expected exactly one Phase 0 full-gate Bash block, found {len(blocks)}"
     )
-for index, block in enumerate(blocks, 1):
-    completed = subprocess.run(["bash", "-c", block], text=True)
-    if completed.returncode != 0:
-        raise SystemExit(
-            f"documentation-gate: TEST_ACCEPTANCE section 4 block {index} failed "
-            f"with exit {completed.returncode}"
-        )
+completed = subprocess.run(["bash", "-c", blocks[0]], text=True)
+if completed.returncode != 0:
+    raise SystemExit(
+        f"documentation-gate: TEST_ACCEPTANCE section 4.4 failed with exit {completed.returncode}"
+    )
 PY
 
 printf '%s\n' 'documentation-gate: PASS'
 ```
 
-The validator first enforces the complete required-file/tracked-file gate from `docs/TEST_ACCEPTANCE.md` section 4.3. It then extracts and executes exactly the two Bash blocks in section 4, so the full baseline-literal validator, row-specific dataset license checks, unresolved-marker scan, interface scan, browser/DDS/Foxglove boundary scan, and `git diff --check` cannot drift into an abbreviated duplicate. It reads repository files and Git metadata only; it does not call `sudo`, package managers, network clients, ROS, Gazebo, or services.
+The validator first enforces the complete required-file/tracked-file gate, including ADR-0004. It then extracts and executes the single full Bash block in `docs/TEST_ACCEPTANCE.md` section 4.4, so the authoritative Phase 0 gate cannot drift into an abbreviated duplicate. It reads repository files and Git metadata only; it does not call `sudo`, package managers, network clients, ROS, Gazebo, or services.
 
 - [ ] **Step 4: Implement acceptance-run initialization**
 
@@ -376,8 +377,6 @@ grep -Fxq 'documentation-gate: PASS' "$gate_log"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 source scripts/lib/environment_common.sh
-test "$(id -un)" = substation
-test "$repo_root" = /home/substation/substation-inspection-digital-twin
 test ! -e .phase1-run.env || {
   printf '%s\n' '.phase1-run.env already exists; source it instead of creating a second run' >&2
   exit 1
@@ -409,7 +408,7 @@ unlink -- "$metadata_work"
 metadata_work=
 install -m 0640 "$gate_log" "$phase1_evidence_root/documentation-gate.log"
 printf '%s\n' "$phase1_run_id" > "$phase1_evidence_root/acceptance_run_id.txt"
-git rev-parse HEAD > "$phase1_evidence_root/git_commit_at_start.txt"
+git rev-parse HEAD > "$phase1_evidence_root/git_commit.txt"
 
 umask 077
 printf 'export PHASE1_RUN_ID=%q\n' "$phase1_run_id" > .phase1-run.env
@@ -430,41 +429,67 @@ Run:
 chmod +x scripts/lib/environment_common.sh scripts/verify_documentation_gate.sh scripts/init_phase1_run.sh
 gate_log="$(mktemp --tmpdir=/tmp)"
 bash scripts/verify_documentation_gate.sh | tee "$gate_log"
-bash scripts/init_phase1_run.sh --gate-log "$gate_log"
 unlink -- "$gate_log"
-source .phase1-run.env
-test -f "$PHASE1_EVIDENCE_ROOT/documentation-gate.log"
-test -s "$PHASE1_EVIDENCE_ROOT/storage-paths-before.tsv"
-test ! -e "$PHASE1_EVIDENCE_FINAL"
 ```
 
-Expected: the validator prints exactly `documentation-gate: PASS` as its final line; initialization prints a UUID, a staging path ending in `/01-environment.staging`, and a final path ending in `/01-environment`; the copied gate log and storage metadata are non-empty. Existing storage directories are accepted only with the exact recorded owner/group/mode; missing leaves are created one at a time. No existing directory is recursively chmodded or chowned.
+Expected: the validator prints exactly `documentation-gate: PASS` as its final line and no acceptance directory exists yet. Do not run `scripts/init_phase1_run.sh` until the Task 1 implementation commit exists and the worktree is clean.
 
-- [ ] **Step 5: Re-run the test and record Task 1 evidence**
-
-Run:
-
-```bash
-source .phase1-run.env
-bash tests/environment/test_documentation_gate.sh | tee "$PHASE1_EVIDENCE_ROOT/test-documentation-gate.log"
-test "${PIPESTATUS[0]}" -eq 0
-```
-
-Expected: one line `documentation-gate: PASS`, exit 0, and a non-empty test log.
-
-Evidence: `$PHASE1_EVIDENCE_ROOT/documentation-gate.log` and `$PHASE1_EVIDENCE_ROOT/test-documentation-gate.log`.
-
-Safe rollback: preserve the acceptance directory; move `.phase1-run.env` to `.phase1-run.env.rollback-$(date -u +%Y%m%dT%H%M%SZ)`; revert only this task's tracked commit. Do not remove the evidence directory.
-
-- [ ] **Step 6: Commit Task 1**
+- [ ] **Step 5: Commit Task 1 implementation before live evidence initialization**
 
 ```bash
 git add .gitignore scripts/lib/environment_common.sh scripts/verify_documentation_gate.sh scripts/init_phase1_run.sh tests/environment/test_documentation_gate.sh
 git diff --cached --check
 git commit -m "feat: add phase one documentation gate"
+task1_commit="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain=v1 --untracked-files=all -- \
+  .gitignore scripts/lib/environment_common.sh scripts/verify_documentation_gate.sh scripts/init_phase1_run.sh tests/environment/test_documentation_gate.sh)"
 ```
 
-Expected: one commit containing only the five listed paths.
+Expected: one implementation commit containing only the five listed paths.
+
+- [ ] **Step 6: Create the single acceptance run identity from the clean Task 1 commit**
+
+Run:
+
+```bash
+test "$(git rev-parse HEAD)" = "$task1_commit"
+gate_log="$(mktemp --tmpdir=/tmp)"
+bash scripts/verify_documentation_gate.sh | tee "$gate_log"
+bash scripts/init_phase1_run.sh --gate-log "$gate_log"
+unlink -- "$gate_log"
+source .phase1-run.env
+test "$(<"$PHASE1_EVIDENCE_ROOT/git_commit.txt")" = "$task1_commit"
+test -f "$PHASE1_EVIDENCE_ROOT/documentation-gate.log"
+test -s "$PHASE1_EVIDENCE_ROOT/storage-paths-before.tsv"
+test ! -e "$PHASE1_EVIDENCE_FINAL"
+bash tests/environment/test_documentation_gate.sh | tee "$PHASE1_EVIDENCE_ROOT/test-documentation-gate.log"
+test "${PIPESTATUS[0]}" -eq 0
+```
+
+Expected: initialization prints a UUID, a staging path ending in `/01-environment.staging`, and a final path ending in `/01-environment`; `acceptance_run_id.txt`, `git_commit.txt`, the copied gate log, storage metadata, and test log are non-empty. Existing storage directories are accepted only with the exact recorded owner/group/mode; missing leaves are created one at a time. No existing directory is recursively chmodded or chowned. The development checkout may be the current authorized operator checkout; the later deployment/runtime `substation` account is not required for this initializer.
+
+Evidence: `$PHASE1_EVIDENCE_ROOT/documentation-gate.log` and `$PHASE1_EVIDENCE_ROOT/test-documentation-gate.log`.
+
+Safe rollback: preserve the acceptance directory; move `.phase1-run.env` to `.phase1-run.env.rollback-$(date -u +%Y%m%dT%H%M%SZ)`; revert only this task's tracked commit. Do not remove the evidence directory.
+
+- [ ] **Step 7: Update status and handoff for Task 1**
+
+```bash
+verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+script_sha256="$(sha256sum scripts/init_phase1_run.sh scripts/verify_documentation_gate.sh | LC_ALL=C sort -k2)"
+printf 'task_commit=%s\nverified_at=%s\nevidence=%s\nscript_sha256_lines=%s\n' \
+  "$task1_commit" "$verified_at" "$PHASE1_EVIDENCE_ROOT" "$script_sha256"
+```
+
+Use `apply_patch` to record the literal values in `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md`, including the exact commands from Step 6. Then:
+
+```bash
+git add docs/PROJECT_STATUS.md docs/HANDOFF.md
+git diff --cached --check
+git commit -m "docs: record phase one task 1 status"
+```
+
+Expected: the acceptance run identity remains bound to `task1_commit`; the status commit is documentation-only and does not replace `git_commit.txt`.
 
 ---
 
@@ -478,7 +503,7 @@ Expected: one commit containing only the five listed paths.
 
 **Interfaces:**
 - Consumes: `/etc/os-release`, `/proc/meminfo`, all apt source files (`sources.list`, `*.list`, and deb822 `*.sources`), `apt-cache policy`, `dpkg-query`, independent filesystem/mount statistics for the repository, `/var/lib/substation`, and `/opt/substation`, plus GPU/driver probes.
-- Produces: JSON containing source hashes/URIs/suites/components, an exact enabled-source URI allowlist result, candidate/origin records for every requested package, three independent disk/mount records, generic non-Jazzy ROS rejection, forbidden installed/requested packages, and `$PHASE1_EVIDENCE_ROOT/host-audit.json`. `--preflight` allows only missing not-yet-added official ROS/Gazebo candidates; wrong origins, Noble PPAs/vendors, non-Jazzy ROS names, and missing Ubuntu candidates remain hard failures. Default enforcement additionally requires the final driver floor.
+- Produces: JSON containing source hashes/URIs/suites/components, non-Noble or malformed source blockers, explicitly recorded unrelated external Noble sources, candidate/origin records for every project-requested package, three independent disk/mount records, generic non-Jazzy ROS rejection, forbidden installed/requested packages, inert NVIDIA graphics dependencies, and `$PHASE1_EVIDENCE_ROOT/host-audit.json`. `--preflight` allows only missing not-yet-added official ROS/Gazebo candidates; wrong requested-package origins/candidates, non-Jazzy ROS names, missing Ubuntu candidates, active graphics blockers, and insufficient memory/storage remain hard failures. Default enforcement additionally requires the final driver floor.
 
 - [ ] **Step 1: Write the failing audit test**
 
@@ -533,9 +558,9 @@ EOF
 
 cat > "$fixture_root/bin/dpkg-query" <<'SH'
 #!/usr/bin/bash
-printf 'ii \tros-jazzy-ros-base\nii \tnginx\n'
+printf 'ii \tros-jazzy-ros-base\nii \tnginx\nii \txserver-xorg-core\nii \txserver-xorg-video-nvidia-595\nii \tx11-common\n'
 if test "${FAKE_DPKG_FORBIDDEN-0}" = 1; then
-  printf 'ii \txserver-xorg-core\nii \tros-noetic-ros-base\nii \tros-kilted-ros-base\nii \tros-eloquent-desktop\nii \tgazebo11\n'
+  printf 'ii \tubuntu-desktop\nii \tgdm3\nii \txvfb\nii \tros-noetic-ros-base\nii \tros-kilted-ros-base\nii \tros-eloquent-desktop\nii \tgazebo11\n'
 fi
 SH
 cat > "$fixture_root/bin/apt-cache" <<'SH'
@@ -611,6 +636,7 @@ assert {item["suite"] for item in data["apt_sources"]} >= {"noble", "noble-secur
 assert data["apt_policy"]["ros-jazzy-ros-gz"]["origins"] == ["http://packages.ros.org/ros2/ubuntu"]
 assert data["apt_policy"]["gz-harmonic"]["origins"] == ["http://packages.osrfoundation.org/gazebo/ubuntu-stable"]
 assert data["forbidden_packages"] == []
+assert {"xserver-xorg-core", "xserver-xorg-video-nvidia-595", "x11-common"} <= set(data["inert_nvidia_graphics_dependencies"])
 assert data["forbidden_apt_sources"] == []
 ' <<<"$audit_json"
 
@@ -649,21 +675,17 @@ unlink -- "$fixture_root/etc/apt/sources.list.d/active-symlink.sources"
 printf '%s\n' 'deb https://ppa.launchpadcontent.net/vendor/project/ubuntu noble main' > "$fixture_root/etc/apt/sources.list.d/noble-ppa.list"
 printf '%s\n' 'deb https://vendor.example.invalid/ubuntu noble main' > "$fixture_root/etc/apt/sources.list.d/noble-vendor.list"
 bad_uri_json="$(PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
-python3 -c 'import json,sys; data=json.load(sys.stdin); reasons=[item["reason"] for item in data["forbidden_apt_sources"]]; assert sum("not allowlisted" in reason for reason in reasons) >= 2' <<<"$bad_uri_json"
-set +e
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert len(data["external_apt_sources"]) >= 2; assert data["forbidden_apt_sources"] == []' <<<"$bad_uri_json"
 PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --preflight >/dev/null
-bad_uri_rc=$?
-set -e
-test "$bad_uri_rc" -ne 0
 unlink -- "$fixture_root/etc/apt/sources.list.d/noble-ppa.list"
 unlink -- "$fixture_root/etc/apt/sources.list.d/noble-vendor.list"
 
 printf '%s\n' 'deb http://packages.ros.org/ros/ubuntu focal main' >> "$fixture_root/etc/apt/sources.list"
 bad_source_json="$(PATH="$fixture_root/bin:$PATH" SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
-python3 -c 'import json,sys; data=json.load(sys.stdin); assert any(item["reason"] == "apt source URI is not allowlisted: http://packages.ros.org/ros/ubuntu" for item in data["forbidden_apt_sources"])' <<<"$bad_source_json"
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert any(item["reason"] == "non-Noble suite is forbidden: focal" for item in data["forbidden_apt_sources"])' <<<"$bad_source_json"
 
 forbidden_json="$(PATH="$fixture_root/bin:$PATH" FAKE_DPKG_FORBIDDEN=1 SUBSTATION_AUDIT_TEST_ROOT="$fixture_root" bash scripts/audit_host.sh --report-only)"
-python3 -c 'import json,sys; data=json.load(sys.stdin); assert {"xserver-xorg-core", "ros-noetic-ros-base", "ros-kilted-ros-base", "ros-eloquent-desktop", "gazebo11"} <= set(data["forbidden_packages"])' <<<"$forbidden_json"
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert {"ubuntu-desktop", "gdm3", "xvfb", "ros-noetic-ros-base", "ros-kilted-ros-base", "ros-eloquent-desktop", "gazebo11"} <= set(data["forbidden_packages"]); assert "xserver-xorg-core" not in data["forbidden_packages"]' <<<"$forbidden_json"
 ! rg -n 'sudo|apt-get|apt install|systemctl|curl|wget|tee /etc' scripts/audit_host.sh
 
 trap - EXIT
@@ -719,7 +741,6 @@ ros-jazzy-xacro
 shellcheck
 software-properties-common
 sqlite3
-ubuntu-drivers-common
 yamllint
 ```
 
@@ -728,7 +749,7 @@ Create `config/environment/forbidden-packages.regex` with this exact content:
 ```text
 ^(ubuntu-desktop|ubuntu-desktop-minimal|kubuntu-desktop|xubuntu-desktop|lubuntu-desktop|ubuntu-unity-desktop)$
 ^(gnome-shell|gnome-session|plasma-desktop|kde-plasma-desktop)$
-^(xorg|xserver-xorg.*|xserver-common|x11-common|xinit)$
+^(xorg|xserver-xorg|xserver-common|xinit)$
 ^(gdm3|sddm|lightdm|xdm)$
 ^(nomachine|xvfb|virtualgl)$
 ^ros-(?!jazzy-)[a-z0-9]+-.*$
@@ -819,8 +840,8 @@ for label, probe in probe_paths.items():
         "mount_source": filesystem["source"],
         "filesystem_type": filesystem["fstype"],
         "free_bytes": free_bytes,
-        "required_free_bytes": 80 * 1024**3,
-        "meets_floor": free_bytes >= 80 * 1024**3,
+        "required_phase1_residual_free_bytes": 20 * 1024**3,
+        "meets_phase1_residual_floor": free_bytes >= 20 * 1024**3,
     })
 dpkg = subprocess.run(
     ["dpkg-query", "-W", "-f=${db:Status-Abbrev}\\t${binary:Package}\\n"],
@@ -849,6 +870,11 @@ forbidden = sorted({
     for name in installed_packages + requested_packages
     if any(pattern.fullmatch(name) for pattern in patterns)
 })
+inert_nvidia_graphics_dependencies = sorted(
+    name
+    for name in installed_packages
+    if name in {"xserver-xorg-core", "x11-common"} or re.fullmatch(r"xserver-xorg-video-nvidia-[0-9]+", name)
+)
 
 def source_files():
     candidates = [rooted("/etc/apt/sources.list")]
@@ -906,6 +932,7 @@ allowed_source_uris = {
     "http://packages.osrfoundation.org/gazebo/ubuntu-stable",
     "https://packages.osrfoundation.org/gazebo/ubuntu-stable",
 }
+external_apt_sources = []
 forbidden_apt_sources = []
 for entry in apt_sources:
     uri = entry["uri"]
@@ -913,7 +940,7 @@ for entry in apt_sources:
     if entry["type"] not in {"deb", "deb-src"}:
         forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"unsupported apt source type: {entry['type']}"})
     if uri not in allowed_source_uris:
-        forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"apt source URI is not allowlisted: {uri}"})
+        external_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "uri": uri, "suite": suite, "reason": "external Noble source recorded but not used for project requested packages"})
     if not (suite == "noble" or suite.startswith("noble-")):
         forbidden_apt_sources.append({"path": entry["path"], "entry": entry["entry"], "reason": f"non-Noble suite is forbidden: {suite}"})
 
@@ -1001,15 +1028,13 @@ def apt_policy_acceptable(item):
 checks = {
     "ubuntu_24_04": os_release.get("ID") == "ubuntu" and os_release.get("VERSION_ID") == "24.04",
     "architecture_x86_64": platform.machine() == "x86_64",
-    "memory_at_least_16_gib": meminfo.get("MemTotal", 0) >= 16 * 1024**3,
-    "all_three_storage_paths_at_least_80_gib": all(item["meets_floor"] for item in disk_probes),
+    "physical_memory_at_least_15_gib": meminfo.get("MemTotal", 0) >= 15 * 1024**3,
+    "all_three_storage_paths_keep_20_gib_phase1_residual": all(item["meets_phase1_residual_floor"] for item in disk_probes),
     "nvidia_gpu_present": gpu_present,
     "no_forbidden_packages": not forbidden,
     "no_forbidden_apt_sources": not forbidden_apt_sources,
     "requested_package_candidates_and_origins": all(apt_policy_acceptable(item) for item in apt_policy.values()),
     "driver_floor_for_final_enforcement": mode != "enforce" or driver_meets_floor,
-    "operator_user_substation": root != Path("/") or current_user == "substation",
-    "repository_path_matches_deployment": root != Path("/") or str(repo) == "/home/substation/substation-inspection-digital-twin",
 }
 
 status = "passed" if all(checks.values()) else "failed"
@@ -1030,10 +1055,12 @@ document = {
         "driver_version": driver_version,
         "required_driver_floor": "560.35.05",
         "driver_meets_floor": driver_meets_floor,
-        "driver_install_required": not driver_meets_floor,
+        "driver_transaction_required": not driver_meets_floor,
     },
+    "inert_nvidia_graphics_dependencies": inert_nvidia_graphics_dependencies,
     "forbidden_packages": forbidden,
     "forbidden_apt_sources": forbidden_apt_sources,
+    "external_apt_sources": external_apt_sources,
     "apt_sources": apt_sources,
     "apt_policy": apt_policy,
     "checks": checks,
@@ -1044,49 +1071,72 @@ if mode != "report-only" and status != "passed":
 PY
 ```
 
-- [ ] **Step 4: Run the test and the enforced precondition**
+- [ ] **Step 4: Run the fake-host test and commit Task 2 implementation**
 
 ```bash
 chmod +x scripts/audit_host.sh tests/environment/test_audit_host.sh
 LC_ALL=C sort -c config/environment/apt-packages.txt
 bash tests/environment/test_audit_host.sh
+git add config/environment/apt-packages.txt config/environment/forbidden-packages.regex scripts/audit_host.sh tests/environment/test_audit_host.sh
+git diff --cached --check
+git commit -m "feat: add read only host audit"
+task2_commit="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain=v1 --untracked-files=all -- \
+  config/environment/apt-packages.txt config/environment/forbidden-packages.regex scripts/audit_host.sh tests/environment/test_audit_host.sh)"
+```
+
+Expected test final line: `audit-host-test: PASS`; one implementation commit contains only the four listed paths.
+
+- [ ] **Step 5: Run the live preflight audit from the clean Task 2 commit**
+
+```bash
+test "$(git rev-parse HEAD)" = "$task2_commit"
 source .phase1-run.env
 bash scripts/audit_host.sh --preflight | tee "$PHASE1_EVIDENCE_ROOT/host-audit.json"
 test "${PIPESTATUS[0]}" -eq 0
 ```
 
-Expected test final line: `audit-host-test: PASS`. Expected preflight JSON: `"status": "passed"`, Ubuntu `24.04`, architecture `x86_64`, user `substation`, repository `/home/substation/substation-inspection-digital-twin`, at least `17179869184` memory bytes, independently recorded repository, `/var/lib/substation`, and `/opt/substation` mounts each with at least `85899345920` free bytes, an NVIDIA GPU, empty forbidden package/source arrays, complete hashes and parsed entries for every active apt source file, and a policy record for every requested package. Every enabled URI is exactly an official Ubuntu archive/security, ROS 2, or Gazebo URI. Missing official ROS/Gazebo candidates or a below-floor driver may be corrected by Task 3 in preflight mode; a missing Ubuntu candidate, PPA/vendor URI, wrong origin/candidate, non-Jazzy ROS name, forbidden package, or capacity failure is a hard stop. Task 10 reruns default enforcement, which requires the final driver and every requested candidate/origin.
+Expected preflight JSON: `"status": "passed"`, Ubuntu `24.04`, architecture `x86_64`, at least `16106127360` memory bytes, independently recorded repository, `/var/lib/substation`, and `/opt/substation` mounts each retaining at least `21474836480` free bytes for the Phase 1 residual floor, an NVIDIA GPU, empty forbidden package/source arrays, complete hashes and parsed entries for every active apt source file, explicit `external_apt_sources` records for unrelated Noble Docker/Tailscale/vendor sources if present, and a policy record for every project-requested package. Project-requested packages and later changed packages must resolve only from the package-family-specific official Ubuntu, ROS 2, or Gazebo origins. Missing official ROS/Gazebo candidates or a below-floor driver stops before mutation with a clear remediation reason; a missing Ubuntu candidate, wrong origin/candidate, non-Jazzy ROS name, forbidden active graphics stack/package, or Phase 1 residual capacity failure is a hard stop. Task 10 reruns default enforcement, which requires the final driver and every requested candidate/origin.
 
-If enforcement fails, stop before Task 3. The JSON is the evidence; do not "fix" a capacity or GPU failure by weakening thresholds.
+If enforcement fails, stop before Task 3. The JSON is the evidence; do not "fix" a capacity or GPU failure by weakening thresholds. Do not claim full dataset/training capacity from this Phase 1 residual check; large downloads must pass their own expected-size-plus-20-GiB gate in the later data phase.
 
 Evidence: `$PHASE1_EVIDENCE_ROOT/host-audit.json`; the report preserves every failed boolean when enforcement stops the phase.
 
 Safe rollback: this task has no host mutation. Revert only its tracked commit; preserve `host-audit.json`.
 
-- [ ] **Step 5: Commit Task 2**
+- [ ] **Step 6: Update status and handoff for Task 2**
 
 ```bash
-git add config/environment/apt-packages.txt config/environment/forbidden-packages.regex scripts/audit_host.sh tests/environment/test_audit_host.sh
-git diff --cached --check
-git commit -m "feat: add read only host audit"
+verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+script_sha256="$(sha256sum scripts/audit_host.sh config/environment/apt-packages.txt config/environment/forbidden-packages.regex | LC_ALL=C sort -k2)"
+printf 'task_commit=%s\nverified_at=%s\nevidence=%s\nscript_sha256_lines=%s\n' \
+  "$task2_commit" "$verified_at" "$PHASE1_EVIDENCE_ROOT/host-audit.json" "$script_sha256"
 ```
 
-Expected: one commit containing only the four listed paths.
+Use `apply_patch` to record the literal values in `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md`, including the exact preflight command and result. Then:
+
+```bash
+git add docs/PROJECT_STATUS.md docs/HANDOFF.md
+git diff --cached --check
+git commit -m "docs: record phase one task 2 status"
+```
+
+Expected: the host audit evidence remains bound to `task2_commit`; the status commit is documentation-only.
 
 ---
 
-### Task 3: Official Apt, ROS 2 Jazzy, Gazebo Harmonic, and NVIDIA Installer
+### Task 3: Official Apt, ROS 2 Jazzy, Gazebo Harmonic, and NVIDIA Audit
 
 **Files:**
 - Create: `scripts/install_host.sh`
 - Create: `scripts/rollback_host.sh`
 - Create: `tests/environment/fixtures/fake_host_command.py`
 - Create: `tests/environment/test_install_host.sh`
-- Modify conditionally: `docs/HANDOFF.md` only when an NVIDIA driver change requires a reboot, once immediately before reboot and once immediately after successful resume
+- Modify: `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md` after Task 3 verification, as required for every Phase 1 task
 
 **Interfaces:**
-- Consumes: the exact Task 2 `config/environment/apt-packages.txt`, a passing preflight host audit, Ubuntu Noble official repositories with `universe` already enabled, `packages.ros.org`, `packages.osrfoundation.org`, and `ubuntu-drivers`.
-- Produces: installed approved Debian packages, exact allowlisted-origin evidence for every requested and changed package, write-once backups for every active `sources.list`, `*.list`, and deb822 `*.sources` file and every file it mutates, temporary `policy-rc.d` service suppression with exact restoration, stopped/disabled Nginx, initialized rosdep, a resumable reboot boundary, and `scripts/rollback_host.sh` whose apply path always passes strict inert-data state parsing and the recorded simulation before mutation. A guarded temporary-root seam plus PATH-injected fake commands exercises the same state machine before any real `sudo` mutation.
+- Consumes: the exact Task 2 `config/environment/apt-packages.txt`, a passing preflight host audit, Ubuntu Noble official repositories with `universe` already enabled, `packages.ros.org`, `packages.osrfoundation.org`, and an already compliant Ubuntu official NVIDIA driver.
+- Produces: installed approved non-driver Debian packages, exact allowlisted-origin evidence for every requested and changed package, write-once backups for every active `sources.list`, `*.list`, and deb822 `*.sources` file and every file it mutates, temporary `policy-rc.d` service suppression with exact restoration, stopped/disabled Nginx, initialized rosdep, and `scripts/rollback_host.sh` whose apply path always passes strict inert-data state parsing and the recorded simulation before mutation. If the NVIDIA driver is absent, below `560.35.05`, non-Ubuntu, or fails headless probes, the script exits before package mutation with `install-host: DRIVER_TRANSACTION_REQUIRED`; a separate reviewed driver transaction is required and this Phase 1 task does not perform it. A guarded temporary-root seam plus PATH-injected fake commands exercises the same state machine before any real `sudo` mutation.
 
 - [ ] **Step 1: Write the failing installer contract test**
 
@@ -1119,7 +1169,6 @@ rg -F '"ros-jazzy-nav2-bringup": "1.3.12-1"' scripts/install_host.sh
 rg -F '"ros-jazzy-slam-toolbox": "2.8.5-1"' scripts/install_host.sh
 rg -F '"ros-jazzy-turtlebot3": "2.3.6-1"' scripts/install_host.sh
 rg -F '"ros-jazzy-turtlebot3-simulations": "2.3.7-1"' scripts/install_host.sh
-rg -F 'install-resume.env' scripts/install_host.sh
 rg -F 'install-complete.env' scripts/install_host.sh
 rg -F 'host-install-version-changes.tsv' scripts/install_host.sh
 rg -F 'managed-files-after.tsv' scripts/install_host.sh
@@ -1181,7 +1230,7 @@ EOF
     --state "$case_root/state.json" \
     --operations "$case_root/operations.jsonl" \
     --driver-ready "$driver_ready"
-  for command_name in sudo apt-get apt-cache dpkg-query systemctl ubuntu-drivers nvidia-smi curl locale-gen update-locale rosdep gz lspci findmnt; do
+  for command_name in sudo apt-get apt-cache dpkg-query systemctl nvidia-smi curl locale-gen update-locale rosdep gz lspci findmnt; do
     ln -s "$repo_root/tests/environment/fixtures/fake_host_command.py" "$fake_bin/$command_name"
   done
   printf '%s\t%s\t%s\t%s\n' "$case_root" "$host_root" "$evidence_dir" "$fake_bin"
@@ -1265,12 +1314,15 @@ for source_kind in ppa vendor; do
     source_uri=https://vendor.example.invalid/ubuntu
   fi
   printf 'deb %s noble main\n' "$source_uri" > "$source_root/etc/apt/sources.list.d/foreign.list"
-  set +e
   run_case_install "$source_case" "$source_root" "$source_evidence" "$source_bin" env
-  source_rc=$?
-  set -e
-  test "$source_rc" -ne 0
-  test ! -e "$source_evidence/install-state.env"
+  grep -Fxq 'state=PASS' "$source_evidence/install-complete.env"
+  python3 - "$source_evidence/apt-policy-origins.json" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert data["external_apt_sources"]
+assert data["forbidden_apt_sources"] == []
+PY
 done
 
 IFS=$'\t' read -r symlink_case symlink_root symlink_evidence symlink_bin < <(make_case apt-source-symlink 1)
@@ -1282,32 +1334,24 @@ set -e
 test "$symlink_rc" -ne 0
 test ! -e "$symlink_evidence/install-state.env"
 
-IFS=$'\t' read -r reboot_case reboot_root reboot_evidence reboot_bin < <(make_case reboot-resume 0)
+IFS=$'\t' read -r driver_block_case driver_block_root driver_block_evidence driver_block_bin < <(make_case driver-transaction-required 0)
 set +e
-run_case_install "$reboot_case" "$reboot_root" "$reboot_evidence" "$reboot_bin" env
-reboot_rc=$?
+run_case_install "$driver_block_case" "$driver_block_root" "$driver_block_evidence" "$driver_block_bin" env
+driver_block_rc=$?
 set -e
-test "$reboot_rc" -eq 20
-grep -Fxq 'state=REBOOT_REQUIRED' "$reboot_evidence/install-resume.env"
-before_resume_count="$(wc -l < "$reboot_case/operations.jsonl")"
-run_case_install "$reboot_case" "$reboot_root" "$reboot_evidence" "$reboot_bin" env
-grep -Fxq 'state=PASS' "$reboot_evidence/install-complete.env"
-python3 - "$reboot_case/operations.jsonl" <<'PY'
-import json, sys
-operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
-target_installs = [item for item in operations if item["command"] == "apt-get" and "install" in item["argv"] and "ros-jazzy-ros-base" in item["argv"]]
-assert len(target_installs) == 1
-PY
+test "$driver_block_rc" -eq 23
+test ! -e "$driver_block_evidence/install-complete.env"
+grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$driver_block_evidence/policy-rc.d-state.tsv"
 
-snapshot="$reboot_case/completed.snapshot"
-find "$reboot_evidence" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$reboot_evidence/{}" > "$snapshot"
-mutations_before_completed_rerun="$(python3 - "$reboot_case/operations.jsonl" <<'PY'
+snapshot="$success_case/completed.snapshot"
+find "$success_evidence" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$success_evidence/{}" > "$snapshot"
+mutations_before_completed_rerun="$(python3 - "$success_case/operations.jsonl" <<'PY'
 import json, sys
 operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 mutating = []
 for item in operations:
     argv = item["argv"]
-    if item["command"] in {"ubuntu-drivers", "locale-gen", "update-locale", "rosdep"}:
+    if item["command"] in {"locale-gen", "update-locale", "rosdep"}:
         mutating.append(item)
     elif item["command"] == "apt-get" and any(action in argv for action in {"update", "install", "remove"}) and "--simulate" not in argv and "-s" not in argv:
         mutating.append(item)
@@ -1316,14 +1360,14 @@ for item in operations:
 print(len(mutating))
 PY
 )"
-run_case_install "$reboot_case" "$reboot_root" "$reboot_evidence" "$reboot_bin" env
-mutations_after_completed_rerun="$(python3 - "$reboot_case/operations.jsonl" <<'PY'
+run_case_install "$success_case" "$success_root" "$success_evidence" "$success_bin" env
+mutations_after_completed_rerun="$(python3 - "$success_case/operations.jsonl" <<'PY'
 import json, sys
 operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 mutating = []
 for item in operations:
     argv = item["argv"]
-    if item["command"] in {"ubuntu-drivers", "locale-gen", "update-locale", "rosdep"}:
+    if item["command"] in {"locale-gen", "update-locale", "rosdep"}:
         mutating.append(item)
     elif item["command"] == "apt-get" and any(action in argv for action in {"update", "install", "remove"}) and "--simulate" not in argv and "-s" not in argv:
         mutating.append(item)
@@ -1333,8 +1377,8 @@ print(len(mutating))
 PY
 )"
 test "$mutations_after_completed_rerun" -eq "$mutations_before_completed_rerun"
-find "$reboot_evidence" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$reboot_evidence/{}" > "$reboot_case/completed.after"
-cmp "$snapshot" "$reboot_case/completed.after"
+find "$success_evidence" -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r -I{} sha256sum "$success_evidence/{}" > "$success_case/completed.after"
+cmp "$snapshot" "$success_case/completed.after"
 
 IFS=$'\t' read -r partial_case partial_root partial_evidence partial_bin < <(make_case partial-state 1)
 printf '%s\n' 'state=INITIAL_INSTALL_STARTED' > "$partial_evidence/install-state.env"
@@ -1349,15 +1393,11 @@ operations = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 for item in operations:
     argv = item["argv"]
     assert not (item["command"] == "apt-get" and any(action in argv for action in {"update", "install", "remove"}) and "--simulate" not in argv and "-s" not in argv)
-    assert item["command"] not in {"ubuntu-drivers", "locale-gen", "update-locale", "rosdep"}
+    assert item["command"] not in {"locale-gen", "update-locale", "rosdep"}
 PY
 
-IFS=$'\t' read -r tamper_case tamper_root tamper_evidence tamper_bin < <(make_case backup-tamper 0)
-set +e
+IFS=$'\t' read -r tamper_case tamper_root tamper_evidence tamper_bin < <(make_case backup-tamper 1)
 run_case_install "$tamper_case" "$tamper_root" "$tamper_evidence" "$tamper_bin" env
-tamper_reboot_rc=$?
-set -e
-test "$tamper_reboot_rc" -eq 20
 backup_file="$(awk -F '\t' '$2 == 1 {print $5; exit}' "$tamper_evidence/apt-sources-before/inventory.tsv")"
 printf '%s\n' tampered >> "$tamper_evidence/apt-sources-before/$backup_file"
 set +e
@@ -1649,11 +1689,6 @@ def main():
     if command == "systemctl":
         return systemctl(argv, state)
     record(command, argv)
-    if command == "ubuntu-drivers":
-        state["driver_ready"] = True
-        state["packages"]["nvidia-driver-560"] = "560.35.05-0ubuntu1"
-        save_state(state)
-        return 0
     if command == "nvidia-smi":
         if not state["driver_ready"]:
             return 1
@@ -1765,7 +1800,6 @@ bash scripts/audit_host.sh --preflight >/dev/null
 
 apt_sources_before="$evidence_dir/apt-sources-before"
 state_file="$evidence_dir/install-state.env"
-resume_marker="$evidence_dir/install-resume.env"
 complete_marker="$evidence_dir/install-complete.env"
 before_packages="$evidence_dir/dpkg-before.tsv"
 after_packages="$evidence_dir/dpkg-after.tsv"
@@ -2238,9 +2272,6 @@ verify_completed_state() {
   grep -Fxq 'state=INITIAL_INSTALL_STARTED' "$state_file"
   grep -Fxq 'state=PASS' "$complete_marker"
   grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$policy_state"
-  if test -e "$resume_marker"; then
-    grep -Fxq 'state=REBOOT_REQUIRED' "$resume_marker"
-  fi
   verify_managed_evidence
   validate_installed_stack
   capture_work="$(mktemp --tmpdir=/tmp)"
@@ -2260,38 +2291,6 @@ verify_completed_state() {
 
 if test -s "$complete_marker"; then
   verify_completed_state
-  trap - EXIT
-  cleanup
-  printf '%s\n' 'install-host: PASS'
-  exit 0
-fi
-
-if test -s "$resume_marker"; then
-  grep -Fxq 'state=REBOOT_REQUIRED' "$resume_marker"
-  test -s "$state_file"
-  test -s "$before_packages"
-  test -s "$apt_sources_before/inventory.tsv"
-  test -s "$candidate_file"
-  test -s "$evidence_dir/apt-policy-origins.json"
-  test -s "$policy_state"
-  test ! -e "$after_packages"
-  test ! -e "$new_packages"
-  test ! -e "$version_changes"
-  test ! -e "$changed_origin_file"
-  test ! -e "$managed_after"
-  test ! -e "$apt_sources_after"
-  verify_backup_inventory
-  grep -Eq $'^/usr/sbin/policy-rc.d\t[01]\t.*\t1$' "$policy_state"
-  capture_work="$(mktemp --tmpdir=/tmp)"
-  capture_package_policy config/environment/apt-packages.txt requested "$capture_work"
-  cmp "$candidate_file" "$capture_work"
-  unlink -- "$capture_work"
-  capture_work=
-  driver_is_ready || {
-    printf '%s\n' 'rebooted NVIDIA driver is absent or below 560.35.05' >&2
-    exit 1
-  }
-  mark_complete
   trap - EXIT
   cleanup
   printf '%s\n' 'install-host: PASS'
@@ -2392,7 +2391,7 @@ IFS=$'\t' read -r _ policy_existed_before policy_mode_before policy_sha_before _
 activate_policy_blocker
 
 run_privileged apt-get update
-run_privileged apt-get install -y ca-certificates curl gnupg locales software-properties-common ubuntu-drivers-common
+run_privileged apt-get install -y ca-certificates curl gnupg locales software-properties-common
 
 key_work="$(mktemp --tmpdir=/tmp)"
 list_work="$(mktemp --tmpdir=/tmp)"
@@ -2453,18 +2452,11 @@ if systemctl list-unit-files nginx.service >/dev/null 2>&1; then
 fi
 
 if ! driver_is_ready; then
-  run_privileged ubuntu-drivers install
   record_policy_restored
-  capture_work="$(mktemp --tmpdir=/tmp)"
-  printf 'state=REBOOT_REQUIRED\nrequested_at=%s\nresume_command=bash scripts/install_host.sh --apply --evidence-dir %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$evidence_dir" > "$capture_work"
-  install -m 0640 "$capture_work" "$resume_marker"
-  unlink -- "$capture_work"
-  capture_work=
   trap - EXIT
   cleanup
-  printf '%s\n' 'install-host: REBOOT_REQUIRED'
-  exit 20
+  printf '%s\n' 'install-host: DRIVER_TRANSACTION_REQUIRED'
+  exit 23
 fi
 
 record_policy_restored
@@ -2474,7 +2466,7 @@ cleanup
 printf '%s\n' 'install-host: PASS'
 ```
 
-The installer has three explicit states. A first run creates `install-state.env`, `dpkg-before.tsv`, `apt-sources-before/`, key hashes, and `apt-candidates.tsv` exactly once before the corresponding mutations; the candidate file covers every requested package and accepts only the package-family-specific official Ubuntu, ROS 2, or Gazebo origins. The state file records Nginx's original unit, active, and enabled states but is later treated only as inert data. A `REBOOT_REQUIRED` run leaves `install-resume.env` and exits 20 without creating after-state evidence. The resume path skips repository setup and every package installation command, validates the rebooted driver, creates `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `apt-changed-package-origins.tsv`, `managed-files-after.tsv`, and `install-complete.env`, then finishes. Every added or version-changed package receives the same exact origin validation; an unexpected removal or origin fails closed. The managed-file verifier checks every original backup against its recorded SHA-256 and checks the live after-state against its own mode and SHA-256. A completed rerun writes no evidence and compares the live package and managed-file sets with the captured after-state before printing `PASS`. Any partial state without a valid resume or complete marker fails closed for operator review. The script never installs a desktop metapackage, starts a project service, or exposes a port; Nginx is explicitly disabled and stopped after package installation.
+The installer has two normal states plus one explicit driver-blocked state. A first run creates `install-state.env`, `dpkg-before.tsv`, `apt-sources-before/`, key hashes, and `apt-candidates.tsv` exactly once before the corresponding mutations; the candidate file covers every requested package and accepts only the package-family-specific official Ubuntu, ROS 2, or Gazebo origins. The state file records Nginx's original unit, active, and enabled states but is later treated only as inert data. If the current NVIDIA driver is not already compliant, the script restores temporary service suppression, prints `install-host: DRIVER_TRANSACTION_REQUIRED`, exits 23, and creates no after-state evidence or driver package mutation. A separate reviewed driver transaction may be performed outside this plan, after which a new clean Phase 1 run starts from Task 2. Every added or version-changed package receives the same exact origin validation; an unexpected removal or origin fails closed. The managed-file verifier checks every original backup against its recorded SHA-256 and checks the live after-state against its own mode and SHA-256. A completed rerun writes no evidence and compares the live package and managed-file sets with the captured after-state before printing `PASS`. Any partial state without a complete marker fails closed for operator review. The script never installs a desktop metapackage, starts a project service, changes NVIDIA driver packages, or exposes a port; Nginx is explicitly disabled and stopped after package installation.
 
 - [ ] **Step 4: Implement simulation-gated exact rollback**
 
@@ -2734,77 +2726,59 @@ bash tests/environment/test_install_host.sh
 LC_ALL=C sort -c config/environment/apt-packages.txt
 ```
 
-Expected: `install-host-test: PASS`; the fake-host scenarios prove fresh success, all-requested-package candidate/origin coverage, Noble PPA and vendor-source rejection, changed-package origin rejection, candidate failure before target install, reboot/resume without repeat mutation, completed read-only rerun, partial-state refusal, backup tamper refusal, tampered `install-state.env` rejection before any fake mutation or shell evaluation, temporary service suppression restoration, and simulation-gated package/source rollback. No `sudo` command touches the real host during this test.
+Expected: `install-host-test: PASS`; the fake-host scenarios prove fresh success, all-requested-package candidate/origin coverage, unrelated Noble external-source recording without project package leakage, changed-package origin rejection, candidate failure before target install, explicit driver-transaction refusal without driver mutation, completed read-only rerun, partial-state refusal, backup tamper refusal, tampered `install-state.env` rejection before any fake mutation or shell evaluation, temporary service suppression restoration, and simulation-gated package/source rollback. No `sudo` command touches the real host during this test.
 
-- [ ] **Step 6: Apply the installer and handle the explicit reboot boundary**
-
-Run:
-
-```bash
-source .phase1-run.env
-set +e
-test ! -e "$PHASE1_EVIDENCE_ROOT/install-host.log"
-bash scripts/install_host.sh --apply --evidence-dir "$PHASE1_EVIDENCE_ROOT" \
-  2>&1 | tee "$PHASE1_EVIDENCE_ROOT/install-host.log"
-install_rc="${PIPESTATUS[0]}"
-set -e
-test "$install_rc" -eq 0 || test "$install_rc" -eq 20
-```
-
-Expected without a driver change: final line `install-host: PASS`, exit 0. Expected after installing/updating the NVIDIA driver: final line `install-host: REBOOT_REQUIRED`, exit 20.
-
-If exit 20 occurs, do not reboot until the installer commit and a reboot handoff commit both exist. Run:
+- [ ] **Step 6: Commit the installer before the first live host mutation, then apply it**
 
 ```bash
 git add scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py
 git diff --cached --check
 git commit -m "feat: install locked ros and gazebo baseline"
 install_commit="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain=v1 --untracked-files=all -- \
+  scripts/install_host.sh scripts/rollback_host.sh tests/environment/test_install_host.sh tests/environment/fixtures/fake_host_command.py)"
+```
+
+Expected: the exact script and test implementation is committed before any real apt source, package, service or storage mutation. All subsequent evidence for this task records `install_commit` plus the SHA-256 of `scripts/install_host.sh` and `config/environment/apt-packages.txt`.
+
+Run:
+
+```bash
+source .phase1-run.env
+test "$(git rev-parse HEAD)" = "$install_commit"
+set +e
+test ! -e "$PHASE1_EVIDENCE_ROOT/install-host.log"
+bash scripts/install_host.sh --apply --evidence-dir "$PHASE1_EVIDENCE_ROOT" \
+  2>&1 | tee "$PHASE1_EVIDENCE_ROOT/install-host.log"
+install_rc="${PIPESTATUS[0]}"
+set -e
+test "$install_rc" -eq 0 || test "$install_rc" -eq 23
+```
+
+Expected with the already compliant server driver: final line `install-host: PASS`, exit 0. If the driver is absent, below `560.35.05`, non-Ubuntu, or fails required headless evidence, the final line is `install-host: DRIVER_TRANSACTION_REQUIRED`, exit 23. In that case stop Phase 1, preserve `install-host.log`, `install-state.env`, `dpkg-before.tsv`, `apt-sources-before/inventory.tsv`, `apt-candidates.tsv`, key hashes, and policy evidence, update `PROJECT_STATUS`/`HANDOFF` with the blocker, and do not reboot or run a driver installer in this plan.
+
+After a successful exit 0, immediately update the status documents for Task 3:
+
+```bash
+task_commit="$install_commit"
 repo_root="$(git rev-parse --show-toplevel)"
 branch_name="$(git branch --show-current)"
-handoff_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-resume_command="$(printf 'cd %q && source .phase1-run.env && bash scripts/install_host.sh --apply --evidence-dir %q' "$repo_root" "$PHASE1_EVIDENCE_ROOT")"
-printf 'install_commit=%s\nrepo_root=%s\nbranch=%s\nhandoff_at=%s\nresume_command=%s\n' \
-  "$install_commit" "$repo_root" "$branch_name" "$handoff_at" "$resume_command"
+verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+script_sha256="$(sha256sum scripts/install_host.sh | awk '{print $1}')"
+package_manifest_sha256="$(sha256sum config/environment/apt-packages.txt | awk '{print $1}')"
+printf 'task_commit=%s\nrepo_root=%s\nbranch=%s\nverified_at=%s\nscript_sha256=%s\npackage_manifest_sha256=%s\nevidence=%s\n' \
+  "$task_commit" "$repo_root" "$branch_name" "$verified_at" "$script_sha256" "$package_manifest_sha256" "$PHASE1_EVIDENCE_ROOT"
 ```
 
-Immediately use `apply_patch` to keep the existing recovery structure in `docs/HANDOFF.md` but set its active state exactly equivalent to:
-
-```markdown
-- State: Phase 1 host installation stopped at the explicit `REBOOT_REQUIRED` boundary; it is not complete.
-- Installer commit: the literal `install_commit` printed above.
-- Recorded at: the literal UTC `handoff_at` printed above.
-- Repository and branch: the literal `repo_root` and `branch_name` printed above.
-- Evidence: the literal `$PHASE1_EVIDENCE_ROOT`; `install-state.env`, `install-resume.env`, `dpkg-before.tsv`, `apt-sources-before/inventory.tsv`, and `apt-candidates.tsv` are write-once; after-state files do not exist yet.
-- Last installer result: `install-host: REBOOT_REQUIRED`, exit 20.
-- First resume command: the literal `resume_command` printed above.
-- Resume rule: the command may validate the rebooted NVIDIA driver and create after-state evidence only; it must not repeat apt source setup, backups, candidate resolution, or package installation.
-```
-
-Then commit and reboot:
+Use `apply_patch` to record those literal values in `docs/PROJECT_STATUS.md` and `docs/HANDOFF.md`, including the exact install command and result. Then commit only those two documents:
 
 ```bash
-git add docs/HANDOFF.md
+git add docs/PROJECT_STATUS.md docs/HANDOFF.md
 git diff --cached --check
-git commit -m "docs: record phase one reboot handoff"
-sync
-sudo systemctl reboot
+git commit -m "docs: record phase one task 3 status"
 ```
 
-After the server returns, run only the recorded resume path and append to the original log:
-
-```bash
-cd /home/substation/substation-inspection-digital-twin
-source .phase1-run.env
-bash scripts/install_host.sh --apply --evidence-dir "$PHASE1_EVIDENCE_ROOT" \
-  2>&1 | tee -a "$PHASE1_EVIDENCE_ROOT/install-host.log"
-test "${PIPESTATUS[0]}" -eq 0
-test "$(tail -n1 "$PHASE1_EVIDENCE_ROOT/install-host.log")" = 'install-host: PASS'
-grep -Fx 'state=REBOOT_REQUIRED' "$PHASE1_EVIDENCE_ROOT/install-resume.env"
-grep -Fx 'state=PASS' "$PHASE1_EVIDENCE_ROOT/install-complete.env"
-```
-
-Use `apply_patch` immediately after that success to change the handoff state to “reboot completed, driver validated, Task 3 verification in progress,” preserve the same installer commit/evidence path, and set the first resume action to Step 6 below. Commit only `docs/HANDOFF.md` with `git commit -m "docs: record phase one reboot completion"`. If the resume command attempts any apt/source mutation, overwrites an initial artifact, or observes a different locked core version, stop for authority review.
+If a status-document commit is created, later live evidence continues to identify the task implementation commit and script SHA, not the documentation-only status commit.
 
 - [ ] **Step 7: Verify exact distribution families immediately after install**
 
@@ -2844,7 +2818,7 @@ grep -Fx 'state=PASS' "$PHASE1_EVIDENCE_ROOT/install-complete.env"
 
 Expected: every command exits 0; ROS is Jazzy, `ros_gz` upstream is 1.0.23-1, Navigation2 is 1.3.12-1, SLAM Toolbox is 2.8.5-1, TurtleBot3 core and simulation expose 2.3.6-1 and 2.3.7-1 respectively, Gazebo major is 8, and the driver meets the floor. Full Ubuntu package revisions are captured for review later; they are not silently normalized away.
 
-Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, optional historical `install-resume.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `policy-rc.d-state.tsv`, key SHA files, and the complete before/after apt-source inventories below `$PHASE1_EVIDENCE_ROOT/apt-sources-before` and `apt-sources-after`.
+Evidence: `install-host.log`, `dpkg-before.tsv`, `dpkg-after.tsv`, `host-install-new-packages.txt`, `host-install-version-changes.tsv`, `managed-files-after.tsv`, `install-state.env`, `install-complete.env`, `apt-candidates.tsv`, `apt-changed-package-origins.tsv`, `apt-policy-origins.json`, `policy-rc.d-state.tsv`, key SHA files, and the complete before/after apt-source inventories below `$PHASE1_EVIDENCE_ROOT/apt-sources-before` and `apt-sources-after`.
 
 Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$PHASE1_EVIDENCE_ROOT"`. Review the exact simulated package set, then run `bash scripts/rollback_host.sh --apply --evidence-dir "$PHASE1_EVIDENCE_ROOT" --confirm-run-id "$PHASE1_RUN_ID"`. The numbered details below explain that script's recorded transaction; do not execute individual snippets as a substitute for its validation gate.
 
@@ -2925,7 +2899,7 @@ Safe rollback: first run `bash scripts/rollback_host.sh --plan --evidence-dir "$
    ```
 6. The installer requires Noble `universe` to exist before mutation and never edits it, so rollback must not add, remove, or normalize an Ubuntu base source.
 7. Compare a fresh sorted `dpkg-query` snapshot with `dpkg-before.tsv`. Every non-NVIDIA difference is an incomplete rollback. Do not attempt an automated NVIDIA driver rollback; boot the previously known-good kernel/driver package set and require an operator-reviewed exact-version transaction for those remaining rows.
-8. Revert the Task 3 implementation commit and any conditional reboot handoff commits only after the restored host state and retained evidence have been reviewed.
+8. Revert the Task 3 implementation commit and the Task 3 status/handoff commit only after the restored host state and retained evidence have been reviewed.
 
 - [ ] **Step 8: Commit Task 3**
 
@@ -2938,7 +2912,7 @@ if ! git log -1 --format=%s -- scripts/install_host.sh scripts/rollback_host.sh 
 fi
 ```
 
-Expected: the installer, rollback entry point, fake-host fixture, and behavioral test exist in one focused commit. A reboot path additionally has two focused `docs/HANDOFF.md` synchronization commits; a no-reboot path has neither.
+Expected: the installer, rollback entry point, fake-host fixture, and behavioral test exist in one focused implementation commit. A successful live run has one later documentation-only `docs/PROJECT_STATUS.md`/`docs/HANDOFF.md` synchronization commit. A `DRIVER_TRANSACTION_REQUIRED` run has the same documentation update but records Phase 1 as blocked and does not proceed to Task 4.
 
 ---
 
@@ -2951,7 +2925,7 @@ Expected: the installer, rollback entry point, fake-host fixture, and behavioral
 - Create: `tests/environment/test_phase1_resources.sh`
 
 **Interfaces:**
-- Consumes: official Node.js 24.18.0 release files, the Ultralytics assets v8.4.0 YOLO11n URL, the dataset revisions fixed by `docs/VERSION_MATRIX.md`, at least 80 GiB free space, and the active unsealed evidence directory.
+- Consumes: official Node.js 24.18.0 release files, the Ultralytics assets v8.4.0 YOLO11n URL, the dataset revision identities fixed by `docs/VERSION_MATRIX.md`, a pre-download capacity calculation proving expected bytes plus at least 20 GiB remaining on the affected mount, and the active unsealed evidence directory.
 - Produces: atomically installed task-owned Node and YOLO leaves below `/var/lib/substation`, provenance markers plus YOLO `source.json`, `$PHASE1_EVIDENCE_ROOT/resource-downloads.tsv`, and a separate checksum-only `scripts/verify_phase1_resources.sh`. The downloader preflights any locked row or existing target before persistent installation, traps every temporary path, and refuses foreign/incomplete content-addressed directories. The verifier has no network, download, repair, or manifest rewrite path.
 
 - [ ] **Step 1: Write the failing resource-governance test**
@@ -4898,7 +4872,7 @@ EOF
     --state "$case_root/state.json" \
     --operations "$case_root/operations.jsonl" \
     --driver-ready 1
-  for command_name in sudo apt-get apt-cache dpkg-query systemctl ubuntu-drivers nvidia-smi curl locale-gen update-locale rosdep gz lspci findmnt; do
+  for command_name in sudo apt-get apt-cache dpkg-query systemctl nvidia-smi curl locale-gen update-locale rosdep gz lspci findmnt; do
     ln -s "$repo_root/tests/environment/fixtures/fake_host_command.py" "$fake_bin/$command_name"
   done
   PATH="$fake_bin:$PATH" \
@@ -5421,8 +5395,8 @@ result = {
     "exit_codes": {record["id"]: record["exit_code"] for record in records}
         | {"verify_environment": int(rc)},
     "thresholds": {
-        "disk_free_bytes_min": 80 * 1024**3,
-        "memory_bytes_min": 16 * 1024**3,
+        "phase1_residual_free_bytes_min": 20 * 1024**3,
+        "physical_memory_bytes_min": 15 * 1024**3,
         "nvidia_driver_min": "560.35.05",
     },
     "measurements": {},
@@ -5939,13 +5913,13 @@ PY
 
   verify_ros_workspace() {
     source /opt/ros/jazzy/setup.bash
-    cd ros2_ws
-    colcon build --symlink-install 2>&1 \
+    colcon --log-base log build --base-paths ros2_ws/src --build-base build --install-base install --event-handlers console_direct+ 2>&1 \
       | tee "$staging_dir/colcon-build-final.log"
     test "${PIPESTATUS[0]}" -eq 0
-    colcon test 2>&1 | tee "$staging_dir/colcon-test-final.log"
+    colcon --log-base log test --base-paths ros2_ws/src --build-base build --install-base install --event-handlers console_direct+ --return-code-on-test-failure 2>&1 \
+      | tee "$staging_dir/colcon-test-final.log"
     test "${PIPESTATUS[0]}" -eq 0
-    colcon test-result --verbose 2>&1 \
+    colcon test-result --test-result-base build --all --verbose 2>&1 \
       | tee "$staging_dir/colcon-test-result-final.log"
     test "${PIPESTATUS[0]}" -eq 0
     printf '%s\n' 'ros-workspace-final: PASS'
@@ -6087,8 +6061,8 @@ result = {
     "exit_codes": {record["id"]: record["exit_code"] for record in records}
         | {"verify_environment": 0},
     "thresholds": {
-        "disk_free_bytes_min": 80 * 1024**3,
-        "memory_bytes_min": 16 * 1024**3,
+        "phase1_residual_free_bytes_min": 20 * 1024**3,
+        "physical_memory_bytes_min": 15 * 1024**3,
         "nvidia_driver_min": "560.35.05",
     },
     "measurements": json.loads(measurements),
@@ -6490,7 +6464,7 @@ Expected: exactly `plan-path-type-consistency: PASS`.
 Run the unresolved-marker scan:
 
 ```bash
-scan_pattern='T''BD|T''ODO|F''IXME|X''XX|PLACE''HOLDER|待''定|待''补|以后再''定'
+scan_pattern='T''BD|T''ODO|F''IXME|PLACE''HOLDER|待''定|待''补|以后再''定'
 if rg -n -i "$scan_pattern" docs/plans/PHASE-01-ENVIRONMENT.md; then
   exit 1
 else

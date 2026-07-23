@@ -6,10 +6,10 @@
 
 四个感知模块必须保持独立：
 
-1. 安全风险检测；
-2. 变电站设备检测；
-3. 设备缺陷分类；
-4. 仪表读数。
+1. `safety_detector`：安全风险检测；
+2. `equipment_detector`：变电站设备检测；
+3. `defect_classifier`：设备裁剪图的缺陷分类；
+4. `meter_reader`：独立 `meter_locator` YOLO11n 表盘定位，加 OpenCV 透视/刻度/指针后处理的仪表读数。
 
 不得把它们合并为未经评估的单一大模型。温度、烟雾、气体和设备上下文通过 ROS 测量接口进入风险融合，不得伪装成视觉类别。Gazebo 场景真值只用于自动标签、场景验收和证据，绝不作为运行时感知输入。仪表训练和评估数据只允许使用 Gazebo 合成数据，不得加入外部仪表数据集。
 
@@ -144,8 +144,11 @@ sources:
     permitted_use: explicit-human-readable-rule
     revision_type: git-commit
     revision: immutable-revision
+    status: accepted|blocked|rejected
+    block_reason: empty-string-or-nonempty-block-explanation
     archive_sha256: 64-lowercase-hex
     file_manifest_sha256: 64-lowercase-hex
+    file_manifest_path: relative-path-under-data-root
     original_splits:
       train: integer
       val: integer
@@ -168,9 +171,11 @@ derived_datasets:
       test: integer
 ```
 
-示例值只说明字段类型，不是已取得资源的事实。实际 manifest 不得含示例 URL、伪造摘要、空 revision、浮动版本、默认分支名、未填写占位标记或未解释的 null。Roboflow 没有 Git commit 时使用 `revision_type: provider-version` 和 revision `10`；Gazebo 使用 `revision_type: generated`，revision 由生成器 commit、配置摘要、Gazebo 版本和 seed 清单的 SHA-256 组成。
+示例值只说明字段类型，不是已取得资源的事实。`status` 只能为 `accepted`、`blocked` 或 `rejected`；`accepted` 才允许进入转换、训练、推理或验收，`blocked` 和 `rejected` 都必须被工具拒绝。blocked 时 `block_reason` 必须是非空、可审计的明确原因；accepted/rejected 时它必须是空字符串，不能以未解释 null、pending 或自然语言猜测替代。实际 manifest 不得含示例 URL、伪造摘要、空 revision、浮动版本、默认分支名、未填写占位标记或未解释的 null。Roboflow 没有 Git commit 时使用 `revision_type: provider-version` 和 revision `10`；Gazebo 使用 `revision_type: generated`，revision 由生成器 commit、配置摘要、Gazebo 版本和 seed 清单的 SHA-256 组成。
 
-每个 `file_manifest_sha256` 指向一份按相对路径字节序排序的 TSV 内容摘要清单，行格式为 `sha256<TAB>size_bytes<TAB>relative_path`。绝对路径、用户名和下载 token 不得进入受控 manifest。
+每个 `file_manifest_sha256` 必须与 `file_manifest_path` 指向的同一份按相对路径字节序排序的 TSV 内容摘要清单相匹配，路径以 data root 为基准、使用 `/`、不得为绝对路径、不得含 `..`、空段或反斜杠，推荐为 `raw/<dataset_id>/<revision>/file-manifest.tsv`。TSV 行格式为 `sha256<TAB>size_bytes<TAB>relative_path`。校验器必须读取 path 中的文件、重算它的 SHA-256 并逐项验证，不能只信任摘要字符串。绝对路径、用户名和下载 token 不得进入受控 manifest。
+
+`insplad` 在精确 40 位 commit、archive SHA-256、file manifest path 与逐文件 SHA-256 全部取得前，唯一合法条目是 `status: blocked` 和非空 `block_reason: "exact upstream commit and file hashes have not been accepted"`；禁止使用默认分支、临时 tag 或“以后补充”来绕过这一门槛。其他来源在缺少相同接纳字段时也必须是 blocked/rejected，而非假定 accepted。
 
 ## 7. 训练基线与可复现性
 
@@ -278,6 +283,6 @@ meter_reader:
   --report /var/lib/substation/evidence/data-model-verification.json
 ```
 
-该脚本在创建前不是 Phase 0 可运行命令。实现必须以非零退出码拒绝以下任一情况：schema/必填字段不符、许可或 revision 缺失、SHA-256 不匹配、原始数据被修改、跨 split 重复、未知/未映射类别、仪表外部数据、合成样本不足、训练环境不可追溯、指标缺失、阈值未达、生产映射指向未通过 artifact 或文件名/摘要不一致。
+该脚本在创建前不是 Phase 0 可运行命令。实现必须以非零退出码拒绝以下任一情况：schema/必填字段不符、source `status` 非 accepted、blocked/rejected 的 `block_reason` 语义不符、file_manifest_path 缺失/越界/不存在/摘要不匹配、许可或 revision 缺失、SHA-256 不匹配、原始数据被修改、跨 split 重复、未知/未映射类别、仪表外部数据、合成样本不足、训练环境不可追溯、指标缺失、阈值未达、生产映射指向未通过 artifact 或文件名/摘要不一致。
 
 模型晋升必须是 manifest 原子更新，不复制覆盖旧权重；服务加载时再次计算 SHA-256。回滚只把 production 映射指回历史上已通过且其数据/环境仍可取得的 artifact。任何数据 revision、类别语义、基础权重、训练版本或发布阈值变化，先新增 ADR，并同步根项目计划、[VERSION_MATRIX](VERSION_MATRIX.md)、本文件和 [TEST_ACCEPTANCE](TEST_ACCEPTANCE.md)。
