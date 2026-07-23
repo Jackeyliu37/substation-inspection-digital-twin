@@ -138,7 +138,19 @@ python3 -m substation_gazebo.meter_dataset_package package \
   > "$output_dir/package.log"
 grep -Fxq 'meter-dataset-package: PASS' "$output_dir/package.log"
 (cd "$dataset_root" && sha256sum -c SHA256SUMS) > "$output_dir/checksums.log"
-unzip -t "$output_dir/gazebo-meter-locator-v1.zip" > "$output_dir/unzip-test.log"
+python3 - "$output_dir/gazebo-meter-locator-v1.zip" \
+  > "$output_dir/zip-test.log" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+archive_path = Path(sys.argv[1])
+with zipfile.ZipFile(archive_path) as archive:
+    corrupt = archive.testzip()
+    if corrupt is not None:
+        raise SystemExit(f"corrupt ZIP member: {corrupt}")
+    print(f"zip-test: PASS: {len(archive.infolist())} files")
+PY
 
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><testsuite name="meter-dataset" tests="1" failures="0"><testcase name="generation-package-contract"/></testsuite>' \

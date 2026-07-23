@@ -133,6 +133,8 @@ def test_generation_harness_is_bounded_and_process_group_scoped() -> None:
         "2700",
         'kill -TERM -- "-$launch_pid"',
         "meter_dataset_package package",
+        "archive.testzip()",
     ):
         assert token in source
     assert "pkill" not in source and "killall" not in source
+    assert "unzip -t" not in source
