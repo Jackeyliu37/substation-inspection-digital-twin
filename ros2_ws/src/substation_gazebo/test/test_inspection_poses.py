@@ -64,6 +64,7 @@ def test_navigation_configuration_has_single_transform_owner_per_mode() -> None:
         "obstacle_layer"
     ]["scan"]["topic"] == "/scan"
     controller = nav2["controller_server"]["ros__parameters"]
+    assert controller["controller_frequency"] == 20.0
     assert controller["failure_tolerance"] == 5.0
     assert controller["progress_checker"]["movement_time_allowance"] == 30.0
     assert controller["FollowPath"]["plugin"] == (
