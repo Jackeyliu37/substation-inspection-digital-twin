@@ -4,10 +4,13 @@ import ast
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+import yaml
+
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MAPPING = PACKAGE_ROOT / "launch/substation_mapping.launch.py"
 NAVIGATION = PACKAGE_ROOT / "launch/substation_navigation.launch.py"
+NAV2_CONFIG = PACKAGE_ROOT / "config/nav2_params.yaml"
 
 
 def launch_source(path: Path) -> str:
@@ -52,6 +55,8 @@ def test_navigation_launch_uses_map_amcl_and_minimal_nav2_stack() -> None:
         assert f'package="{package}"' in source
         assert f'executable="{executable}"' in source
     assert '{"yaml_filename": map_path}' in source
+    parameters = yaml.safe_load(NAV2_CONFIG.read_text(encoding="utf-8"))
+    assert "map_server" not in parameters
     assert '"map_server",' in source
     assert '"amcl",' in source
     assert '"localization_launch.py"' not in source
