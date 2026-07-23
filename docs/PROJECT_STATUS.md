@@ -2,11 +2,25 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 0 文档与契约已完成；Phase 1 环境基线是下一执行阶段。
-- Phase 1 执行状态：尚未执行。未安装系统依赖，未创建 ROS 2 功能包，未下载数据或模型，未启动 Gazebo、Nav2、Gateway、前端、Foxglove Bridge 或产品 Nginx 服务，也未修改服务器配置。
+- 当前阶段：Phase 1 环境基线已开始；Task 1 implementation 已提交，live acceptance run 初始化被当前非交互 `sudo` 环境阻塞。
+- Phase 1 执行状态：Task 1 只读 documentation gate 验证器和初始化脚本已创建。尚未安装系统依赖，未创建 ROS 2 功能包，未下载数据或模型，未启动 Gazebo、Nav2、Gateway、前端、Foxglove Bridge 或产品 Nginx 服务，也未完成 acceptance run 初始化。
 - Phase 0 契约快照提交：`d0fb12dbe794221f88abb777f31760bdee655783`（`docs: complete phase zero contracts`）。
 - Phase 0 状态记录提交：运行 `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md` 获取。该提交只记录阶段事实和恢复入口；本文不嵌入自身提交哈希。
-- 当前阻塞项：无。下一步是否进入 Phase 1 只取决于用户是否要求继续，以及 Phase 1 Task 1/Task 2 的只读 gate 结果。
+- 当前阻塞项：`scripts/init_phase1_run.sh` 需要按计划创建 `/var/lib/substation` 与 `/opt/substation` 下的受控目录；当前执行通道无法响应 `sudo` 密码提示，`sudo -n true` 返回 `sudo: a password is required`。失败后确认 `.phase1-run.env`、`/var/lib/substation`、`/var/lib/substation/evidence/acceptance`、`/opt/substation` 和 `/opt/substation/toolchains` 均不存在。
+
+## Phase 1 Task 1 当前状态
+
+- Task 1 implementation commit：`d049f62bd39b910c2e5fe41ace80b778f14da509`（`feat: add phase one documentation gate`）。
+- 验证时间：`2026-07-23T04:13:36Z`。
+- 已通过命令：
+  - `bash tests/environment/test_documentation_gate.sh`，输出 `documentation-gate: PASS`。
+  - `bash scripts/verify_documentation_gate.sh | tee "$gate_log"`，最终行 `documentation-gate: PASS`。
+  - `git diff --check`，无输出。
+- 被阻塞命令：
+  - `bash scripts/init_phase1_run.sh --gate-log "$gate_log"`。
+  - 失败输出：`sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper` 和 `sudo: a password is required`。
+- Phase 1 evidence：尚未创建；`.phase1-run.env` 不存在。
+- 下一步：由有交互式 sudo 的操作者在同一 checkout 中运行 `docs/HANDOFF.md` 的 “Operator action required” 命令完成唯一 acceptance run 初始化，然后回来继续 Task 1 Step 6 的后半段验证。
 
 ## Phase 0 已固定的契约范围
 
@@ -36,4 +50,4 @@
 
 ## 下一步入口
 
-等用户要求进入 Phase 1 时，从 `docs/plans/PHASE-01-ENVIRONMENT.md` 的 Task 1 开始：先创建预期失败的 documentation-gate 测试，再实现只读验证器和 acceptance-run 初始化。不得跳过失败测试，不得先安装、下载、启动服务或修改主机。
+Phase 1 已停在 Task 1 Step 6 的 live initialization。先完成 `docs/HANDOFF.md` 中记录的交互式初始化动作；`.phase1-run.env` 存在且指向非空 `$PHASE1_EVIDENCE_ROOT` 后，再继续 Task 1 的测试日志归档、状态确认和 Task 2 只读主机审计。不得直接跳到下载、安装或服务启动。

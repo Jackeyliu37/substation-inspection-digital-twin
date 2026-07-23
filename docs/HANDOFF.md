@@ -7,8 +7,10 @@
 - Phase 0 contract snapshot commit: `d0fb12dbe794221f88abb777f31760bdee655783`
 - Phase 0 contract snapshot subject: `docs: complete phase zero contracts`
 - Status-record commit: resolve with `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md`. This record intentionally does not embed its own commit hash.
-- Phase 1 execution: not started; no host mutation, dependency installation, ROS package creation, resource or model download, server configuration change, acceptance-run initialization, or Gazebo/Nav2/Web launch has occurred.
-- Phase 1 runtime artifacts: none. No `/var/lib/substation/evidence/acceptance/<run_id>/` directory has been initialized by this Phase 0 work.
+- Phase 1 execution: Task 1 implementation commit exists, but live acceptance-run initialization is blocked by the current non-interactive `sudo` channel. No dependency installation, ROS package creation, resource or model download, server configuration change, or Gazebo/Nav2/Web launch has occurred.
+- Phase 1 Task 1 implementation commit: `d049f62bd39b910c2e5fe41ace80b778f14da509` (`feat: add phase one documentation gate`).
+- Phase 1 runtime artifacts: none. `.phase1-run.env`, `/var/lib/substation`, `/var/lib/substation/evidence/acceptance`, `/opt/substation`, and `/opt/substation/toolchains` were confirmed absent after the failed initialization attempt.
+- Current blocker: `scripts/init_phase1_run.sh` needs to run `sudo install` for planned storage roots, but this execution channel cannot answer the password prompt. `sudo -n true` returns `sudo: a password is required`.
 - Phase 0 final verification output: `.superpowers/sdd/final-phase0-fix-report.md` after the status-record commit. The file is ignored because it records post-commit evidence without changing the verified Git snapshot.
 
 ## Fixed contract decisions to preserve
@@ -22,15 +24,29 @@
 - Ubuntu official NVIDIA inert X dependencies are allowed only as package dependencies with no active graphics stack, session, display manager, virtual display or remote desktop service.
 - Phase 1 capacity means per-operation residual free space of at least `20 GiB`; full dataset capacity is a later expected-size gate.
 
-## First resume command
+## Operator action required
+
+Run this from an interactive shell where you can enter the sudo password:
+
+```bash
+cd /home/jackeyliu37/substation-inspection-digital-twin
+gate_log="$(mktemp --tmpdir=/tmp)"
+bash scripts/verify_documentation_gate.sh | tee "$gate_log"
+bash scripts/init_phase1_run.sh --gate-log "$gate_log"
+unlink -- "$gate_log"
+```
+
+Expected result: `.phase1-run.env` exists, `PHASE1_EVIDENCE_ROOT` ends in `/01-environment.staging`, `PHASE1_EVIDENCE_FINAL` ends in `/01-environment`, and the staging directory contains `acceptance_run_id.txt`, `git_commit.txt`, `documentation-gate.log`, and `storage-paths-before.tsv`. Do not run package installation, resource download, ROS, Gazebo, Nginx, or frontend commands as part of this operator action.
+
+## First resume command after operator action
 
 Run exactly:
 
 ```bash
-cd /home/jackeyliu37/substation-inspection-digital-twin && sed -n '1,240p' docs/plans/PHASE-01-ENVIRONMENT.md
+cd /home/jackeyliu37/substation-inspection-digital-twin && source .phase1-run.env && test -d "$PHASE1_EVIDENCE_ROOT" && git log -1 --oneline
 ```
 
-Then, only if the user asks to enter Phase 1, start Task 1 Step 1. Do not install, download, start services or initialize a Phase 1 acceptance run before the planned documentation gate/bootstrap sequence reaches that point.
+Then continue Task 1 Step 6 by writing `test-documentation-gate.log`, verifying `git_commit.txt` equals `d049f62bd39b910c2e5fe41ace80b778f14da509`, and updating status/handoff. Do not install, download, or start services before Task 2 preflight and later planned gates allow it.
 
 ## Recovery checks
 
@@ -45,4 +61,4 @@ Expected branch is `main`; status output should be empty except for ignored `.su
 
 ## Next implementation action
 
-Start Phase 1 Task 1 from `docs/plans/PHASE-01-ENVIRONMENT.md`: create the failing documentation-gate test, then implement only the read-only validator, shared helpers and acceptance-run initialization defined there. Preserve Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless rendering and the FastAPI-only product browser boundary.
+Complete Phase 1 Task 1 live initialization after the operator action above. Preserve Ubuntu 24.04, ROS 2 Jazzy, Gazebo Harmonic OGRE2/EGL headless rendering and the FastAPI-only product browser boundary.
