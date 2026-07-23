@@ -11,6 +11,7 @@ MODEL_PATH = (
 )
 MODEL_SHA256 = "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
 MODEL_SIZE_BYTES = 5613764
+AI_PYTHON = ".venv/bin/python"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -25,6 +26,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="substation_perception",
                 executable="placeholder_detector",
                 name="placeholder_detector",
+                prefix=[AI_PYTHON],
                 output="screen",
                 parameters=[
                     {
