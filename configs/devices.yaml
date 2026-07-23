@@ -1,0 +1,107 @@
+schema_version: 1
+assets:
+  - asset_id: arrester-01
+    category: lightning_arrester
+    report_name: Lightning Arrester LA1
+    pose: {x: 5.5, y: -2.5, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: 3.5, y: -2.5, yaw: 0.0}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: breaker-01
+    category: breaker
+    report_name: Circuit Breaker CB1
+    pose: {x: 0.5, y: 3.5, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: 0.5, y: 1.8, yaw: 1.57079632679}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: current-transformer-01
+    category: current_transformer
+    report_name: Current Transformer CT1
+    pose: {x: 1.5, y: -3.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: 1.5, y: -1.4, yaw: -1.57079632679}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: disconnect-switch-01
+    category: closed_blade_disconnect_switch
+    report_name: Disconnect Switch DS1
+    pose: {x: -3.5, y: 3.5, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: -3.5, y: 1.8, yaw: 1.57079632679}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: glass-insulator-01
+    category: glass_disc_insulator
+    report_name: Glass Disc Insulator GI1
+    pose: {x: -5.0, y: -2.5, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: -3.3, y: -2.5, yaw: 3.14159265359}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: meter-oil-01
+    category: analog_meter
+    report_name: Transformer Oil Level Gauge M2
+    pose: {x: 5.0, y: 2.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: 3.0, y: 2.0, yaw: 0.0}
+    thresholds:
+      temperature_celsius: {warning: 70.0, critical: 85.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+    meter:
+      sensor_id: meter-oil-sensor-01
+      minimum: 0.0
+      maximum: 100.0
+      unit: percent
+      normal_minimum: 30.0
+      normal_maximum: 80.0
+  - asset_id: meter-pressure-01
+    category: analog_meter
+    report_name: Transformer Pressure Gauge M1
+    pose: {x: 4.0, y: 3.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: 2.8, y: 2.5, yaw: 0.0}
+    thresholds:
+      temperature_celsius: {warning: 70.0, critical: 85.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+    meter:
+      sensor_id: meter-pressure-sensor-01
+      minimum: 0.0
+      maximum: 2.0
+      unit: MPa
+      normal_minimum: 0.4
+      normal_maximum: 1.2
+  - asset_id: porcelain-insulator-01
+    category: porcelain_pin_insulator
+    report_name: Porcelain Pin Insulator PI1
+    pose: {x: -5.0, y: 0.5, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: -3.3, y: 0.5, yaw: 3.14159265359}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: potential-transformer-01
+    category: potential_transformer
+    report_name: Potential Transformer PT1
+    pose: {x: -1.5, y: -3.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: -1.5, y: -1.4, yaw: -1.57079632679}
+    thresholds:
+      temperature_celsius: {warning: 65.0, critical: 80.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+  - asset_id: transformer-01
+    category: power_transformer
+    report_name: Main Transformer T1
+    pose: {x: 5.0, y: 3.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    inspection_pose: {x: 2.8, y: 3.0, yaw: 0.0}
+    thresholds:
+      temperature_celsius: {warning: 70.0, critical: 85.0}
+      smoke_0_1: {warning: 0.25, critical: 0.6}
+      gas_ppm: {warning: 100.0, critical: 200.0}
+

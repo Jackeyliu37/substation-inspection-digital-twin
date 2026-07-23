@@ -511,7 +511,7 @@ The next action is exactly: write and approve the Phase 3 SLAM/Nav2 design and p
 - [ ] **Step 3: Run documentation and repository consistency checks**
 
 ```bash
-bash scripts/validate_documentation_gate.sh
+bash scripts/verify_documentation_gate.sh
 git diff --check
 git diff --name-only "$implementation_commit"..HEAD
 rg -n 'Phase 2|02-gazebo-world|implementation commit|Phase 3|SLAM|Nav2' \

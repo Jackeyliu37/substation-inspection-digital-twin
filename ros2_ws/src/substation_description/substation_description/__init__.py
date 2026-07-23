@@ -1,0 +1,2 @@
+"""Substation static description package."""
+
