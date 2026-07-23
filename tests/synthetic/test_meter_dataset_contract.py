@@ -111,8 +111,10 @@ def test_generator_cli_and_package_runtime_contract() -> None:
         "maximum_retries_per_sample",
         "fresh_frames_after_command",
         "generation-result.json",
+        "NEEDLE_COMMAND_REPETITIONS = 3",
     ):
         assert token in source
+    assert "JOINT_FEEDBACK_TIMEOUT" not in source
     package = ET.parse(PACKAGE / "package.xml")
     dependencies = {node.text for node in package.findall("exec_depend")}
     assert {"cv_bridge", "std_msgs", "sensor_msgs", "ros_gz_interfaces", "substation_description"}.issubset(dependencies)

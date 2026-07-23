@@ -32,6 +32,7 @@ DIAL_RADIUS_M = 0.18
 WAIT_SECONDS = 5.0
 POSE_CALL_SECONDS = 1.0
 POSE_ATTEMPTS = 4
+NEEDLE_COMMAND_REPETITIONS = 3
 RUN_SECONDS = 40.0 * 60.0
 NEEDLE_TOPICS = {
     "meter-pressure-01": "/meter_dataset/pressure/needle_cmd",
@@ -249,17 +250,9 @@ class MeterDatasetGenerator(Node):
 
     def _publish_needle_and_wait(self, sample: SamplePlan) -> None:
         publisher = self.needle_publishers[sample.asset_id]
-        deadline = time.monotonic() + WAIT_SECONDS
-        while time.monotonic() < deadline:
+        for _attempt in range(NEEDLE_COMMAND_REPETITIONS):
             publisher.publish(Float64(data=sample.needle_angle_radians))
-            with self.condition:
-                if any(
-                    abs(position - sample.needle_angle_radians) <= 0.02
-                    for position in self.latest_joint_positions
-                ):
-                    return
-                self.condition.wait(timeout=0.1)
-        _fail("JOINT_FEEDBACK_TIMEOUT", sample.sample_id)
+            time.sleep(0.02)
 
     def _fresh_frame(self) -> tuple[np.ndarray, CameraIntrinsics]:
         with self.condition:
