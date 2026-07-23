@@ -177,8 +177,8 @@ class Phase2Probe(Node):
             message.header.frame_id == "laser_frame"
             and len(message.ranges) == 360
             and len(finite) >= 30
-            and message.range_min == 0.12
-            and message.range_max == 10.0
+            and math.isclose(message.range_min, 0.12, rel_tol=0.0, abs_tol=1e-6)
+            and math.isclose(message.range_max, 10.0, rel_tol=0.0, abs_tol=1e-6)
         )
 
     def on_odom(self, message: Odometry) -> None:
