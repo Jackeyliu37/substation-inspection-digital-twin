@@ -53,6 +53,7 @@ grep -Fq '/usr/sbin/policy-rc.d' scripts/install_host.sh
 grep -Fq 'dpkg-before.tsv' scripts/install_host.sh
 grep -Fq 'dpkg-after.tsv' scripts/install_host.sh
 grep -Fq 'host-install-new-packages.txt' scripts/install_host.sh
+test "$(grep -Fc 'LC_ALL=C comm -13' scripts/install_host.sh)" -eq 2
 grep -Fq 'host-install-version-changes.tsv' scripts/install_host.sh
 grep -Fq 'apt-candidates.tsv' scripts/install_host.sh
 grep -Fq 'apt-policy-origins.tsv' scripts/install_host.sh
@@ -77,6 +78,8 @@ grep -Fq '${db:Status-Abbrev}' scripts/install_host.sh
 grep -Fq 'new_packages_sha256=' scripts/install_host.sh
 grep -Fq 'policy_mode_before=' scripts/install_host.sh
 grep -Fq 'rosdep-setup.env' scripts/install_host.sh
+grep -Fq 'set +u # ROS setup scripts are not nounset-safe.' scripts/install_host.sh
+grep -Fq 'set -u' scripts/install_host.sh
 grep -Fq 'nginx_enabled_before=' scripts/install_host.sh
 grep -Fq 'nginx_active_before=' scripts/install_host.sh
 grep -Fq 'nginx must be inactive before Phase 1 install' scripts/install_host.sh

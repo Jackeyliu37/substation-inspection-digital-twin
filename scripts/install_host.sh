@@ -96,7 +96,7 @@ capture_partial_packages() {
       | awk -F '\t' '$1 == "ii " {print $2 "\t" $3}' | LC_ALL=C sort > "$evidence_dir/dpkg-after.tsv" || true
   fi
   if test -s "$evidence_dir/dpkg-after.tsv" && test ! -e "$evidence_dir/host-install-new-packages.txt"; then
-    comm -13 <(cut -f1 "$evidence_dir/dpkg-before.tsv") <(cut -f1 "$evidence_dir/dpkg-after.tsv") \
+    LC_ALL=C comm -13 <(cut -f1 "$evidence_dir/dpkg-before.tsv") <(cut -f1 "$evidence_dir/dpkg-after.tsv") \
       > "$evidence_dir/host-install-new-packages.txt" || true
   fi
 }
@@ -314,7 +314,7 @@ fi
 
 dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Version}\n' 2>/dev/null \
   | awk -F '\t' '$1 == "ii " {print $2 "\t" $3}' | LC_ALL=C sort > "$evidence_dir/dpkg-after.tsv"
-comm -13 <(cut -f1 "$evidence_dir/dpkg-before.tsv") <(cut -f1 "$evidence_dir/dpkg-after.tsv") > "$evidence_dir/host-install-new-packages.txt"
+LC_ALL=C comm -13 <(cut -f1 "$evidence_dir/dpkg-before.tsv") <(cut -f1 "$evidence_dir/dpkg-after.tsv") > "$evidence_dir/host-install-new-packages.txt"
 python3 - "$evidence_dir/dpkg-before.tsv" "$evidence_dir/dpkg-after.tsv" "$evidence_dir/host-install-version-changes.tsv" <<'PY'
 import sys
 from pathlib import Path
@@ -334,7 +334,9 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader > 
 cmp "$evidence_dir/nvidia-packages-before.tsv" "$evidence_dir/nvidia-packages-after.tsv"
 cmp "$evidence_dir/nvidia-smi-before.txt" "$evidence_dir/nvidia-smi-after.txt"
 
+set +u # ROS setup scripts are not nounset-safe.
 source /opt/ros/jazzy/setup.bash
+set -u
 test "$ROS_DISTRO" = jazzy
 gz sim --versions > "$evidence_dir/gazebo-versions.txt"
 grep -Eq '(^|[^0-9])8\.[0-9]' "$evidence_dir/gazebo-versions.txt"
