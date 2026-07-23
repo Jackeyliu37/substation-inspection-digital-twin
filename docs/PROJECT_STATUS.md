@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 1 环境基线 fast-track；Task 1–8 已完成，下一步为 EGL/Gazebo smoke。
+- 当前阶段：Phase 1 环境基线 fast-track；Task 1–9 已完成，下一步为环境锁捕获与 evidence seal。
 - Phase 1 执行状态：主机依赖、ROS 2 工作区、AI/Gateway 虚拟环境和 Node/Next.js 前端基线均已完成。官方 YOLO11n 占位/base weight 已锁定；公开训练数据下载和模型微调仍由用户在仓库外完成。
 - Phase 0 契约快照提交：`d0fb12dbe794221f88abb777f31760bdee655783`（`docs: complete phase zero contracts`）。
 - Phase 0 状态记录提交：运行 `git log -1 --format=%H -- README.md docs/PROJECT_STATUS.md docs/HANDOFF.md` 获取。该提交只记录阶段事实和恢复入口；本文不嵌入自身提交哈希。
@@ -11,7 +11,7 @@
 ## Phase 1 fast-track 当前状态
 
 - 当前 acceptance run：`c2d99d10-058f-4033-aa33-89917bf74590`；evidence staging：`/var/lib/substation/evidence/acceptance/c2d99d10-058f-4033-aa33-89917bf74590/01-environment.staging`。
-- Task 3 主机安装实现提交：`330b34a`；Task 5 ROS 工作区：`ae94eae`；Task 6 AI 环境：`5a30550`；Task 7 Gateway 环境：`1b7e4dc`；Task 8 前端基线：`8e0af06`。
+- Task 3 主机安装实现提交：`330b34a`；Task 5 ROS 工作区：`ae94eae`；Task 6 AI 环境：`5a30550`；Task 7 Gateway 环境：`1b7e4dc`；Task 8 前端基线：`8e0af06`；Task 9 EGL smoke：`0192c64`。
 - Task 3 主机安装证据：`install-complete.env` 为 `state=PASS`，新增包 `1465` 个；NVIDIA 驱动保持 `595.71.05`；nginx 为 `disabled/inactive`。
 - Task 5 已通过：`bash tests/environment/test_ros_workspace.sh`、`bash scripts/setup_ros_workspace.sh --evidence-dir "$PHASE1_EVIDENCE_ROOT"`；rosdep、colcon build、colcon test、colcon test-result 均退出 0，测试结果为 `0 tests, 0 errors, 0 failures, 0 skipped`。
 - Task 5 证据：`rosdep-update.log`、`rosdep-check.log`、`colcon-build.log`、`colcon-test.log`、`colcon-test-result.log`、`setup-ros-workspace.log`。
@@ -21,7 +21,9 @@
 - Task 7 证据：`setup-gateway-env.log`、`gateway-pip-freeze.txt`。
 - Task 8 已通过：Node.js `24.18.0`、npm `11.16.0`、锁文件 v3、精确前端依赖、Playwright CLI 和 Next.js 生产构建均通过；npm registry 使用 npmmirror 解决当前网络慢连接。
 - Task 8 证据：`setup-web-env.log`、`frontend-build.log`、`node-npm-versions.txt`。
-- 下一步：Task 9 执行无 X11 的 Gazebo Harmonic OGRE2/EGL smoke。
+- Task 9 已通过：Gazebo Harmonic 在未设置 `DISPLAY` 时以 OGRE2/headless rendering 发布 64×48 RGB camera frame，退出后无残留 `gz` 进程。
+- Task 9 证据：`egl.log`、`egl-frame.txt`、`egl-topics.txt`、`test-headless-egl.log`。
+- 下一步：Task 10 捕获环境锁并一次性封存 Phase 1 evidence。
 
 - Documentation gate implementation commit：`d049f62bd39b910c2e5fe41ace80b778f14da509`（`feat: add phase one documentation gate`）。
 - Acceptance run identity commit：`99a2709f5a0f4d51eb7af99d3c440b06f5e28ad9`（包含 Task 1 实现及当时的阻塞状态记录；后续状态提交不替换该 evidence identity）。

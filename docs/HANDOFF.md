@@ -2,14 +2,15 @@
 
 ## 当前恢复快照
 
-- 当前阶段：Phase 1 Task 1–8 已完成，继续 Task 9 EGL/Gazebo smoke；不要重新运行已完成的环境安装。
+- 当前阶段：Phase 1 Task 1–9 已完成，继续 Task 10 环境锁与 evidence seal；不要重新运行已完成的环境安装。
 - 当前 acceptance run：`c2d99d10-058f-4033-aa33-89917bf74590`。
 - 当前 evidence staging：`/var/lib/substation/evidence/acceptance/c2d99d10-058f-4033-aa33-89917bf74590/01-environment.staging`。
-- 最近实现提交：`8e0af06 feat: add locked frontend baseline`；状态同步提交应在该实现提交之后单独创建。
+- 最近实现提交：`0192c64 test: add headless gazebo egl smoke probe`；状态同步提交应在该实现提交之后单独创建。
 - Task 5 证据已通过：`rosdep-update.log`、`rosdep-check.log`、`colcon-build.log`、`colcon-test.log`、`colcon-test-result.log`、`setup-ros-workspace.log`。
 - Task 6 证据已通过：`setup-python-env.log`、`ai-pip-freeze.txt`；`.venv/.substation-environment.json` 与 `requirements.lock` SHA-256 一致，CUDA 可用且版本为 12.6。
 - Task 7 证据已通过：`setup-gateway-env.log`、`gateway-pip-freeze.txt`；`.venv-web/.substation-environment.json` 与 `requirements-web.lock` SHA-256 一致，Gateway 依赖和 ROS `rclpy` 导入通过。
 - Task 8 证据已通过：`setup-web-env.log`、`frontend-build.log`、`node-npm-versions.txt`；Node.js 24.18.0、npm 11.16.0、前端锁文件和 Next.js 生产构建通过。
+- Task 9 证据已通过：`egl.log`、`egl-frame.txt`、`egl-topics.txt`、`test-headless-egl.log`；无 X11 的 64×48 RGB camera frame 和进程清理均通过。
 
 - Repository: `/home/jackeyliu37/substation-inspection-digital-twin`
 - Branch: `main`
@@ -74,4 +75,4 @@ Expected branch is `main`; status output should be empty except for ignored `.su
 
 ## Next implementation action
 
-Proceed to Task 9: run the Gazebo Harmonic OGRE2/EGL headless smoke test without X11 or a virtual display. Preserve the FastAPI-only product browser boundary.
+Proceed to Task 10: capture the reviewed environment lock and seal the existing Phase 1 evidence exactly once. Do not rerun setup scripts during sealing.
