@@ -594,6 +594,44 @@ def test_matching_scenario_state_completes_the_gateway_command():
     assert json.loads(row["result_json"])["scenario_revision"] == "8"
 
 
+def test_matching_failed_scenario_state_completes_without_revision_increment():
+    store = CommandStore()
+    command_id = str(uuid.uuid4())
+    run_id = "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f"
+    payload = {
+        "scenario_id": "fire-smoke",
+        "action": "trigger",
+        "parameters": {"asset_id": "transformer-01", "smoke_0_1": 0.8},
+        "reason": "operator web scenario trigger",
+    }
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/simulation/scenario",
+        key=str(uuid.uuid4()),
+        body_sha256="0" * 64,
+        kind="simulation.scenario",
+        run_id=run_id,
+        accepted_at="2026-07-24T11:00:00.000000Z",
+        response={"status": "accepted"},
+        expectation={"payload": payload, "service": {"scenario_revision": 7}},
+    )
+    scenario = {
+        "scenario_id": "fire-smoke",
+        "command_id": command_id,
+        "action": "trigger",
+        "status": "failed",
+        "active": False,
+        "scenario_revision": "7",
+        "error_code": "GAZEBO_SET_POSE_FAILED",
+    }
+
+    assert store.complete_from_scenario(command_id, scenario, run_id) is True
+    row = store.get(command_id)
+    assert row["status"] == "failed"
+    assert json.loads(row["error_json"])["code"] == "GAZEBO_SET_POSE_FAILED"
+
+
 def test_idempotency_persists_command_and_replays_exact_response():
     class Adapter:
         def dispatch_mission(self, *, command_id, action, payload):

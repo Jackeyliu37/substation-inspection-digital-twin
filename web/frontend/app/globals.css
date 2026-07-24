@@ -87,3 +87,4 @@
 .asset-number-badge { fill:#081117; stroke:#d8fff4; stroke-width:1.2; vector-effect:non-scaling-stroke; }
 .asset-map-marker text { fill:#f0fbff; font-size:8px; font-weight:900; text-shadow:0 1px 2px #000; pointer-events:none; }
 .key-trail { background:#42c3a1; height:2px !important; }
+.key-wall { background:#444c53; }

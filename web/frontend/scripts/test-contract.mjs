@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { newCommandId } from "../app/command-id.mjs";
-import { decodeOccupancyData, worldToMapPixel } from "../app/map-utils.mjs";
+import { decodeOccupancyData, occupancyCellColor, worldToMapPixel } from "../app/map-utils.mjs";
 import { buildAssetMarkers, mapPathPoints } from "../app/map-presentation.mjs";
 import {
   DEFAULT_VIEWPORT,
@@ -184,6 +184,12 @@ for (const mapStyle of ["scrollbar-color:#252b30 #020304", ".asset-footprint", "
 const decoded = decodeOccupancyData("/wAyZA==", 4, 1);
 if (decoded.length !== 4 || decoded[0] !== -1 || decoded[1] !== 0 || decoded[2] !== 50 || decoded[3] !== 100) {
   throw new Error(`occupancy decoding failed: ${Array.from(decoded)}`);
+}
+if (JSON.stringify(occupancyCellColor(100)) !== JSON.stringify([68, 76, 83])) {
+  throw new Error("occupied map cells must use a neutral obstacle color");
+}
+if (!page.includes("occupancyCellColor(value)")) {
+  throw new Error("the occupancy map must use the shared neutral color mapping");
 }
 const pixel = worldToMapPixel({ x_m: 1, y_m: 2 }, {
   origin: { x_m: -1, y_m: -2 }, resolution_m: 0.5, width_cells: 10, height_cells: 12,

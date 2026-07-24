@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
 from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Time
@@ -180,6 +180,9 @@ class ScenarioManager(Node):
         self._started_stamp = Time()
         self._pending: Command | None = None
         self._pending_lock = Lock()
+        self._applying_command: Command | None = None
+        self._apply_thread: Thread | None = None
+        self._completed_application: tuple[Command, ApplyResult] | None = None
 
         q_sensor = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -259,7 +262,7 @@ class ScenarioManager(Node):
         except ScenarioError as error:
             return SetParametersResult(successful=False, reason=str(error))
         with self._pending_lock:
-            if self._pending is not None:
+            if self._pending is not None or self._applying_command is not None:
                 return SetParametersResult(successful=False, reason="SCENARIO_CONFLICT")
             self._pending = command
         stamp = self.get_clock().now().to_msg()
@@ -296,13 +299,49 @@ class ScenarioManager(Node):
         response = self.pose_client.call(request, timeout_sec=2.0)
         return response is not None and response.success
 
+    def _apply_command(self, command: Command) -> None:
+        try:
+            result = self.engine.apply(command, self._set_pose)
+        except Exception as error:
+            self.get_logger().error(f"scenario application failed unexpectedly: {error}")
+            result = ApplyResult(
+                status="failed",
+                revision=self.engine.revision,
+                active=self.engine.active,
+                scenario_id=command.scenario_id,
+                error_code="SCENARIO_APPLICATION_FAILED",
+            )
+        with self._pending_lock:
+            self._completed_application = (command, result)
+
     def _process_pending(self) -> None:
         with self._pending_lock:
+            completed = self._completed_application
+            if completed is not None:
+                self._completed_application = None
+                self._applying_command = None
+                self._apply_thread = None
+        if completed is not None:
+            command, result = completed
+            self._finish_application(command, result)
+            return
+
+        with self._pending_lock:
+            if self._applying_command is not None or self._pending is None:
+                return
             command = self._pending
             self._pending = None
-        if command is None:
-            return
-        result = self.engine.apply(command, self._set_pose)
+            self._applying_command = command
+            worker = Thread(
+                target=self._apply_command,
+                args=(command,),
+                name=f"scenario-apply-{command.command_id[:8]}",
+                daemon=True,
+            )
+            self._apply_thread = worker
+        worker.start()
+
+    def _finish_application(self, command: Command, result: ApplyResult) -> None:
         if result.status == "applied":
             asset_id = command.parameters.get("asset_id")
             if isinstance(asset_id, str):

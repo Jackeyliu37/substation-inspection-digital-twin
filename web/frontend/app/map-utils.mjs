@@ -12,6 +12,13 @@ export function decodeOccupancyData(encoded, width, height) {
   return values;
 }
 
+export function occupancyCellColor(value) {
+  if (value < 0) return [8, 17, 23];
+  if (value >= 65) return [68, 76, 83];
+  if (value > 10) return [91, 105, 111];
+  return [31, 48, 56];
+}
+
 export function worldToMapPixel(point, map) {
   const resolution = Number(map?.resolution_m);
   const width = Number(map?.width_cells);

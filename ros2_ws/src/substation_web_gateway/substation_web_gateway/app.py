@@ -648,7 +648,14 @@ class CommandStore:
                 return False
             try:
                 revision = int(scenario.get("scenario_revision", -1))
-                if revision <= int(service.get("scenario_revision", -1)):
+                baseline_revision = int(service.get("scenario_revision", -1))
+                if (
+                    scenario["status"] == "applied"
+                    and revision <= baseline_revision
+                ) or (
+                    scenario["status"] == "failed"
+                    and revision < baseline_revision
+                ):
                     return False
             except (TypeError, ValueError):
                 return False

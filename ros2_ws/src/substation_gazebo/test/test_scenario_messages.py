@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 import sys
+import threading
+import time
+from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticStatus
@@ -117,3 +120,54 @@ def test_manager_source_names_topics_and_atomic_parameters() -> None:
         '"scenario_parameters_json"',
     ):
         assert parameter in source
+
+
+def test_pending_scenario_application_does_not_block_the_ros_executor() -> None:
+    module = load_module()
+    manager = object.__new__(module.ScenarioManager)
+    command = SimpleNamespace(
+        command_id="b77391cc-2e27-4788-a858-b59b22197495",
+        scenario_id="fire-smoke",
+        parameters={},
+    )
+    started = threading.Event()
+    release = threading.Event()
+    published = []
+
+    class Engine:
+        def apply(self, observed_command, pose_setter):
+            assert observed_command is command
+            started.set()
+            assert release.wait(timeout=1.0)
+            return module.ApplyResult(
+                status="failed",
+                revision=0,
+                active=False,
+                scenario_id="fire-smoke",
+                error_code="GAZEBO_SET_POSE_FAILED",
+            )
+
+    manager.engine = Engine()
+    manager._pending_lock = threading.Lock()
+    manager._pending = command
+    manager._applying_command = None
+    manager._apply_thread = None
+    manager._completed_application = None
+    manager._set_pose = lambda *_args: False
+    manager._publish_result = lambda observed_command, result: published.append(
+        (observed_command, result)
+    )
+
+    before = time.monotonic()
+    manager._process_pending()
+    elapsed = time.monotonic() - before
+
+    assert elapsed < 0.1
+    assert started.wait(timeout=0.5)
+    release.set()
+    deadline = time.monotonic() + 1.0
+    while not published and time.monotonic() < deadline:
+        manager._process_pending()
+        time.sleep(0.01)
+    assert published[0][0] is command
+    assert published[0][1].error_code == "GAZEBO_SET_POSE_FAILED"

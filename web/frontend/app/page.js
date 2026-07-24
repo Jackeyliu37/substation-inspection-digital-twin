@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { newCommandId } from "./command-id.mjs";
-import { decodeOccupancyData, worldToMapPixel } from "./map-utils.mjs";
+import { decodeOccupancyData, occupancyCellColor, worldToMapPixel } from "./map-utils.mjs";
 import { buildAssetMarkers, mapPathPoints } from "./map-presentation.mjs";
 import {
   DEFAULT_VIEWPORT,
@@ -553,7 +553,7 @@ function OccupancyMap({ map, robot, assets, mission, trail }) {
       for (let x = 0; x < width; x += 1) {
         const value = values[y * width + x];
         const offset = ((height - 1 - y) * width + x) * 4;
-        const color = value < 0 ? [8, 17, 23] : value >= 65 ? [186, 91, 80] : value > 10 ? [91, 105, 111] : [31, 48, 56];
+        const color = occupancyCellColor(value);
         image.data.set([...color, 255], offset);
       }
     }
