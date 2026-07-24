@@ -16,6 +16,7 @@ from substation_interfaces.msg import RunContext
 from substation_interfaces.srv import (
     FreezeEvidence,
     GetReportingReadiness,
+    ListReportingArtifacts,
     QueryEvidence,
     QueryRunTimeMapping,
     ReadEvidenceChunk,
@@ -133,6 +134,40 @@ def test_runtime_records_mapping_and_round_trips_chunked_evidence(tmp_path) -> N
     assert readiness.report_generator_ready is True
     assert readiness.time_mapping_ready is True
     assert readiness.error_code == ""
+
+
+def test_runtime_lists_reporting_artifacts_as_canonical_entries(tmp_path) -> None:
+    module = node_module()
+    run_id = str(uuid4())
+    report_id = str(uuid4())
+    store = EvidenceStore(tmp_path)
+    store.store_bytes(
+        run_id,
+        7,
+        "application/pdf",
+        b"pdf",
+        {
+            "artifact_group_id": report_id,
+            "format": "pdf",
+            "run_id": run_id,
+            "mission_id": str(uuid4()),
+            "created_at": "2026-07-24T03:04:05.000000Z",
+        },
+        evidence_id=str(uuid4()),
+    )
+    runtime = module.EvidenceServiceRuntime(store, report_generator_ready=lambda: True)
+    response = runtime.list_reporting_artifacts(
+        ListReportingArtifacts.Request(
+            schema_version=1, run_id=run_id, artifact_group_id=report_id, format="pdf"
+        ),
+        ListReportingArtifacts.Response(),
+    )
+    assert response.available is True
+    assert len(response.entries_json) == 1
+    entry = json.loads(response.entries_json[0])
+    assert entry["run_id"] == run_id
+    assert entry["size_bytes"] == "3"
+    assert entry["metadata"]["format"] == "pdf"
 
 
 def test_runtime_rejects_digest_or_run_context_mismatch(tmp_path) -> None:

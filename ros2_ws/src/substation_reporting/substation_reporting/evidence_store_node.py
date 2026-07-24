@@ -15,6 +15,7 @@ from substation_interfaces.srv import (
     FreezeEvidence,
     GenerateReport,
     GetReportingReadiness,
+    ListReportingArtifacts,
     QueryEvidence,
     QueryRunTimeMapping,
     ReadEvidenceChunk,
@@ -311,6 +312,40 @@ class EvidenceServiceRuntime:
         response.metadata_canonical_json = record.metadata_json
         return response
 
+    def list_reporting_artifacts(self, request, response):
+        self._prepare(response)
+        if request.schema_version != SCHEMA_VERSION:
+            response.available = False
+            return self._reject(response, "INTERFACE_VERSION_UNSUPPORTED")
+        try:
+            records = self._store.list_evidence(
+                run_id=request.run_id or None,
+                artifact_group_id=request.artifact_group_id or None,
+                format_name=request.format or None,
+            )
+        except ValueError as exc:
+            response.available = False
+            return self._reject(response, str(exc))
+        entries: list[str] = []
+        for record in records:
+            try:
+                metadata = json.loads(record.metadata_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            entries.append(json.dumps({
+                "evidence_id": record.evidence_id,
+                "run_id": record.run_id,
+                "context_revision": str(record.context_revision),
+                "evidence_revision": str(record.evidence_revision),
+                "media_type": record.media_type,
+                "content_sha256": record.content_sha256,
+                "size_bytes": str(record.size_bytes),
+                "metadata": metadata,
+            }, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+        response.available = True
+        response.entries_json = entries
+        return response
+
     def read_evidence_chunk(self, request, response):
         self._prepare(response)
         if request.schema_version != SCHEMA_VERSION:
@@ -416,6 +451,11 @@ class EvidenceStoreNode(Node):
                 QueryEvidence,
                 "/reporting/query_evidence",
                 self._runtime.query_evidence,
+            ),
+            (
+                ListReportingArtifacts,
+                "/reporting/list_reporting_artifacts",
+                self._runtime.list_reporting_artifacts,
             ),
             (
                 ReadEvidenceChunk,

@@ -207,6 +207,60 @@ class EvidenceStore:
             ).fetchone()
         return EvidenceRecord(**dict(row)) if row is not None else None
 
+    def list_evidence(
+        self,
+        *,
+        run_id: str | None = None,
+        artifact_group_id: str | None = None,
+        format_name: str | None = None,
+    ) -> list[EvidenceRecord]:
+        """List reporting artifacts by immutable metadata selectors.
+
+        The index deliberately exposes only evidence records; object paths and
+        SQL details remain an implementation concern of this store.
+        """
+        if run_id is not None:
+            self._validate_uuid(run_id, "RUN_ID_INVALID")
+        if artifact_group_id is not None:
+            self._validate_uuid(artifact_group_id, "ARTIFACT_GROUP_ID_INVALID")
+        if format_name is not None and format_name not in {
+            "html", "pdf", "evidence", "diagnostic"
+        }:
+            raise ValueError("FORMAT_INVALID")
+        clauses: list[str] = []
+        params: list[str] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        query = "SELECT * FROM evidence"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        records: list[tuple[EvidenceRecord, dict[str, Any]]] = []
+        for row in rows:
+            record = EvidenceRecord(**dict(row))
+            try:
+                metadata = json.loads(record.metadata_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("artifact_group_id") != artifact_group_id and artifact_group_id is not None:
+                continue
+            if metadata.get("format") != format_name and format_name is not None:
+                continue
+            if not isinstance(metadata.get("artifact_group_id"), str):
+                continue
+            if metadata.get("format") not in {"html", "pdf", "evidence", "diagnostic"}:
+                continue
+            records.append((record, metadata))
+        records.sort(key=lambda item: item[0].evidence_id)
+        records.sort(
+            key=lambda item: str(item[1].get("created_at", "")), reverse=True
+        )
+        return [record for record, _metadata in records]
+
     def read_evidence_chunk(self, evidence_id: str, start: int, end: int) -> bytes:
         record = self.query_evidence(evidence_id)
         if record is None:

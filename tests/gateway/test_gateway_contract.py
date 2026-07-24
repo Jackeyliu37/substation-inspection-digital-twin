@@ -328,6 +328,63 @@ def test_map_reports_and_diagnostics_are_read_only_snapshots():
     assert body["data"]["items"][0]["name"] == "gateway"
 
 
+def test_reporting_index_groups_artifacts_and_downloads_through_adapter():
+    report_id = "74727656-b320-4fe8-9a14-6de3c0094f08"
+    report_run_id = "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f"
+    content = b"report-pdf"
+    digest = hashlib.sha256(content).hexdigest()
+
+    class Adapter:
+        def list_reporting_artifacts(self, *, run_id=None, artifact_group_id=None, format_name=None):
+            return {
+                "available": True,
+                "entries": [{
+                    "evidence_id": "d0c4a7c6-6cf5-4f57-a31d-4c4f71cfed74",
+                    "run_id": report_run_id,
+                    "context_revision": "3",
+                    "evidence_revision": "4",
+                    "media_type": "application/pdf",
+                    "content_sha256": digest,
+                    "size_bytes": str(len(content)),
+                    "metadata": {
+                        "artifact_group_id": report_id,
+                        "format": "pdf",
+                        "mission_id": "0c5efce1-655b-413d-9847-da203fb5ca5e",
+                        "created_at": "2026-07-24T03:04:05.000000Z",
+                    },
+                }],
+                "error_code": "",
+                "error_message": "",
+            }
+
+        def read_evidence_range(self, evidence_id, offset, length):
+            assert evidence_id == "d0c4a7c6-6cf5-4f57-a31d-4c4f71cfed74"
+            return content[offset:offset + length]
+
+    app = create_app(adapter=Adapter())
+    status, _, body = _http(app, "GET", "/api/v1/reports")
+    assert status == 200
+    assert body["data"]["items"][0]["report_id"] == report_id
+    assert body["data"]["items"][0]["formats"] == ["pdf"]
+    status, headers, payload = _http(
+        app,
+        "GET",
+        f"/api/v1/reports/{report_id}/download?format=pdf",
+        headers=(("Range", "bytes=0-5"),),
+        decode_json=False,
+    )
+    assert status == 206
+    assert payload == content[:6]
+    assert headers["content-range"] == f"bytes 0-5/{len(content)}"
+    status, _, body = _http(
+        app,
+        "GET",
+        f"/api/v1/reports/{report_id}/download?format=html",
+    )
+    assert status == 404
+    assert body["code"] == "REPORT_FORMAT_NOT_FOUND"
+
+
 def test_events_and_camera_open_without_fabricating_frames():
     app = create_app()
     events = _websocket_open(app, "/ws/events")

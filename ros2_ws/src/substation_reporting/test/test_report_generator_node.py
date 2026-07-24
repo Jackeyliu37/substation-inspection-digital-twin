@@ -49,7 +49,7 @@ def test_runtime_generates_selected_report_artifacts_and_diagnostic_bundle() -> 
         implementation_commit="a" * 40,
         model_versions={"safety": "development-placeholder"},
         dataset_versions={"meter": "synthetic-v1"},
-        submit_artifact=lambda artifact_id, format_name, _run, _revision, payload, _media: (
+        submit_artifact=lambda artifact_id, format_name, _run, _mission, _revision, payload, _media: (
             submitted.append((artifact_id, format_name, payload)) or True
         ),
         utc_now=lambda: datetime(2026, 7, 24, 3, 4, 5, tzinfo=timezone.utc),

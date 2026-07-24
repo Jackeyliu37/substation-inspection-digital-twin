@@ -41,7 +41,7 @@ class ReportServiceRuntime:
         implementation_commit: str,
         model_versions: dict[str, str],
         dataset_versions: dict[str, str],
-        submit_artifact: Callable[[str, str, str, int, bytes, str], bool],
+        submit_artifact: Callable[[str, str, str, str | None, int, bytes, str], bool],
         utc_now: Callable[[], datetime] | None = None,
     ) -> None:
         self._generator = generator
@@ -173,6 +173,7 @@ class ReportServiceRuntime:
                 report_id,
                 format_name,
                 request.run_id,
+                request.mission_id,
                 self._context.context_revision,
                 payloads[format_name],
                 REPORT_MEDIA_TYPES[format_name],
@@ -214,6 +215,7 @@ class ReportServiceRuntime:
             diagnostic_id,
             "diagnostic",
             request.run_id,
+            None,
             self._context.context_revision,
             stream.getvalue(),
             "application/zip",
@@ -314,6 +316,7 @@ class ReportGeneratorNode(Node):
         group_id: str,
         format_name: str,
         run_id: str,
+        mission_id: str | None,
         context_revision: int,
         payload: bytes,
         media_type: str,
@@ -339,6 +342,11 @@ class ReportGeneratorNode(Node):
         metadata = {
             "artifact_group_id": group_id,
             "format": format_name,
+            "run_id": run_id,
+            "mission_id": mission_id,
+            "created_at": datetime.now(timezone.utc).isoformat(
+                timespec="microseconds"
+            ).replace("+00:00", "Z"),
             "source_frame_id": "",
             "source_index": 0,
             "source_message_type": (

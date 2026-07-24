@@ -11,10 +11,10 @@
 - Phase 6 mission 生命周期检查点：`19a983d`。`/mission/manage` 已实现 pause/resume/stop 和 stop 后 start 新 run；Action feedback/result 将 active/succeeded/skipped/failed/cancelled task、mission terminal、RunContext lifecycle 与 transition command 原子写回 `mission.sqlite3`。风险重排会把被取消的 ACTIVE task 安全重排回 QUEUED，已完成任务不重复执行；Gateway command 仅在 matching 权威 mission 快照后从 accepted 转 succeeded。
 - Phase 6 速度仲裁检查点：`4268803`。任务模块现在是最终 `/cmd_vel` 单一项目发布者：autonomous 只接受 `/cmd_vel_nav`，manual 只接受带 run/context 的 `/cmd_vel_manual`；手动命令使用进程 monotonic deadline，校验模式、紧停、frame、限速和 duration，按 ACCEPTED→APPLIED 发布状态并到期归零，重复 command 不重放。`/mission/set_robot_mode` 使用 state/latch revision CAS，切 manual 会取消 Nav2 并先发零速度。冷启动 IDLE→START 与紧停复位 0.5 s/无活动 goal 完整 barrier 仍待收口。
 - Phase 7 Gateway 控制面检查点：`c78f1ad`。新增 `/api/v1/robot/mode`、`/api/v1/robot/manual-velocity`、`/api/v1/robot/emergency-stop` 和 `/api/v1/robot/emergency-stop/reset`；所有命令经真实 ROS Service/Topic adapter，紧停不依赖 readiness，manual endpoint 只发布 `ManualVelocityCommand`。参数、Idempotency-Key、uint64 revision、速度/时长/deadman 和 fail-closed 错误均已测试。
-- Phase 7 Gateway 机器人状态检查点：`e0578d0`。Gateway 使用显式契约 QoS 订阅 `/odom`、`/battery_state` 和 tf2，在 odom 样本的精确 stamp 查询 `map←odom`，验证 frame/有限数/四元数后组成 map pose，并把标准 0～1 电量换算成百分数。mission 模式、锁存 revision 和 active task 与机器人快照原子同步；pose 超过 0.5 秒或时钟异常即 stale，HTTP gate 与 ROS 发布边界均拒绝普通手动移动，紧停路径不受影响。真实 rclpy TF/odom/battery→ASGI `/api/v1/robot/state` 集成测试已通过；命令终态、report/diagnostic 索引和相机帧仍待接入。
+- Phase 7 Gateway 机器人状态检查点：`e0578d0`。Gateway 使用显式契约 QoS 订阅 `/odom`、`/battery_state` 和 tf2，在 odom 样本的精确 stamp 查询 `map←odom`，验证 frame/有限数/四元数后组成 map pose，并把标准 0～1 电量换算成百分数。mission 模式、锁存 revision 和 active task 与机器人快照原子同步；pose 超过 0.5 秒或时钟异常即 stale，HTTP gate 与 ROS 发布边界均拒绝普通手动移动，紧停路径不受影响。真实 rclpy TF/odom/battery→ASGI `/api/v1/robot/state` 集成测试已通过；命令终态与 reporting 索引/下载已接入，真实相机帧仍待收口。
 - Phase 7 Gateway 命令终态检查点：`db2b089`。CommandStore 保存每次受理命令的 payload 与 Service 最小 revision，只有 matching mission transition、robot mode/latch/revision 或 `ManualVelocityStatus` terminal 才写入 succeeded/failed/timed_out/cancelled；HTTP 202、Service accepted 和 ManualVelocityStatus.ACCEPTED 不再伪造成功。固定 timeout 会将未完成命令终结为 timed_out，终态在 SQLite 提交后写入 `command.status` 事件并由 `/ws/events` 重放；ROS 先于 HTTP 记录到达的 mission/manual 状态可回放。Gateway 回归已覆盖这些正负终态与竞态。
-- reporting ROS 检查点：`2f8847a`。新增 9 个 schema 1 Service、`evidence_store` 与 `report_generator` 节点；`evidence.sqlite3` 和内容寻址对象由 evidence store 单写，RunContext/revision、canonical metadata、SHA-256、JPEG freeze、Range、ROS-time→UTC 映射及 readiness fail-closed 已验证。报告节点只写 `/var/lib/substation/reports/.work` 并经 `/reporting/store_evidence` 提交 HTML/PDF/evidence ZIP/诊断 ZIP；缺 implementation commit 时不发布生成 Service。为消除 HTML 无法经 evidence store 提交的契约冲突，`text/html` 已仅对 report generator 加入 allowlist。独立 report/diagnostic 索引和 Gateway 下载映射仍待实现。
-- 本轮全量软件验证：`colcon build --symlink-install && colcon test && colcon test-result --all --verbose` 为 `174 tests, 0 errors, 0 failures, 0 skipped`；Gateway、部署及 Phase 5～6 顶层 contract 为 `41 passed`，documentation gate 通过，world/navigation/perception/synthetic 的既有检查点仍有效。
+- reporting ROS 检查点：`2f8847a` → reporting index checkpoint。`EvidenceStore.list_evidence` 和 schema 1 `/reporting/list_reporting_artifacts` 以 metadata 建立 report/diagnostic artifact 索引，Gateway 通过该 Service 分组 `/api/v1/reports`、`/api/v1/diagnostics`，并将 HTML/PDF/evidence/diagnostic 下载映射到同一 reporting Range/ETag/SHA-256 读取边界；Gateway 不读文件或 SQLite。报告节点提交 metadata 的 group/format/run/mission/created_at 字段。
+- 本轮 reporting index 验证：reporting tests `18 passed`，Gateway tests `42 passed`；ROS 接口/节点包已重建。完整 workspace、部署/接口 contract 与 documentation gate 将在本检查点提交前复跑。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`（包含 `b25c99b` 地面支撑修复、`445539c` 本地代价地图窗口修复和 `5044ce5` 动态障碍探针修复）。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -74,9 +74,9 @@
 | 计划项 | 当前事实 | 后续条件 |
 |---|---|---|
 | Phase 4 四模型、15 FPS、指标报告 | 官方 `yolo11n.pt` 占位 smoke 已通过；生产模型未导入 | 用户交付四个不可变训练 ZIP/Release，随后校验 SHA-256、类别、训练摘要与指标 |
-| Phase 5 证据与报告 ROS 服务 | reporting Service、RunContext 时间映射、内容寻址证据、Range、HTML/PDF/evidence/diagnostic 生成与 evidence store 提交已验证 | 补 rosbag2、report/diagnostic 索引、告警/轨迹/模型完整快照与正式报告验收 |
+| Phase 5 证据与报告 ROS 服务 | reporting Service、RunContext 时间映射、内容寻址证据、Range、HTML/PDF/evidence/diagnostic 生成、artifact 索引与 Gateway 下载已验证 | 补 rosbag2、告警/轨迹/模型完整快照与正式报告验收 |
 | Phase 6 Nav2 巡检执行 | 风险重排、SQLite 恢复、mission/task terminal、Nav2 执行及手动/自动速度仲裁已验证 | 补冷启动 IDLE→START、紧停复位完整 barrier 和正式 live acceptance |
-| Phase 7 Gateway 真实控制面 | 权威状态、mission/evidence/reporting、mode/manual/e-stop、精确 TF/odom pose、电量与命令终态已接入 | 补 report/diagnostic 索引下载与真实相机帧 |
+| Phase 7 Gateway 真实控制面 | 权威状态、mission/evidence/reporting、mode/manual/e-stop、精确 TF/odom pose、电量、命令终态、report/diagnostic 索引下载已接入 | 补真实相机帧 |
 | Phase 8 浏览器验收 | 八个工作区、契约测试和生产构建通过 | 安装/提供 Chromium 后执行 Playwright；真实 Gateway/ROS/Nginx 联调 |
 | Phase 9 部署、Windows、Foxglove、演示 | systemd/Nginx/Foxglove 配置和静态契约已提交 | 以 `/opt/substation` release 实测、Windows LAN 验收、只读 Foxglove、900 s 闭环、报告/截图/演示视频 |
 

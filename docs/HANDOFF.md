@@ -13,10 +13,10 @@
 - Phase 6 mission 生命周期检查点：`19a983d`。`/mission/manage` pause/resume/stop 与 stop 后 start 已接通；Action feedback/result 回写 task/mission terminal、RunContext 和 SQLite，风险重排不会重跑 terminal task。Gateway 只有在 matching transition_command_id 权威快照后才把 command 标为 succeeded。
 - Phase 6 速度仲裁检查点：`4268803`。任务模块单写最终 `/cmd_vel`，在 autonomous/manual 间严格选择 Nav2 或带 RunContext 的手动命令；monotonic deadline、限速、锁存、frame、去重、ACCEPTED→APPLIED 和到期归零已验证。`/mission/set_robot_mode` 使用 state/latch revision CAS，manual barrier 会取消 Nav2 并发零速度。冷启动 IDLE→START 与紧停复位的 0.5 s/无活动 goal 完整 barrier 仍待实现。
 - Phase 7 Gateway 控制面检查点：`c78f1ad`。mode/manual-velocity/emergency-stop/reset REST 已接入 ROS；紧停路径独立于 readiness，manual 仅发送带 run/context 的 `ManualVelocityCommand`，输入校验和幂等已通过。
-- Phase 7 Gateway 机器人状态检查点：`e0578d0`。`/odom` 按消息 stamp 精确查询 `map←odom`，合法四元数/位姿/速度映射到 `/api/v1/robot/state`；`/battery_state` 由 0～1 转换为百分数，mission 模式/锁存/active task 同步进入快照。0.5 秒 stale 使用 ROS time，普通手动移动在 HTTP 和 ROS 发布边界双重 fail-closed；真实 rclpy TF/odom/battery→ASGI endpoint 测试已通过。命令终态、report/diagnostic 索引和相机帧尚未收口。
+- Phase 7 Gateway 机器人状态检查点：`e0578d0`。`/odom` 按消息 stamp 精确查询 `map←odom`，合法四元数/位姿/速度映射到 `/api/v1/robot/state`；`/battery_state` 由 0～1 转换为百分数，mission 模式/锁存/active task 同步进入快照。0.5 秒 stale 使用 ROS time，普通手动移动在 HTTP 和 ROS 发布边界双重 fail-closed；真实 rclpy TF/odom/battery→ASGI endpoint 测试已通过。命令终态与 report/diagnostic 索引下载已收口，真实相机帧尚未收口。
 - Phase 7 Gateway 命令终态检查点：`db2b089`。CommandStore 保存受理 payload/Service 最小 revision；mission transition、mode/e-stop latch、ManualVelocityStatus terminal 和固定 timeout 均写入不可逆命令终态。`command.status` 在 SQLite 提交后进入事件流，`/ws/events` 可重放；ROS 终态先于 HTTP 记录的竞态由缓存/回放处理。Gateway/部署/接口回归 `41 passed`，ROS workspace `174` 项全绿。
-- reporting ROS 检查点：`2f8847a`。9 个 Service 类型及 evidence_store/report_generator 节点已接入；时间映射、证据写入/冻结/查询/Range、readiness、HTML/PDF/evidence ZIP/diagnostic ZIP 经真实 rclpy 服务链通过。report generator 不写 `evidence.sqlite3` 或最终目录，缺 implementation commit 时保持 Service 不可用；report/diagnostic 独立索引与 Gateway 下载映射尚未接入。
-- 当前软件验证：ROS workspace `174 tests, 0 errors, 0 failures, 0 skipped`；Gateway、部署及 Phase 5～6 顶层 contract `41 passed`；documentation gate、world/navigation/perception/synthetic 的既有检查点均已通过。
+- reporting index 检查点：`EvidenceStore.list_evidence`、schema 1 `/reporting/list_reporting_artifacts` 及 Gateway report/diagnostic 索引已接入。Gateway 通过 reporting Service 读取 canonical entries，按 group/format 生成列表，并把下载复用 evidence 的 Range、ETag、SHA-256 和 200/206/304/400/416 语义；不直接读文件或 SQLite。report generator metadata 已带 group/format/run/mission/created_at。
+- 当前 reporting 增量验证：reporting tests `18 passed`、Gateway tests `42 passed`；完整 workspace、部署/接口 contract 与 documentation gate 在提交前复跑。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -67,4 +67,4 @@
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
 - 占位结果只发布到 `/perception/development/detections` 和 `/perception/development/annotated_image`；正式聚合、数字孪生、风险、Gateway、报告和证据链不得消费它们。
-- 下一实现动作：补 Gateway report/diagnostic 独立索引与下载映射；随后补真实相机帧、冷启动 IDLE→START 和 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。
+- 下一实现动作：复跑完整 workspace/部署/接口/documentation gate 并提交 reporting checkpoint；随后补真实相机帧、冷启动 IDLE→START 和 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。

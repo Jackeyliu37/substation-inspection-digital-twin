@@ -32,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/FreezeEvidence.srv"
   "srv/QueryEvidence.srv"
   "srv/ReadEvidenceChunk.srv"
+  "srv/ListReportingArtifacts.srv"
   "srv/GetReportingReadiness.srv"
   "srv/GenerateReport.srv"
   "srv/GenerateDiagnosticBundle.srv"

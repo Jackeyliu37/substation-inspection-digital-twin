@@ -1,0 +1,11 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string run_id
+string artifact_group_id
+string format
+---
+uint32 schema_version
+bool available
+string[] entries_json
+string error_code
+string error_message

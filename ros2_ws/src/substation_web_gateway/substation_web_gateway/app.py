@@ -627,6 +627,100 @@ def create_app(
             return "invalid"
         return start, min(end, total - 1)
 
+    async def reporting_index(request: Request):
+        if adapter is None or not hasattr(adapter, "list_reporting_artifacts"):
+            return None, _problem(
+                request,
+                503,
+                "REPORT_INDEX_UNAVAILABLE",
+                "The reporting artifact index is unavailable.",
+            )
+        try:
+            result = await asyncio.to_thread(
+                adapter.list_reporting_artifacts,
+                run_id=state.run_id,
+            )
+        except Exception:
+            return None, _problem(
+                request, 503, "REPORT_INDEX_UNAVAILABLE", "Reporting index query failed."
+            )
+        if not result.get("available", False):
+            return None, _problem(
+                request,
+                503,
+                result.get("error_code") or "REPORT_INDEX_UNAVAILABLE",
+                result.get("error_message") or "The reporting artifact index is unavailable.",
+            )
+        entries = result.get("entries")
+        if not isinstance(entries, list):
+            return None, _problem(
+                request, 503, "REPORT_INDEX_UNAVAILABLE", "Reporting index returned invalid data."
+            )
+        return entries, None
+
+    async def download_evidence_record(
+        record: dict[str, Any],
+        request: Request,
+        *,
+        filename: str,
+        storage_code: str = "EVIDENCE_STORAGE_UNAVAILABLE",
+    ) -> Response:
+        if adapter is None or not hasattr(adapter, "read_evidence_range"):
+            return _problem(request, 503, storage_code, "Evidence storage is unavailable.")
+        try:
+            digest = str(record["content_sha256"])
+            total = int(record["size_bytes"])
+            evidence_id = str(record["evidence_id"])
+            media_type = str(record["media_type"])
+            if not re.fullmatch(r"[0-9a-f]{64}", digest) or total < 0:
+                raise ValueError("invalid record")
+        except (KeyError, TypeError, ValueError):
+            return _problem(request, 503, storage_code, "Evidence metadata is invalid.")
+        etag = f'"sha256:{digest}"'
+        requested_range = request.headers.get("range")
+        if requested_range is None and request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag, "Accept-Ranges": "bytes"})
+        if_range = request.headers.get("if-range")
+        selected = None if requested_range is not None and if_range not in (None, etag) else parse_range(
+            requested_range, total
+        )
+        if selected == "invalid":
+            response = _problem(request, 400, "INVALID_RANGE", "Only one valid byte range is supported.")
+            response.headers["Accept-Ranges"] = "bytes"
+            return response
+        if selected == "unsatisfiable" or total == 0:
+            response = _problem(request, 416, "RANGE_NOT_SATISFIABLE", "The requested byte range is unavailable.")
+            response.headers["Accept-Ranges"] = "bytes"
+            response.headers["Content-Range"] = f"bytes */{total}"
+            return response
+        start, end = (0, total - 1) if selected is None else selected
+        try:
+            content = await asyncio.to_thread(
+                adapter.read_evidence_range, evidence_id, start, end - start + 1
+            )
+        except Exception:
+            return _problem(request, 503, storage_code, "Evidence read failed.")
+        if len(content) != end - start + 1:
+            return _problem(request, 503, storage_code, "Evidence read was incomplete.")
+        if selected is None and hashlib.sha256(content).hexdigest() != digest:
+            return _problem(request, 503, storage_code, "Evidence digest verification failed.")
+        if media_type not in {"image/jpeg", "application/json", "application/pdf", "application/zip", "text/html"}:
+            return _problem(request, 503, storage_code, "Evidence media type is unsupported.")
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "ETag": etag,
+            "X-Content-SHA256": digest,
+        }
+        if selected is not None:
+            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+        return Response(
+            content,
+            status_code=206 if selected is not None else 200,
+            media_type=media_type,
+            headers=headers,
+        )
+
     async def dispatch_json_service_command(
         request: Request,
         *,
@@ -810,83 +904,177 @@ def create_app(
         if error is not None:
             return error
         assert record is not None
-        if adapter is None or not hasattr(adapter, "read_evidence_range"):
-            return _problem(
-                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence storage is unavailable."
-            )
-        digest = str(record["content_sha256"])
-        total = int(record["size_bytes"])
-        etag = f'"sha256:{digest}"'
-        requested_range = request.headers.get("range")
-        if requested_range is None and request.headers.get("if-none-match") == etag:
-            return Response(status_code=304, headers={"ETag": etag, "Accept-Ranges": "bytes"})
-        if_range = request.headers.get("if-range")
-        selected = None if requested_range is not None and if_range not in (None, etag) else parse_range(
-            requested_range, total
-        )
-        if selected == "invalid":
-            response = _problem(request, 400, "INVALID_RANGE", "Only one valid byte range is supported.")
-            response.headers["Accept-Ranges"] = "bytes"
-            return response
-        if selected == "unsatisfiable" or total == 0:
-            response = _problem(
-                request, 416, "RANGE_NOT_SATISFIABLE", "The requested byte range is unavailable."
-            )
-            response.headers["Accept-Ranges"] = "bytes"
-            response.headers["Content-Range"] = f"bytes */{total}"
-            return response
-        start, end = (0, total - 1) if selected is None else selected
-        try:
-            content = await asyncio.to_thread(
-                adapter.read_evidence_range, evidence_id, start, end - start + 1
-            )
-        except Exception:
-            return _problem(
-                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence read failed."
-            )
-        if len(content) != end - start + 1:
-            return _problem(
-                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence read was incomplete."
-            )
-        if selected is None and hashlib.sha256(content).hexdigest() != digest:
-            return _problem(
-                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence digest verification failed."
-            )
-        extensions = {
+        record = dict(record)
+        record["evidence_id"] = evidence_id
+        extension = {
             "image/jpeg": "jpg",
             "application/json": "json",
             "application/pdf": "pdf",
             "application/zip": "zip",
-        }
-        media_type = str(record["media_type"])
-        extension = extensions.get(media_type)
+            "text/html": "html",
+        }.get(str(record["media_type"]))
         if extension is None:
-            return _problem(
-                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence media type is unsupported."
-            )
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": f'attachment; filename="evidence-{evidence_id}.{extension}"',
-            "ETag": etag,
-            "X-Content-SHA256": digest,
-        }
-        if selected is not None:
-            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
-        return Response(
-            content,
-            status_code=206 if selected is not None else 200,
-            media_type=media_type,
-            headers=headers,
+            return _problem(request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence media type is unsupported.")
+        return await download_evidence_record(
+            record,
+            request,
+            filename=f"evidence-{evidence_id}.{extension}",
         )
 
     @app.get("/api/v1/reports")
     async def reports(request: Request) -> Response:
+        if adapter is not None:
+            entries, error = await reporting_index(request)
+            if error is not None:
+                return error
+            groups: dict[str, dict[str, Any]] = {}
+            assert entries is not None
+            for entry in entries:
+                metadata = entry.get("metadata") if isinstance(entry, dict) else None
+                if not isinstance(metadata, dict) or metadata.get("format") == "diagnostic":
+                    continue
+                report_id = metadata.get("artifact_group_id")
+                format_name = metadata.get("format")
+                if not isinstance(report_id, str) or not _strict_uuid(report_id):
+                    continue
+                if format_name not in {"html", "pdf", "evidence"}:
+                    continue
+                item = groups.setdefault(report_id, {
+                    "report_id": report_id,
+                    "run_id": entry.get("run_id"),
+                    "mission_id": metadata.get("mission_id"),
+                    "status": "ready",
+                    "formats": [],
+                    "download_urls": {},
+                    "sha256": {},
+                    "size_bytes": {},
+                    "created_at": metadata.get("created_at"),
+                })
+                if format_name not in item["formats"]:
+                    item["formats"].append(format_name)
+                item["download_urls"][format_name] = (
+                    f"/api/v1/reports/{report_id}/download?format={format_name}"
+                )
+                item["sha256"][format_name] = entry.get("content_sha256")
+                item["size_bytes"][format_name] = str(entry.get("size_bytes"))
+                if str(metadata.get("created_at", "")) > str(item.get("created_at", "")):
+                    item["created_at"] = metadata.get("created_at")
+            for item in groups.values():
+                item["formats"].sort()
+            return snapshot_response({
+                "items": sorted(groups.values(), key=lambda item: str(item["report_id"])),
+                "next_cursor": None,
+            }, request)
         items = sorted(state.reports, key=lambda item: str(item.get("report_id", "")))
         return snapshot_response({"items": items, "next_cursor": None}, request)
 
     @app.get("/api/v1/diagnostics")
     async def diagnostics(request: Request) -> Response:
+        if adapter is not None:
+            entries, error = await reporting_index(request)
+            if error is not None:
+                return error
+            items: dict[str, dict[str, Any]] = {}
+            assert entries is not None
+            for entry in entries:
+                metadata = entry.get("metadata") if isinstance(entry, dict) else None
+                if not isinstance(metadata, dict) or metadata.get("format") != "diagnostic":
+                    continue
+                diagnostic_id = metadata.get("artifact_group_id")
+                if not isinstance(diagnostic_id, str) or not _strict_uuid(diagnostic_id):
+                    continue
+                items[diagnostic_id] = {
+                    "diagnostic_id": diagnostic_id,
+                    "run_id": entry.get("run_id"),
+                    "status": "ready",
+                    "created_at": metadata.get("created_at"),
+                    "download_url": f"/api/v1/diagnostics/{diagnostic_id}/download",
+                    "sha256": entry.get("content_sha256"),
+                    "size_bytes": str(entry.get("size_bytes")),
+                }
+            return snapshot_response({
+                "items": sorted(items.values(), key=lambda item: item["diagnostic_id"])
+            }, request)
         return snapshot_response(state.diagnostics, request)
+
+    @app.get("/api/v1/reports/{report_id}/download")
+    async def report_download(report_id: str, request: Request) -> Response:
+        if not _strict_uuid(report_id):
+            return _problem(request, 422, "VALIDATION_FAILED", "report_id must be a canonical UUID.")
+        format_name = request.query_params.get("format")
+        if format_name not in {"html", "pdf", "evidence"}:
+            return _problem(request, 422, "VALIDATION_FAILED", "format must be html, pdf, or evidence.")
+        entries, error = await reporting_index(request)
+        if error is not None:
+            if error.status_code == 503:
+                return _problem(
+                    request,
+                    503,
+                    "REPORT_STORAGE_UNAVAILABLE",
+                    "Report storage is unavailable.",
+                )
+            return error
+        assert entries is not None
+        record = None
+        for entry in entries:
+            metadata = entry.get("metadata") if isinstance(entry, dict) else None
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("artifact_group_id") == report_id
+                and metadata.get("format") == format_name
+            ):
+                record = entry
+                break
+        if record is None:
+            found_group = any(
+                isinstance(entry.get("metadata"), dict)
+                and entry["metadata"].get("artifact_group_id") == report_id
+                for entry in entries if isinstance(entry, dict)
+            )
+            return _problem(
+                request,
+                404,
+                "REPORT_FORMAT_NOT_FOUND" if found_group else "REPORT_NOT_FOUND",
+                "The requested report artifact was not found.",
+            )
+        extension = "zip" if format_name == "evidence" else format_name
+        return await download_evidence_record(
+            record,
+            request,
+            filename=f"inspection-{report_id}.{extension}",
+            storage_code="REPORT_STORAGE_UNAVAILABLE",
+        )
+
+    @app.get("/api/v1/diagnostics/{diagnostic_id}/download")
+    async def diagnostic_download(diagnostic_id: str, request: Request) -> Response:
+        if not _strict_uuid(diagnostic_id):
+            return _problem(request, 422, "VALIDATION_FAILED", "diagnostic_id must be a canonical UUID.")
+        entries, error = await reporting_index(request)
+        if error is not None:
+            if error.status_code == 503:
+                return _problem(
+                    request,
+                    503,
+                    "EVIDENCE_STORAGE_UNAVAILABLE",
+                    "Evidence storage is unavailable.",
+                )
+            return error
+        assert entries is not None
+        record = next((
+            entry for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("metadata"), dict)
+            and entry["metadata"].get("artifact_group_id") == diagnostic_id
+            and entry["metadata"].get("format") == "diagnostic"
+        ), None)
+        if record is None:
+            return _problem(request, 404, "DIAGNOSTIC_NOT_FOUND", "The diagnostic bundle was not found.")
+        return await download_evidence_record(
+            record,
+            request,
+            filename=f"diagnostic-{diagnostic_id}.zip",
+            storage_code="EVIDENCE_STORAGE_UNAVAILABLE",
+        )
 
     @app.get("/api/v1/commands/{command_id}")
     async def command_lookup(command_id: str, request: Request) -> Response:

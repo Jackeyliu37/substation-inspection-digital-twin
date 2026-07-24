@@ -160,6 +160,7 @@ Service 和 Action 使用 ROS 2 默认的 reliable/volatile request-response QoS
 | 存储证据 | `/reporting/store_evidence` | `substation_reporting/evidence_store` Service server | 感知、风险、任务、Gateway、报告生成器 | `substation_interfaces/srv/StoreEvidence` | 请求触发 | Service 默认 QoS |
 | 冻结证据 | `/reporting/freeze_evidence` | `substation_reporting/evidence_store` Service server | Gateway | `substation_interfaces/srv/FreezeEvidence` | 请求触发 | Service 默认 QoS |
 | 查询/读取证据 | `/reporting/query_evidence`、`/reporting/read_evidence_chunk` | `substation_reporting/evidence_store` Service server | Gateway、报告生成器 | `substation_interfaces/srv/QueryEvidence`、`substation_interfaces/srv/ReadEvidenceChunk` | 请求触发 | Service 默认 QoS |
+| 报告/诊断 artifact 索引 | `/reporting/list_reporting_artifacts` | `substation_reporting/evidence_store` Service server | Gateway | `substation_interfaces/srv/ListReportingArtifacts` | 请求触发 | Service 默认 QoS |
 | 报告就绪 | `/reporting/readiness` | `substation_reporting/evidence_store` Service server | Gateway、任务管理器、报告生成器 | `substation_interfaces/srv/GetReportingReadiness` | 请求触发 | Service 默认 QoS |
 | 报告/诊断生成 | `/reporting/generate_report`、`/reporting/generate_diagnostic_bundle` | `substation_reporting/report_generator` Service server | Gateway、任务管理器 | `substation_interfaces/srv/GenerateReport`、`substation_interfaces/srv/GenerateDiagnosticBundle` | 请求触发 | Service 默认 QoS |
 | 场景控制 | `/scenario_manager/set_parameters_atomically` | `substation_gazebo/scenario_manager` 标准参数 Service server | Gateway | `rcl_interfaces/srv/SetParametersAtomically` | 请求触发 | Service 默认 QoS |
@@ -827,7 +828,24 @@ string error_message
 
 `media_type` 只允许 `image/jpeg`、`application/json`、`application/pdf`、`application/zip`、`text/html`；其中 `text/html` 只用于 report generator 提交 `GenerateReport.formats` 中的 HTML 报告，不能用于任意 Web 内容。`content_sha256` 是 64 个小写十六进制字符，metadata 必须是 RFC 8785 canonical object JSON，`max_bytes` 范围 1～1048576。Store/Freeze 必须原子校验内容摘要、标准消息归属字段和 RunContext 后写入内容与 metadata；只有 `substation_reporting/evidence_store` 写对象、`evidence.sqlite3` 或最终目录。`FreezeEvidence` 只接受 JPEG SOI/EOI、camera topic 和当前 Gateway 已验的 frame；相同 evidence_id/内容/metadata 幂等，不同值为 `EVIDENCE_ID_CONFLICT`。Query/Read 从不泄露文件路径；Gateway 仅用它们实现只读 metadata 和 Range 下载。
 
-`srv/GetReportingReadiness.srv`、`srv/GenerateReport.srv` 与 `srv/GenerateDiagnosticBundle.srv`
+`srv/ListReportingArtifacts.srv`、`srv/GetReportingReadiness.srv`、`srv/GenerateReport.srv` 与 `srv/GenerateDiagnosticBundle.srv`
+
+```text
+# ListReportingArtifacts.srv
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string run_id
+string artifact_group_id
+string format
+---
+uint32 schema_version
+bool available
+string[] entries_json
+string error_code
+string error_message
+```
+
+`run_id`、`artifact_group_id` 和 `format` 为空表示不限制该筛选器；`format` 仅允许 `html|pdf|evidence|diagnostic`。`entries_json` 每项是 canonical JSON object，至少含 `evidence_id`、`run_id`、`context_revision`、`evidence_revision`、`media_type`、`content_sha256`、十进制字符串 `size_bytes` 和原样保存的 `metadata`。metadata 的 reporting 索引字段为 `artifact_group_id`、`format`、`run_id`、`mission_id`、`created_at`；diagnostic 的 `mission_id` 为 null。Service 不返回对象路径或 SQL 信息；索引不可用返回 `available=false` 与 `REPORT_INDEX_UNAVAILABLE`。
 
 ```text
 # GetReportingReadiness.srv

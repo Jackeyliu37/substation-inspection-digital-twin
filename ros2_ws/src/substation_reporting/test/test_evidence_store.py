@@ -56,3 +56,44 @@ def test_existing_evidence_id_cannot_change_content(tmp_path) -> None:
 
     with pytest.raises(EvidenceConflict, match="EVIDENCE_ID_CONFLICT"):
         store.store_bytes(run_id, 1, "application/json", b'{"changed":true}', {}, evidence_id)
+
+
+def test_list_reporting_artifacts_filters_by_group_and_format(tmp_path) -> None:
+    store = EvidenceStore(tmp_path)
+    run_id = "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f"
+    report_id = "74727656-b320-4fe8-9a14-6de3c0094f08"
+    store.store_bytes(
+        run_id,
+        3,
+        "application/pdf",
+        b"pdf",
+        {
+            "artifact_group_id": report_id,
+            "format": "pdf",
+            "run_id": run_id,
+            "mission_id": "0c5efce1-655b-413d-9847-da203fb5ca5e",
+            "created_at": "2026-07-24T03:04:05.000000Z",
+        },
+        evidence_id="d0c4a7c6-6cf5-4f57-a31d-4c4f71cfed74",
+    )
+    store.store_bytes(
+        run_id,
+        3,
+        "text/html",
+        b"html",
+        {
+            "artifact_group_id": report_id,
+            "format": "html",
+            "run_id": run_id,
+            "mission_id": "0c5efce1-655b-413d-9847-da203fb5ca5e",
+            "created_at": "2026-07-24T03:04:05.000000Z",
+        },
+        evidence_id="e17d7e33-fcc2-4f46-9a5e-18c16d76e8c1",
+    )
+
+    records = store.list_evidence(
+        run_id=run_id, artifact_group_id=report_id, format_name="pdf"
+    )
+    assert [record.evidence_id for record in records] == [
+        "d0c4a7c6-6cf5-4f57-a31d-4c4f71cfed74"
+    ]

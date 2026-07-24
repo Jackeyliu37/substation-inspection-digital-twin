@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timedelta, timezone
+import json
 import math
 import threading
 from typing import Any
@@ -36,6 +37,7 @@ from substation_interfaces.msg import (
 from substation_interfaces.srv import (
     EmergencyStop,
     GetReportingReadiness,
+    ListReportingArtifacts,
     ManageMission,
     QueryEvidence,
     QueryRunTimeMapping,
@@ -783,6 +785,9 @@ class RosGatewayNode(Node):
             SetRobotMode, "/mission/set_robot_mode"
         )
         self._query_evidence = self.create_client(QueryEvidence, "/reporting/query_evidence")
+        self._list_reporting_artifacts = self.create_client(
+            ListReportingArtifacts, "/reporting/list_reporting_artifacts"
+        )
         self._read_evidence = self.create_client(
             ReadEvidenceChunk, "/reporting/read_evidence_chunk"
         )
@@ -830,6 +835,59 @@ class RosGatewayNode(Node):
             "error_code": response.error_code,
             "error_message": response.error_message,
         }
+
+    def list_reporting_artifacts(
+        self,
+        *,
+        run_id: str | None = None,
+        artifact_group_id: str | None = None,
+        format_name: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._list_reporting_artifacts.service_is_ready():
+            return {
+                "available": False,
+                "entries": [],
+                "error_code": "REPORT_INDEX_UNAVAILABLE",
+                "error_message": "/reporting/list_reporting_artifacts is unavailable.",
+            }
+        request = ListReportingArtifacts.Request()
+        request.schema_version = 1
+        request.run_id = run_id or ""
+        request.artifact_group_id = artifact_group_id or ""
+        request.format = format_name or ""
+        response = self._wait_for_service_future(
+            self._list_reporting_artifacts.call_async(request), 2.0
+        )
+        if response is None or not response.available:
+            return {
+                "available": False,
+                "entries": [],
+                "error_code": getattr(response, "error_code", None)
+                or "REPORT_INDEX_UNAVAILABLE",
+                "error_message": getattr(response, "error_message", None)
+                or "Reporting artifact index is unavailable.",
+            }
+        entries: list[dict[str, Any]] = []
+        try:
+            for raw in response.entries_json:
+                entry = json.loads(raw)
+                if not isinstance(entry, dict):
+                    raise ValueError("entry must be an object")
+                for field in (
+                    "evidence_id", "run_id", "context_revision", "evidence_revision",
+                    "media_type", "content_sha256", "size_bytes", "metadata",
+                ):
+                    if field not in entry:
+                        raise ValueError(f"entry missing {field}")
+                entries.append(entry)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "available": False,
+                "entries": [],
+                "error_code": "REPORT_INDEX_INVALID",
+                "error_message": "Reporting artifact index returned invalid data.",
+            }
+        return {"available": True, "entries": entries, "error_code": "", "error_message": ""}
 
     def dispatch_emergency_stop(
         self, *, command_id: str, payload: dict[str, Any]
@@ -1330,6 +1388,26 @@ class RosGatewayAdapter:
                 "error_message": "Gateway ROS adapter is not running.",
             }
         return self._node.query_evidence(evidence_id)
+
+    def list_reporting_artifacts(
+        self,
+        *,
+        run_id: str | None = None,
+        artifact_group_id: str | None = None,
+        format_name: str | None = None,
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "available": False,
+                "entries": [],
+                "error_code": "REPORT_INDEX_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.list_reporting_artifacts(
+            run_id=run_id,
+            artifact_group_id=artifact_group_id,
+            format_name=format_name,
+        )
 
     def dispatch_emergency_stop(
         self, *, command_id: str, payload: dict[str, Any]
