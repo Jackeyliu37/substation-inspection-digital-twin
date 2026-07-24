@@ -11,6 +11,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -28,6 +29,7 @@ SCHEMA_VERSION = "1.0"
 MAX_REQUEST_BYTES = 64 * 1024
 _UUID_NIL = "00000000-0000-0000-0000-000000000000"
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+_UINT64 = re.compile(r"^(0|[1-9][0-9]{0,19})$")
 
 
 def _utc_now() -> str:
@@ -353,6 +355,84 @@ def create_app(
             return "invalid"
         return start, min(end, total - 1)
 
+    async def dispatch_json_service_command(
+        request: Request,
+        *,
+        kind: str,
+        adapter_method: str,
+        unavailable_code: str,
+        allowed_fields: set[str],
+    ) -> Response:
+        if not request.headers.get("content-type", "").lower().startswith("application/json"):
+            return _problem(request, 415, "UNSUPPORTED_MEDIA_TYPE", "Requests must use application/json.")
+        body = await request.body()
+        if len(body) > MAX_REQUEST_BYTES:
+            return _problem(request, 413, "REQUEST_TOO_LARGE", "Request body exceeds 64 KiB.")
+        key = request.headers.get("idempotency-key")
+        if key is None:
+            return _problem(request, 400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required.")
+        if not _strict_uuid(key):
+            return _problem(request, 400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be a canonical UUID.")
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _problem(request, 400, "BAD_REQUEST", "Request body is not valid JSON.")
+        if not isinstance(payload, dict) or set(payload) != allowed_fields:
+            return _problem(request, 422, "VALIDATION_FAILED", "Request fields do not match the schema.")
+        route = request.url.path
+        digest = hashlib.sha256(_canonical_json(payload)).hexdigest()
+        existing = store.find_idempotency("POST", route, key)
+        if existing is not None:
+            if existing["body_sha256"] != digest:
+                return _problem(request, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request.")
+            return JSONResponse(
+                json.loads(existing["response_json"]),
+                status_code=existing["response_status"],
+                headers={"Idempotent-Replayed": "true", "Cache-Control": "no-store"},
+            )
+        if adapter is None or not hasattr(adapter, adapter_method):
+            return _problem(request, 503, unavailable_code, "The required ROS Service is unavailable.")
+        command_id = str(uuid.uuid4())
+        try:
+            service_result = await asyncio.to_thread(
+                getattr(adapter, adapter_method), command_id=command_id, payload=payload
+            )
+        except Exception:
+            return _problem(request, 503, unavailable_code, "The ROS Service call failed.")
+        if not service_result.get("accepted", False):
+            code = service_result.get("error_code") or unavailable_code
+            status = 503 if code in {
+                unavailable_code, "NAVIGATION_UNAVAILABLE", "AUDIT_STORAGE_UNAVAILABLE"
+            } else 404 if code == "MISSION_NOT_FOUND" else 422 if code in {
+                "VALIDATION_FAILED", "MODE_INVALID", "RESET_CONFIRMATION_REQUIRED"
+            } else 409
+            return _problem(
+                request,
+                status,
+                code,
+                service_result.get("error_message") or "The command was rejected.",
+            )
+        accepted_at = _utc_now()
+        response = {
+            "schema_version": SCHEMA_VERSION,
+            "command_id": command_id,
+            "status": "accepted",
+            "accepted_at": accepted_at,
+            "status_url": f"/api/v1/commands/{command_id}",
+        }
+        store.insert_accepted(
+            command_id=command_id,
+            method="POST",
+            route=route,
+            key=key,
+            body_sha256=digest,
+            kind=kind,
+            run_id=state.run_id,
+            accepted_at=accepted_at,
+            response=response,
+        )
+        return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
+
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, "status": "alive", "checked_at": _utc_now()}
@@ -631,6 +711,152 @@ def create_app(
         )
         store.complete_from_mission(command_id, state.mission, state.run_id)
         return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/v1/robot/emergency-stop")
+    async def emergency_stop(request: Request) -> Response:
+        if not request.headers.get("content-type", "").lower().startswith("application/json"):
+            return _problem(request, 415, "UNSUPPORTED_MEDIA_TYPE", "Requests must use application/json.")
+        body = await request.body()
+        if len(body) > MAX_REQUEST_BYTES:
+            return _problem(request, 413, "REQUEST_TOO_LARGE", "Request body exceeds 64 KiB.")
+        key = request.headers.get("idempotency-key")
+        if key is None:
+            return _problem(request, 400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required.")
+        if not _strict_uuid(key):
+            return _problem(request, 400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be a canonical UUID.")
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _problem(request, 400, "BAD_REQUEST", "Request body is not valid JSON.")
+        if not isinstance(payload, dict) or set(payload) != {"reason"} or not isinstance(payload["reason"], str) or not payload["reason"].strip():
+            return _problem(request, 422, "VALIDATION_FAILED", "A non-empty reason is required.")
+        route = request.url.path
+        digest = hashlib.sha256(_canonical_json(payload)).hexdigest()
+        existing = store.find_idempotency("POST", route, key)
+        if existing is not None:
+            if existing["body_sha256"] != digest:
+                return _problem(request, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request.")
+            return JSONResponse(
+                json.loads(existing["response_json"]),
+                status_code=existing["response_status"],
+                headers={"Idempotent-Replayed": "true", "Cache-Control": "no-store"},
+            )
+        if adapter is None or not hasattr(adapter, "dispatch_emergency_stop"):
+            return _problem(
+                request, 503, "EMERGENCY_STOP_PATH_UNAVAILABLE", "Emergency-stop ROS Service is unavailable."
+            )
+        command_id = str(uuid.uuid4())
+        try:
+            service_result = await asyncio.to_thread(
+                adapter.dispatch_emergency_stop,
+                command_id=command_id,
+                payload=payload,
+            )
+        except Exception:
+            return _problem(
+                request, 503, "EMERGENCY_STOP_PATH_UNAVAILABLE", "Emergency-stop ROS Service call failed."
+            )
+        if not service_result.get("accepted", False):
+            code = service_result.get("error_code") or "EMERGENCY_STOP_PATH_UNAVAILABLE"
+            return _problem(
+                request,
+                422 if code == "VALIDATION_FAILED" else 503,
+                code,
+                service_result.get("error_message") or "Emergency stop was rejected.",
+            )
+        accepted_at = _utc_now()
+        response = {
+            "schema_version": SCHEMA_VERSION,
+            "command_id": command_id,
+            "status": "accepted",
+            "accepted_at": accepted_at,
+            "status_url": f"/api/v1/commands/{command_id}",
+        }
+        store.insert_accepted(
+            command_id=command_id,
+            method="POST",
+            route=route,
+            key=key,
+            body_sha256=digest,
+            kind="robot.emergency_stop",
+            run_id=state.run_id,
+            accepted_at=accepted_at,
+            response=response,
+        )
+        return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/v1/robot/mode")
+    async def robot_mode(request: Request) -> Response:
+        try:
+            payload = json.loads(await request.body())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get("target_mode") not in {"manual", "autonomous"}:
+                return _problem(request, 422, "MODE_INVALID", "target_mode is invalid.")
+            for field in ("observed_state_revision", "observed_latch_revision"):
+                value = payload.get(field)
+                if not isinstance(value, str) or _UINT64.fullmatch(value) is None or int(value) > 18446744073709551615:
+                    return _problem(request, 422, "VALIDATION_FAILED", f"{field} is invalid.")
+        return await dispatch_json_service_command(
+            request,
+            kind="robot.mode",
+            adapter_method="dispatch_robot_mode",
+            unavailable_code="ROBOT_STATE_UNAVAILABLE",
+            allowed_fields={
+                "mission_id", "target_mode", "observed_state_revision",
+                "observed_latch_revision", "reason",
+            },
+        )
+
+    @app.post("/api/v1/robot/emergency-stop/reset")
+    async def emergency_stop_reset(request: Request) -> Response:
+        try:
+            payload = json.loads(await request.body())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            revision = payload.get("observed_latch_revision")
+            if not isinstance(revision, str) or _UINT64.fullmatch(revision) is None or int(revision) > 18446744073709551615:
+                return _problem(request, 422, "VALIDATION_FAILED", "observed_latch_revision is invalid.")
+            if payload.get("confirm") is not True:
+                return _problem(request, 422, "RESET_CONFIRMATION_REQUIRED", "confirm must be true.")
+        return await dispatch_json_service_command(
+            request,
+            kind="robot.emergency_stop_reset",
+            adapter_method="dispatch_emergency_reset",
+            unavailable_code="EMERGENCY_STOP_PATH_UNAVAILABLE",
+            allowed_fields={"observed_latch_revision", "confirm", "reason"},
+        )
+
+    @app.post("/api/v1/robot/manual-velocity")
+    async def manual_velocity(request: Request) -> Response:
+        try:
+            payload = json.loads(await request.body())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            try:
+                linear = float(payload.get("linear_x_m_s"))
+                angular = float(payload.get("angular_z_rad_s"))
+                duration = float(payload.get("duration_s"))
+            except (TypeError, ValueError):
+                return _problem(request, 422, "VALIDATION_FAILED", "Velocity fields must be numbers.")
+            if not all(math.isfinite(value) for value in (linear, angular, duration)):
+                return _problem(request, 422, "VALIDATION_FAILED", "Velocity fields must be finite.")
+            if abs(linear) > 0.4 or abs(angular) > 0.8:
+                return _problem(request, 422, "VELOCITY_LIMIT_EXCEEDED", "Velocity exceeds the safety limit.")
+            if not 0.05 <= duration <= 0.25:
+                return _problem(request, 422, "VALIDATION_FAILED", "duration_s is out of range.")
+            if (linear != 0.0 or angular != 0.0) and payload.get("deadman") is not True:
+                return _problem(request, 422, "DEADMAN_REQUIRED", "Non-zero velocity requires deadman=true.")
+        return await dispatch_json_service_command(
+            request,
+            kind="robot.manual_velocity",
+            adapter_method="dispatch_manual_velocity",
+            unavailable_code="ROBOT_STATE_UNAVAILABLE",
+            allowed_fields={"linear_x_m_s", "angular_z_rad_s", "deadman", "duration_s"},
+        )
 
     @app.websocket("/ws/telemetry")
     async def telemetry(websocket: WebSocket) -> None:

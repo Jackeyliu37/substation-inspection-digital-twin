@@ -505,6 +505,144 @@ def test_evidence_metadata_and_single_range_download_use_reporting_adapter_only(
     assert headers["content-range"] == f"bytes */{len(content)}"
 
 
+def test_emergency_stop_bypasses_readiness_but_requires_real_ros_service() -> None:
+    calls = []
+
+    class Adapter:
+        def dispatch_emergency_stop(self, *, command_id, payload):
+            calls.append((command_id, payload["reason"]))
+            return {
+                "accepted": True,
+                "latched": True,
+                "latch_revision": 3,
+                "state_revision": 12,
+                "error_code": "",
+                "error_message": "",
+            }
+
+    app = create_app(adapter=Adapter())
+    key = str(uuid.uuid4())
+    headers = (("Content-Type", "application/json"), ("Idempotency-Key", key))
+    status, _, accepted = _http(
+        app,
+        "POST",
+        "/api/v1/robot/emergency-stop",
+        headers=headers,
+        body=json.dumps({"reason": "operator emergency stop"}).encode(),
+    )
+    assert status == 202
+    assert accepted["status"] == "accepted"
+    assert len(calls) == 1
+
+    replay_status, replay_headers, replay = _http(
+        app,
+        "POST",
+        "/api/v1/robot/emergency-stop",
+        headers=headers,
+        body=json.dumps({"reason": "operator emergency stop"}).encode(),
+    )
+    assert replay_status == 202
+    assert replay == accepted
+    assert replay_headers["idempotent-replayed"] == "true"
+    assert len(calls) == 1
+
+    unavailable = create_app()
+    status, _, problem = _http(
+        unavailable,
+        "POST",
+        "/api/v1/robot/emergency-stop",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+        body=json.dumps({"reason": "operator emergency stop"}).encode(),
+    )
+    assert status == 503
+    assert problem["code"] == "EMERGENCY_STOP_PATH_UNAVAILABLE"
+
+
+def test_robot_mode_and_emergency_reset_dispatch_only_to_ros_services() -> None:
+    calls = []
+
+    class Adapter:
+        def dispatch_robot_mode(self, *, command_id, payload):
+            calls.append(("mode", command_id, payload))
+            return {"accepted": True, "error_code": "", "error_message": ""}
+
+        def dispatch_emergency_reset(self, *, command_id, payload):
+            calls.append(("reset", command_id, payload))
+            return {"accepted": True, "error_code": "", "error_message": ""}
+
+    app = create_app(adapter=Adapter())
+    mission_id = "0c5efce1-655b-413d-9847-da203fb5ca5e"
+    status, _, _ = _http(
+        app,
+        "POST",
+        "/api/v1/robot/mode",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+        body=json.dumps({
+            "mission_id": mission_id,
+            "target_mode": "manual",
+            "observed_state_revision": "63",
+            "observed_latch_revision": "12",
+            "reason": "operator handoff",
+        }).encode(),
+    )
+    assert status == 202
+
+    status, _, _ = _http(
+        app,
+        "POST",
+        "/api/v1/robot/emergency-stop/reset",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+        body=json.dumps({
+            "observed_latch_revision": "12",
+            "confirm": True,
+            "reason": "area verified clear",
+        }).encode(),
+    )
+    assert status == 202
+    assert [call[0] for call in calls] == ["mode", "reset"]
+
+
+def test_manual_velocity_dispatches_bounded_request_to_ros_adapter() -> None:
+    calls = []
+
+    class Adapter:
+        def dispatch_manual_velocity(self, *, command_id, payload):
+            calls.append((command_id, payload))
+            return {"accepted": True, "error_code": "", "error_message": ""}
+
+    app = create_app(adapter=Adapter())
+    status, _, accepted = _http(
+        app,
+        "POST",
+        "/api/v1/robot/manual-velocity",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+        body=json.dumps({
+            "linear_x_m_s": 0.2,
+            "angular_z_rad_s": -0.3,
+            "deadman": True,
+            "duration_s": 0.15,
+        }).encode(),
+    )
+    assert status == 202
+    assert accepted["status"] == "accepted"
+    assert calls[0][1]["deadman"] is True
+
+    status, _, problem = _http(
+        app,
+        "POST",
+        "/api/v1/robot/manual-velocity",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+        body=json.dumps({
+            "linear_x_m_s": 0.41,
+            "angular_z_rad_s": 0.0,
+            "deadman": True,
+            "duration_s": 0.15,
+        }).encode(),
+    )
+    assert status == 422
+    assert problem["code"] == "VELOCITY_LIMIT_EXCEEDED"
+
+
 def test_telemetry_requires_substation_v1_and_emits_open_envelope():
     app = create_app()
     outgoing = _websocket_first_message(app)

@@ -662,18 +662,21 @@ class TaskManagerNode(Node):
 
     def _emergency_stop(self, request, response):
         result = self._runtime.engine.emergency_stop(request.reason)
-        self._runtime.state_revision += 1
         response.schema_version = 1
         response.accepted = result.accepted
         response.latched = result.latched
         response.latch_revision = result.latch_revision
-        response.state_revision = self._runtime.state_revision
         if result.accepted:
+            self._runtime.state_revision += 1
+            self._runtime.transition_command_id = request.command_id
+            self._runtime.transition_reason_code = "EMERGENCY_STOP_LATCHED"
+            self._runtime.transition_reason = request.reason
             self._replacement_requested = False
             self._cancel_execution_goal()
             self._cmd_vel_pub.publish(Twist())
         else:
             response.error_code = "VALIDATION_FAILED"
+        response.state_revision = self._runtime.state_revision
         self._publish()
         return response
 
@@ -682,14 +685,18 @@ class TaskManagerNode(Node):
             request.observed_latch_revision,
             confirm=request.confirm,
         )
-        self._runtime.state_revision += 1
         response.schema_version = 1
         response.accepted = result.accepted
         response.latched = result.latched
         response.latch_revision = result.latch_revision
-        response.state_revision = self._runtime.state_revision
-        if not result.accepted:
+        if result.accepted:
+            self._runtime.state_revision += 1
+            self._runtime.transition_command_id = request.command_id
+            self._runtime.transition_reason_code = "EMERGENCY_STOP_RESET"
+            self._runtime.transition_reason = request.reason
+        else:
             response.error_code = "LATCH_REVISION_MISMATCH"
+        response.state_revision = self._runtime.state_revision
         self._publish()
         return response
 

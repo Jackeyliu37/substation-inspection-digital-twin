@@ -21,14 +21,23 @@ import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from substation_interfaces.msg import AssetRiskArray, InspectionTaskArray, RiskAlert, RunContext
+from substation_interfaces.msg import (
+    AssetRiskArray,
+    InspectionTaskArray,
+    ManualVelocityCommand,
+    RiskAlert,
+    RunContext,
+)
 from substation_interfaces.srv import (
+    EmergencyStop,
     GetReportingReadiness,
     ManageMission,
     QueryEvidence,
     QueryRunTimeMapping,
     ReadEvidenceChunk,
     RecordRunTimeMapping,
+    ResetEmergencyStop,
+    SetRobotMode,
 )
 
 from .app import GatewayState, _utc_now
@@ -73,6 +82,8 @@ class RosStateProjector:
         self._twin_by_asset: dict[str, dict[str, Any]] = {}
         self._risk_by_asset: dict[str, dict[str, Any]] = {}
         self._risk_revision = 0
+        self._robot_mode = InspectionTaskArray.MODE_AUTONOMOUS
+        self._emergency_stop_latched = False
         self._time_mapping: dict[str, Any] | None = None
         self._map_bytes: bytearray | None = None
         self._map_width = 0
@@ -259,6 +270,8 @@ class RosStateProjector:
             return True
         self.state.mission = mission
         self.state.system["emergency_stop_latched"] = bool(message.emergency_stop_latched)
+        self._robot_mode = int(message.robot_mode)
+        self._emergency_stop_latched = bool(message.emergency_stop_latched)
         self.state.ready_dependencies["mission"] = True
         if self._command_observer is not None and message.transition_command_id:
             self._command_observer(message.transition_command_id, mission, self.state.run_id)
@@ -493,6 +506,11 @@ class RosGatewayNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        q_control = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.create_subscription(RunContext, "/system/run_context", self._on_context, q_state)
         self.create_subscription(DiagnosticArray, "/digital_twin/assets", self.projector.on_twin, q_state)
         self.create_subscription(AssetRiskArray, "/risk/assets", self.projector.on_risk, q_state)
@@ -514,7 +532,19 @@ class RosGatewayNode(Node):
         self._reporting_readiness = self.create_client(
             GetReportingReadiness, "/reporting/readiness"
         )
+        self._manual_velocity = self.create_publisher(
+            ManualVelocityCommand, "/cmd_vel_manual", q_control
+        )
         self._manage_mission = self.create_client(ManageMission, "/mission/manage")
+        self._emergency_stop = self.create_client(
+            EmergencyStop, "/mission/emergency_stop"
+        )
+        self._emergency_reset = self.create_client(
+            ResetEmergencyStop, "/mission/emergency_stop_reset"
+        )
+        self._set_robot_mode = self.create_client(
+            SetRobotMode, "/mission/set_robot_mode"
+        )
         self._query_evidence = self.create_client(QueryEvidence, "/reporting/query_evidence")
         self._read_evidence = self.create_client(
             ReadEvidenceChunk, "/reporting/read_evidence_chunk"
@@ -561,6 +591,148 @@ class RosGatewayNode(Node):
             "error_code": response.error_code,
             "error_message": response.error_message,
         }
+
+    def dispatch_emergency_stop(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not self._emergency_stop.service_is_ready():
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_PATH_UNAVAILABLE",
+                "error_message": "/mission/emergency_stop is unavailable.",
+            }
+        request = EmergencyStop.Request()
+        request.schema_version = 1
+        request.command_id = command_id
+        request.reason = str(payload.get("reason") or "")
+        response = self._wait_for_service_future(
+            self._emergency_stop.call_async(request), 2.0
+        )
+        if response is None:
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_PATH_UNAVAILABLE",
+                "error_message": "/mission/emergency_stop timed out.",
+            }
+        return {
+            "accepted": bool(response.accepted),
+            "latched": bool(response.latched),
+            "latch_revision": int(response.latch_revision),
+            "state_revision": int(response.state_revision),
+            "error_code": response.error_code,
+            "error_message": response.error_message,
+        }
+
+    def dispatch_robot_mode(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not self._set_robot_mode.service_is_ready():
+            return {
+                "accepted": False,
+                "error_code": "ROBOT_STATE_UNAVAILABLE",
+                "error_message": "/mission/set_robot_mode is unavailable.",
+            }
+        request = SetRobotMode.Request()
+        request.schema_version = 1
+        request.command_id = command_id
+        request.mission_id = str(payload.get("mission_id") or "")
+        request.target_mode = (
+            SetRobotMode.Request.MODE_MANUAL
+            if payload.get("target_mode") == "manual"
+            else SetRobotMode.Request.MODE_AUTONOMOUS
+        )
+        request.observed_state_revision = int(payload["observed_state_revision"])
+        request.observed_latch_revision = int(payload["observed_latch_revision"])
+        request.reason = str(payload.get("reason") or "")
+        response = self._wait_for_service_future(
+            self._set_robot_mode.call_async(request), 2.0
+        )
+        if response is None:
+            return {
+                "accepted": False,
+                "error_code": "ROBOT_STATE_UNAVAILABLE",
+                "error_message": "/mission/set_robot_mode timed out.",
+            }
+        return {
+            "accepted": bool(response.accepted),
+            "robot_mode": int(response.robot_mode),
+            "state_revision": int(response.state_revision),
+            "latch_revision": int(response.latch_revision),
+            "error_code": response.error_code,
+            "error_message": response.error_message,
+        }
+
+    def dispatch_emergency_reset(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not self._emergency_reset.service_is_ready():
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_PATH_UNAVAILABLE",
+                "error_message": "/mission/emergency_stop_reset is unavailable.",
+            }
+        request = ResetEmergencyStop.Request()
+        request.schema_version = 1
+        request.command_id = command_id
+        request.observed_latch_revision = int(payload["observed_latch_revision"])
+        request.confirm = bool(payload.get("confirm"))
+        request.reason = str(payload.get("reason") or "")
+        response = self._wait_for_service_future(
+            self._emergency_reset.call_async(request), 2.0
+        )
+        if response is None:
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_PATH_UNAVAILABLE",
+                "error_message": "/mission/emergency_stop_reset timed out.",
+            }
+        return {
+            "accepted": bool(response.accepted),
+            "latched": bool(response.latched),
+            "latch_revision": int(response.latch_revision),
+            "state_revision": int(response.state_revision),
+            "error_code": response.error_code,
+            "error_message": response.error_message,
+        }
+
+    def dispatch_manual_velocity(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        context = self.projector._context
+        if (
+            context is None
+            or context.lifecycle != RunContext.LIFECYCLE_ACTIVE
+            or context.run_id != self.projector.state.run_id
+        ):
+            return {
+                "accepted": False,
+                "error_code": "RUN_CONTEXT_MISMATCH",
+                "error_message": "An ACTIVE RunContext is required.",
+            }
+        if self.projector._robot_mode != InspectionTaskArray.MODE_MANUAL:
+            return {
+                "accepted": False,
+                "error_code": "MANUAL_MODE_REQUIRED",
+                "error_message": "Manual robot mode is required.",
+            }
+        if self.projector._emergency_stop_latched:
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_LATCHED",
+                "error_message": "Emergency stop is latched.",
+            }
+        message = ManualVelocityCommand()
+        message.schema_version = 1
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = "base_link"
+        message.command_id = command_id
+        message.run_id = context.run_id
+        message.context_revision = context.context_revision
+        message.twist.linear.x = float(payload["linear_x_m_s"])
+        message.twist.angular.z = float(payload["angular_z_rad_s"])
+        message.duration_s = float(payload["duration_s"])
+        self._manual_velocity.publish(message)
+        return {"accepted": True, "error_code": "", "error_message": ""}
 
     def read_evidence_range(self, evidence_id: str, offset: int, length: int) -> bytes:
         if not self._read_evidence.service_is_ready():
@@ -831,6 +1003,52 @@ class RosGatewayAdapter:
                 "error_message": "Gateway ROS adapter is not running.",
             }
         return self._node.query_evidence(evidence_id)
+
+    def dispatch_emergency_stop(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_PATH_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.dispatch_emergency_stop(
+            command_id=command_id, payload=payload
+        )
+
+    def dispatch_robot_mode(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "accepted": False,
+                "error_code": "ROBOT_STATE_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.dispatch_robot_mode(command_id=command_id, payload=payload)
+
+    def dispatch_emergency_reset(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "accepted": False,
+                "error_code": "EMERGENCY_STOP_PATH_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.dispatch_emergency_reset(command_id=command_id, payload=payload)
+
+    def dispatch_manual_velocity(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "accepted": False,
+                "error_code": "ROBOT_STATE_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.dispatch_manual_velocity(command_id=command_id, payload=payload)
 
     def read_evidence_range(self, evidence_id: str, offset: int, length: int) -> bytes:
         if self._node is None:
