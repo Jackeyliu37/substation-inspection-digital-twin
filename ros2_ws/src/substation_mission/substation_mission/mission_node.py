@@ -501,6 +501,7 @@ def load_or_create_runtime(
     runtime.state_revision = idle_state_revision + 1
     runtime.context_revision = idle_context_revision + 1
     if latest is not None:
+        runtime.engine.robot_mode = RobotMode(int(latest["robot_mode"]))
         if latest["emergency_stop_latched"]:
             runtime.engine.emergency_stop_latched = True
             runtime.engine.latch_revision = int(latest["emergency_stop_latch_revision"])

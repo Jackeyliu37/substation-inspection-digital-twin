@@ -457,6 +457,21 @@ def test_new_run_inherits_latched_stop_and_advances_global_revision(tmp_path) ->
     assert store.load_latest()["run_id"] == "run-2"
 
 
+def test_cold_start_new_run_preserves_operator_selected_manual_mode(tmp_path) -> None:
+    policy = MissionPolicy()
+    goals = (AssetGoal("transformer-01", 4.0, 1.0, 1.57),)
+    store = MissionSnapshotStore(tmp_path / "mission.sqlite3")
+    old = MissionRuntime(policy, "run-1", "mission-1", goals)
+    old.engine.robot_mode = RobotMode.MANUAL
+    old.state_revision = 8
+    store.save(old.persistence_record())
+
+    current = load_or_create_runtime(policy, goals, "run-2", "mission-2", store)
+
+    assert current.engine.robot_mode == RobotMode.MANUAL
+    assert current.context_lifecycle == RunContext.LIFECYCLE_STARTING
+
+
 def test_new_run_persists_idle_then_starting_before_activation(tmp_path) -> None:
     policy = MissionPolicy()
     goals = (AssetGoal("transformer-01", 4.0, 1.0, 1.57),)
