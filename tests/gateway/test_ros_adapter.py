@@ -69,6 +69,33 @@ def test_projector_encodes_real_annotated_rgb_frame_as_jpeg() -> None:
     }
 
 
+def test_projector_accepts_jazzy_byte_diagnostic_levels() -> None:
+    state = GatewayState()
+    projector = RosStateProjector(state)
+    message = DiagnosticArray()
+    message.header.stamp.sec = 12
+    message.header.stamp.nanosec = 500_000_000
+    message.status = [
+        DiagnosticStatus(
+            level=DiagnosticStatus.OK,
+            name="perception",
+            message="ready",
+        ),
+        DiagnosticStatus(
+            level=DiagnosticStatus.ERROR,
+            name="risk",
+            message="fault",
+        ),
+    ]
+
+    projector.on_diagnostics(message)
+
+    assert [item["status"] for item in state.system["components"]] == [
+        "ok",
+        "error",
+    ]
+
+
 def _http_get(app, path: str):
     async def invoke():
         sent = []

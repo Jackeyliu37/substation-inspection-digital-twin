@@ -694,10 +694,11 @@ class RosStateProjector:
     def on_diagnostics(self, message: DiagnosticArray) -> None:
         components = []
         for status in sorted(message.status, key=lambda item: item.name):
+            level = status.level[0] if isinstance(status.level, bytes) else int(status.level)
             components.append({
                 "name": status.name,
                 "kind": "ros_node",
-                "status": ("ok", "degraded", "error", "stale")[min(int(status.level), 3)],
+                "status": ("ok", "degraded", "error", "stale")[max(0, min(level, 3))],
                 "message": status.message,
                 "last_seen_at": self.ros_time_to_utc(
                     message.header.stamp.sec, message.header.stamp.nanosec
