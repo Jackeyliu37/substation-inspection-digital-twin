@@ -48,6 +48,17 @@ def test_world_contains_registered_assets_and_layout() -> None:
     assert world.find(".//plugin[@filename='gz-sim-sensors-system']/render_engine").text == "ogre2"
 
 
+def test_world_uses_100_hz_physics_clock() -> None:
+    world = ET.parse(
+        required_file("ros2_ws/src/substation_gazebo/worlds/substation_world.sdf")
+    )
+    physics = world.find(".//world/physics")
+
+    assert physics is not None
+    assert physics.findtext("max_step_size") == "0.01"
+    assert physics.findtext("real_time_factor") == "1.0"
+
+
 def test_every_sdf_link_child_entity_name_is_unique() -> None:
     for relative in (
         "ros2_ws/src/substation_gazebo/worlds/substation_world.sdf",

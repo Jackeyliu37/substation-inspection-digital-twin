@@ -26,7 +26,7 @@ trap - EXIT
 
 grep -Fq '公开训练数据下载和模型微调由用户在本仓库外完成' docs/DATA_AND_MODELS.md
 grep -Fq '官方 `yolo11n.pt` 仅作为开发占位/base weight' docs/DATA_AND_MODELS.md
-grep -Fq '用户发布的不可变 GitHub release 或固定 commit' docs/DATA_AND_MODELS.md
+grep -Fq '严格发布仍要求用户不可变 GitHub release 或固定 commit' docs/DATA_AND_MODELS.md
 grep -Fq '接收并验证用户训练产物' 基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md
 grep -Fq '| ROS–Gazebo | `ros_gz 1.0.22-1` |' 基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md
 ! grep -Fq 'ros_gz 1.0.23-1' 基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md
