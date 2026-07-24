@@ -19,10 +19,9 @@
 - [架构](docs/ARCHITECTURE.md)：组件边界、数据流和 ROS/Web 分层。
 - [接口契约](docs/INTERFACES.md)：ROS、REST、WebSocket、命令终态和错误语义。
 - [部署手册](docs/DEPLOYMENT.md)：release、systemd、Nginx、网络边界、安全停止和回滚。
-- [数据与模型治理](docs/DATA_AND_MODELS.md)：数据来源、许可、训练交付、类别映射和模型接纳规则。
+- [数据与模型规范](docs/DATA_AND_MODELS.md)：数据来源、许可、类别映射和模型接纳规则。
 - [测试与验收](docs/TEST_ACCEPTANCE.md)：可执行测试、证据目录、人工浏览器验收和性能门槛。
 - [版本矩阵](docs/VERSION_MATRIX.md)：ROS、Gazebo、Python、CUDA、Node 和前端依赖锁定。
-- [当前状态](docs/PROJECT_STATUS.md) / [交接入口](docs/HANDOFF.md)：本机验证事实、运行限制和恢复命令。
 - [ADR](docs/adr/)：无头 Gazebo、服务器 Web、四模型拆分和 NVIDIA 打包决策。
 
 ## 系统架构
@@ -54,7 +53,7 @@ ROS 2 感知 → 数字孪生 → 风险融合 → 任务重排 → Nav2
 | 前端 | Node.js 24.18.0、Next.js 16.2.11、React 19、TypeScript、Three.js、React Three Fiber、ECharts |
 | 交付 | Nginx、systemd、Foxglove Bridge（只读维护）、Git、SHA-256 evidence |
 
-## 本机开发检查
+## 开发检查
 
 以下命令不会启动生产服务，适合在当前检出上复核代码和契约：
 
@@ -85,11 +84,11 @@ npm --prefix web/frontend run build
 bash scripts/verify_documentation_gate.sh
 ```
 
-本机当前未运行 Gazebo、ROS 项目节点、Gateway、Next.js、Nginx 或 Foxglove 产品服务。不要把上述构建检查误当成部署成功。
+这些命令只验证源码、接口和构建产物，不会启动生产服务。
 
 ## 如何启动
 
-### 生产/人工集成验收
+### 生产部署与人工集成验收
 
 生产启动必须使用经过验证的 `/opt/substation/current` release、`substation` 服务账户和 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) 中的启动顺序；不要直接从开发检出执行 `systemctl start`。人工验收至少确认：
 
@@ -112,7 +111,6 @@ Gateway 的正式入口会加载 ROS 环境并使用 `/var/lib/substation/sqlite
 
 ## 贡献与边界
 
-- 公开数据下载和模型微调在仓库外完成；仓库只接收有固定身份、manifest、指标和 SHA-256 的模型交付。
+- 外部数据与模型资产按仓库的数据/模型规范接入，并通过固定身份和 SHA-256 校验。
 - 不把真实设备控制、远程桌面、DDS 直连、公网访问或多租户权限混入本期范围。
-- 每次阶段收口都应更新状态/交接文档，运行测试后再提交；大文件和可变运行证据放在服务器受控目录。
-- 如需确认剩余工作，先查看 [`docs/PLAN_GAP_ANALYSIS.md`](docs/PLAN_GAP_ANALYSIS.md)，其中列出了需要操作员决定的项目。
+- 大文件和可变运行证据放在服务器受控目录；仓库只提交源码、配置、文档和可复核的校验信息。
