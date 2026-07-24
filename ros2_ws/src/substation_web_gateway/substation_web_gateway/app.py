@@ -163,12 +163,22 @@ class CommandStore:
                 run_id TEXT,
                 created_at TEXT NOT NULL,
                 accepted_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                result_json TEXT,
+                error_json TEXT,
                 response_status INTEGER NOT NULL,
                 response_json TEXT NOT NULL,
                 UNIQUE(method, route, idempotency_key)
             )
             """
         )
+        columns = {
+            row["name"] for row in self._connection.execute("PRAGMA table_info(commands)")
+        }
+        for name in ("started_at", "completed_at", "result_json", "error_json"):
+            if name not in columns:
+                self._connection.execute(f"ALTER TABLE commands ADD COLUMN {name} TEXT")
         self._connection.commit()
 
     def find_idempotency(self, method: str, route: str, key: str) -> sqlite3.Row | None:
@@ -218,6 +228,50 @@ class CommandStore:
         with self._lock:
             return self._connection.execute("SELECT * FROM commands WHERE command_id=?", (command_id,)).fetchone()
 
+    def complete_from_mission(
+        self, command_id: str, mission: dict[str, Any], run_id: str | None
+    ) -> bool:
+        expected_states = {
+            "mission.start": "running",
+            "mission.pause": "paused",
+            "mission.resume": "running",
+            "mission.stop": "stopped",
+        }
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM commands WHERE command_id=?", (command_id,)
+            ).fetchone()
+            if row is None or row["status"] != "accepted":
+                return False
+            expected = expected_states.get(row["kind"])
+            if (
+                expected is None
+                or mission.get("transition_command_id") != command_id
+                or mission.get("state") != expected
+            ):
+                return False
+            completed_at = _utc_now()
+            result = {
+                "run_id": run_id,
+                "mission_id": mission.get("mission_id"),
+                "state_revision": str(mission.get("state_revision", "0")),
+                "queue_revision": str(mission.get("queue_revision", "0")),
+            }
+            self._connection.execute(
+                """
+                UPDATE commands
+                SET status='succeeded', started_at=accepted_at, completed_at=?, result_json=?
+                WHERE command_id=? AND status='accepted'
+                """,
+                (
+                    completed_at,
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                    command_id,
+                ),
+            )
+            self._connection.commit()
+            return True
+
 
 def create_app(
     *,
@@ -227,6 +281,8 @@ def create_app(
 ) -> FastAPI:
     state = state or GatewayState()
     store = CommandStore(db_path)
+    if adapter is not None and hasattr(adapter, "attach_command_store"):
+        adapter.attach_command_store(store)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -482,10 +538,10 @@ def create_app(
             "status": row["status"],
             "created_at": row["created_at"],
             "accepted_at": row["accepted_at"],
-            "started_at": None,
-            "completed_at": None,
-            "result": None,
-            "error": None,
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "error": json.loads(row["error_json"]) if row["error_json"] else None,
         })
 
     @app.post("/api/v1/missions/{action}")
@@ -573,6 +629,7 @@ def create_app(
             accepted_at=accepted_at,
             response=response,
         )
+        store.complete_from_mission(command_id, state.mission, state.run_id)
         return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
 
     @app.websocket("/ws/telemetry")

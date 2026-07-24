@@ -14,6 +14,15 @@ class RobotMode(IntEnum):
     ESTOP = 2
 
 
+class TaskState(IntEnum):
+    QUEUED = 0
+    ACTIVE = 1
+    SUCCEEDED = 2
+    SKIPPED = 3
+    FAILED = 4
+    CANCELLED = 5
+
+
 @dataclass(frozen=True)
 class MissionPolicy:
     risk_gain: float = 1.0
@@ -50,6 +59,9 @@ class InspectionTask:
     computed_priority: float = 0.0
     safety_standoff_m: float = 0.0
     emergency: bool = False
+    state: TaskState = TaskState.QUEUED
+    attempt: int = 0
+    last_error_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +106,8 @@ class MissionEngine:
             return True
         if self._last_normal_replan_s is not None and monotonic_s - self._last_normal_replan_s < self.policy.normal_replan_cooldown_s:
             return False
+        mutable = tuple(task for task in self.tasks if task.state in (TaskState.QUEUED, TaskState.ACTIVE))
+        terminal = tuple(task for task in self.tasks if task.state not in (TaskState.QUEUED, TaskState.ACTIVE))
         updated = tuple(
             replace(
                 task,
@@ -102,10 +116,10 @@ class MissionEngine:
                     task.base_priority + self.policy.risk_gain * scores.get(task.asset_id, task.risk_score_0_100)
                     - self.policy.distance_penalty * task.path_length_m
                 ),
-            ) for task in self.tasks
+            ) for task in mutable
         )
         ordered = tuple(sorted(updated, key=lambda task: (-task.computed_priority, task.task_id)))
-        self.tasks = ordered
+        self.tasks = ordered + terminal
         self._last_normal_replan_s = monotonic_s
         return True
 

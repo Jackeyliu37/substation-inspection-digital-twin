@@ -329,11 +329,20 @@ def test_task_manager_dispatches_its_complete_snapshot_to_executor(tmp_path) -> 
             lambda: (
                 len(visited) == 10
                 and manager_node._inspection_goal_handle is None
+                and manager_node._inspection_send_future is None
+                and manager_node._inspection_cancel_future is None
                 and inspection_node._goal_reserved is False
             ),
             8.0,
         )
         assert len(set(visited)) == 10
+        snapshot = manager_node._runtime.snapshot()
+        assert snapshot.mission_state == snapshot.MISSION_SUCCEEDED
+        assert snapshot.completed_tasks == 10
+        assert all(task.state == task.STATE_SUCCEEDED for task in snapshot.tasks)
+        persisted = manager_node._store.load_latest()
+        assert persisted["mission_state"] == snapshot.MISSION_SUCCEEDED
+        assert persisted["completed_tasks"] == 10
     finally:
         executor.shutdown(timeout_sec=2.0)
         thread.join(timeout=2.0)
@@ -423,6 +432,8 @@ def test_risk_replan_cancels_current_goal_and_dispatches_new_queue_head(tmp_path
             lambda: (
                 len(visited) == 11
                 and manager_node._inspection_goal_handle is None
+                and manager_node._inspection_send_future is None
+                and manager_node._inspection_cancel_future is None
                 and inspection_node._goal_reserved is False
             ),
             8.0,

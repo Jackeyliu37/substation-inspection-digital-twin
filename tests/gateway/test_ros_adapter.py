@@ -4,6 +4,7 @@ import base64
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_gateway"))
@@ -24,7 +25,7 @@ from substation_interfaces.msg import (
     InspectionTaskArray,
     RunContext,
 )
-from substation_interfaces.srv import GetReportingReadiness, QueryRunTimeMapping
+from substation_interfaces.srv import GetReportingReadiness, ManageMission, QueryRunTimeMapping
 
 from substation_web_gateway.app import GatewayState
 from substation_web_gateway.ros_adapter import RosGatewayAdapter, RosGatewayNode, RosStateProjector
@@ -169,6 +170,24 @@ def test_republished_identical_state_snapshots_do_not_advance_web_revision() -> 
     assert projection.on_twin(_twin()) is True
     assert projection.on_risk(_risk()) is True
     assert state.snapshot_revision == asset_revision
+
+
+def test_matching_mission_transition_notifies_command_terminal_observer() -> None:
+    observed = []
+    state = GatewayState()
+    projection = RosStateProjector(
+        state,
+        command_observer=lambda command_id, mission, run_id: observed.append(
+            (command_id, mission["state"], run_id)
+        ),
+    )
+    projection.on_run_context(_run_context())
+    mission = _mission()
+    mission.mission_state = InspectionTaskArray.MISSION_PAUSED
+    mission.transition_command_id = "8d0fa612-997d-430e-8dd0-9f35fc1e129b"
+
+    assert projection.on_mission(mission) is True
+    assert observed == [(mission.transition_command_id, "paused", RUN_ID)]
 
 
 def test_projection_builds_web_snapshots_without_inventing_domain_state() -> None:
@@ -323,6 +342,18 @@ def test_live_ros_node_reaches_ready_only_from_real_topics_and_services() -> Non
     )
     source.create_service(GetReportingReadiness, "/reporting/readiness", reporting_ready)
 
+    def manage_mission(request, response):
+        response.schema_version = 1
+        response.accepted = request.action == ManageMission.Request.ACTION_PAUSE
+        response.run_id = RUN_ID
+        response.mission_id = MISSION_ID
+        response.run_context_revision = 17
+        response.state_revision = 64
+        response.queue_revision = 42
+        return response
+
+    source.create_service(ManageMission, "/mission/manage", manage_mission)
+
     try:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not all(state.ready_dependencies.values()):
@@ -335,6 +366,22 @@ def test_live_ros_node_reaches_ready_only_from_real_topics_and_services() -> Non
         assert state.run_id == RUN_ID
         assert state.assets[0]["risk"]["score_0_100"] == 48.2
         assert state.mission["mission_id"] == MISSION_ID
+
+        result = {}
+        worker = threading.Thread(
+            target=lambda: result.update(gateway.dispatch_mission(
+                command_id="8d0fa612-997d-430e-8dd0-9f35fc1e129b",
+                action="pause",
+                payload={"mission_id": MISSION_ID, "reason": "operator pause"},
+            ))
+        )
+        worker.start()
+        deadline = time.monotonic() + 3.0
+        while worker.is_alive() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.05)
+        worker.join(timeout=0.1)
+        assert result["accepted"] is True
+        assert result["state_revision"] == 64
     finally:
         executor.remove_node(gateway)
         executor.remove_node(source)

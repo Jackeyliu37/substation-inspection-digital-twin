@@ -17,6 +17,15 @@ class MissionSnapshotStore:
         "mission_id",
         "state_revision",
         "queue_revision",
+        "mission_state",
+        "context_lifecycle",
+        "context_revision",
+        "transition_command_id",
+        "transition_reason_code",
+        "transition_reason",
+        "active_task_id",
+        "completed_tasks",
+        "progress_0_1",
         "robot_mode",
         "emergency_stop_latched",
         "emergency_stop_latch_revision",
@@ -52,10 +61,20 @@ class MissionSnapshotStore:
         value = dict(snapshot)
         if set(value) != cls.REQUIRED_FIELDS or value.get("schema_version") != 1:
             raise ValueError("MISSION_SNAPSHOT_SCHEMA_INVALID")
-        for name in ("state_revision", "queue_revision", "robot_mode", "emergency_stop_latch_revision"):
+        for name in (
+            "state_revision", "queue_revision", "mission_state", "context_lifecycle",
+            "context_revision", "robot_mode", "emergency_stop_latch_revision",
+            "completed_tasks",
+        ):
             if isinstance(value[name], bool) or not isinstance(value[name], int) or value[name] < 0:
                 raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
         if value["state_revision"] < 1 or not isinstance(value["emergency_stop_latched"], bool):
+            raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
+        if (
+            isinstance(value["progress_0_1"], bool)
+            or not isinstance(value["progress_0_1"], (int, float))
+            or not 0.0 <= value["progress_0_1"] <= 1.0
+        ):
             raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
         if not value["run_id"] or not value["mission_id"] or not isinstance(value["tasks"], list):
             raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")

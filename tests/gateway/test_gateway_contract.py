@@ -395,6 +395,55 @@ def test_mission_command_fails_closed_without_a_ros_service_adapter():
     assert problem["command_id"] is None
 
 
+def test_mission_command_becomes_succeeded_only_after_matching_authoritative_snapshot():
+    state = GatewayState(run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f")
+
+    class Adapter:
+        def dispatch_mission(self, *, command_id, action, payload):
+            assert action == "pause"
+            state.mission.update(
+                mission_id=payload["mission_id"],
+                state="paused",
+                state_revision="64",
+                queue_revision="42",
+                transition_command_id=command_id,
+            )
+            return {
+                "accepted": True,
+                "run_id": state.run_id,
+                "mission_id": payload["mission_id"],
+                "state_revision": 64,
+                "queue_revision": 42,
+                "error_code": "",
+                "error_message": "",
+            }
+
+    app = create_app(state=state, adapter=Adapter())
+    key = str(uuid.uuid4())
+    mission_id = "0c5efce1-655b-413d-9847-da203fb5ca5e"
+    status, _, accepted = _http(
+        app,
+        "POST",
+        "/api/v1/missions/pause",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", key)),
+        body=json.dumps({"mission_id": mission_id, "reason": "operator pause"}).encode(),
+    )
+    assert status == 202
+
+    status, _, command = _http(
+        app, "GET", f"/api/v1/commands/{accepted['command_id']}"
+    )
+    assert status == 200
+    assert command["status"] == "succeeded"
+    assert command["completed_at"] is not None
+    assert command["result"] == {
+        "run_id": state.run_id,
+        "mission_id": mission_id,
+        "state_revision": "64",
+        "queue_revision": "42",
+    }
+
+
 def test_evidence_metadata_and_single_range_download_use_reporting_adapter_only():
     evidence_id = "ea6992e2-4398-414d-a587-ce8b33932266"
     content = b"\xff\xd8gateway-evidence\xff\xd9"

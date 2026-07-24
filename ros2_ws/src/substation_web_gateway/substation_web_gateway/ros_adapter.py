@@ -65,9 +65,10 @@ def _float32(value: float) -> float:
 class RosStateProjector:
     """Validate authoritative ROS snapshots before exposing Web state."""
 
-    def __init__(self, state: GatewayState) -> None:
+    def __init__(self, state: GatewayState, *, command_observer=None) -> None:
         self.state = state
         self.state.authoritative_required = True
+        self._command_observer = command_observer
         self._context: RunContext | None = None
         self._twin_by_asset: dict[str, dict[str, Any]] = {}
         self._risk_by_asset: dict[str, dict[str, Any]] = {}
@@ -259,6 +260,8 @@ class RosStateProjector:
         self.state.mission = mission
         self.state.system["emergency_stop_latched"] = bool(message.emergency_stop_latched)
         self.state.ready_dependencies["mission"] = True
+        if self._command_observer is not None and message.transition_command_id:
+            self._command_observer(message.transition_command_id, mission, self.state.run_id)
         self._refresh_overall()
         self._bump()
         return True
@@ -473,9 +476,9 @@ class RosStateProjector:
 class RosGatewayNode(Node):
     """Live ROS subscriptions and reporting-readiness clients."""
 
-    def __init__(self, state: GatewayState, *, context=None) -> None:
+    def __init__(self, state: GatewayState, *, context=None, command_observer=None) -> None:
         super().__init__("web_gateway", context=context)
-        self.projector = RosStateProjector(state)
+        self.projector = RosStateProjector(state, command_observer=command_observer)
         self._mapping_query_inflight = False
         self._mapping_record_inflight = False
         self._readiness_inflight = False
@@ -768,12 +771,26 @@ class RosGatewayAdapter:
         self._node: RosGatewayNode | None = None
         self._executor: MultiThreadedExecutor | None = None
         self._thread: threading.Thread | None = None
+        self._command_store = None
+
+    def attach_command_store(self, store) -> None:
+        self._command_store = store
+
+    def _observe_mission_command(
+        self, command_id: str, mission: dict[str, Any], run_id: str | None
+    ) -> None:
+        if self._command_store is not None:
+            self._command_store.complete_from_mission(command_id, mission, run_id)
 
     def start(self) -> None:
         if self._thread is not None:
             return
         rclpy.init(context=self._context)
-        self._node = RosGatewayNode(self._state, context=self._context)
+        self._node = RosGatewayNode(
+            self._state,
+            context=self._context,
+            command_observer=self._observe_mission_command,
+        )
         self._executor = MultiThreadedExecutor(num_threads=2, context=self._context)
         self._executor.add_node(self._node)
         self._thread = threading.Thread(target=self._executor.spin, name="gateway-rclpy", daemon=True)
