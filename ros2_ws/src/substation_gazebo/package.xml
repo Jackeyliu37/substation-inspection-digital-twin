@@ -39,6 +39,7 @@
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>substation_description</exec_depend>
+  <exec_depend>substation_interfaces</exec_depend>
   <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>turtlebot3_gazebo</exec_depend>
   <exec_depend>xacro</exec_depend>

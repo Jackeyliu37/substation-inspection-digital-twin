@@ -628,7 +628,17 @@ function ScenarioView({ scenario, system, onCommand, disabled }) {
 
 function ReportsView({ connection, reports }) {
   const items = Array.isArray(reports?.items) ? reports.items : [];
-  return <section className="panel reports-panel"><PanelTitle title="巡检报告" action="证据不可变" />{items.length ? <div className="asset-list">{items.map((report) => <div className="report-row" key={report.report_id}><div><strong>{report.report_id}</strong><small>{report.created_at ?? report.status ?? "已归档"}</small></div>{report.download_urls && Object.entries(report.download_urls).map(([format, url]) => <a key={format} href={url}>{format === "pdf" ? "下载文档" : "查看网页"}</a>)}</div>)}</div> : <EmptyState title={connection === "live" ? "当前运行尚无报告" : "数据服务不可用"}>完成巡检任务后会生成网页、文档与证据包。</EmptyState>}</section>;
+  const generation = reports?.generation;
+  const title = connection !== "live" ? "数据服务不可用" : ({
+    waiting_for_mission: "巡检进行中",
+    generating: "报告生成中",
+    ready: "报告已生成",
+    unavailable: "报告生成服务不可用",
+    idle: "等待巡检",
+  }[generation?.status] ?? "等待报告状态");
+  const action = generation?.total_tasks > 0 ? `${generation.completed_tasks} / ${generation.total_tasks} 台` : "自动生成";
+  const formatLabel = { html: "查看网页", pdf: "下载 PDF", evidence: "下载证据包" };
+  return <section className="panel reports-panel"><PanelTitle title="巡检报告" action={action} /><div className={`operator-guide report-generation ${generation?.status ?? "unknown"}`}><strong>{title}</strong><span>{generation?.message ?? "正在读取报告生成状态。"}</span></div>{items.length ? <div className="asset-list">{items.map((report) => <div className="report-row" key={report.report_id}><div><strong>{report.report_id}</strong><small>{report.created_at ?? report.status ?? "已归档"}</small></div>{report.download_urls && Object.entries(report.download_urls).map(([format, url]) => <a key={format} href={url}>{formatLabel[format] ?? format}</a>)}</div>)}</div> : <EmptyState title={title}>{generation?.message ?? "完成巡检任务后会生成网页、PDF 与证据包。"}</EmptyState>}</section>;
 }
 
 function SystemView({ system, models, events, onRefresh }) {

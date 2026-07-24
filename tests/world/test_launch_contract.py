@@ -41,7 +41,7 @@ def test_launch_starts_exact_phase2_components() -> None:
         ('package="substation_gazebo"', 'executable="scenario_manager"'),
     ):
         assert pair[0] in text and pair[1] in text
-    assert "/world/substation/set_pose@ros_gz_interfaces/srv/SetEntityPose" in text
+    assert "/world/substation/set_pose@ros_gz_interfaces/srv/SetEntityPose" not in text
     assert "/camera/image_raw" in text
 
 

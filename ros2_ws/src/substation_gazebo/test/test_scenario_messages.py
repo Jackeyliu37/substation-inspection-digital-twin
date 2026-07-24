@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticStatus
+from substation_interfaces.msg import RunContext
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -171,3 +172,51 @@ def test_pending_scenario_application_does_not_block_the_ros_executor() -> None:
         time.sleep(0.01)
     assert published[0][0] is command
     assert published[0][1].error_code == "GAZEBO_SET_POSE_FAILED"
+
+
+def test_manager_tracks_the_active_run_context_instead_of_the_deployment_run() -> None:
+    module = load_module()
+    manager = object.__new__(module.ScenarioManager)
+    manager.run_id = "9cb0230d-68bf-4774-86ea-934fc01271a3"
+    manager._run_context_revision = -1
+
+    manager._on_run_context(RunContext(
+        schema_version=1,
+        run_id="e73647f3-54dd-47d0-b699-2ed130b6cafb",
+        context_revision=4,
+        lifecycle=RunContext.LIFECYCLE_ACTIVE,
+    ))
+
+    assert manager.run_id == "e73647f3-54dd-47d0-b699-2ed130b6cafb"
+    assert manager._run_context_revision == 4
+
+
+def test_native_gazebo_pose_service_uses_the_active_partition_transport(monkeypatch) -> None:
+    module = load_module()
+    assert hasattr(module, "set_entity_pose_with_gz")
+    calls = []
+
+    def run(arguments, **options):
+        calls.append((arguments, options))
+        return SimpleNamespace(returncode=0, stdout="data: true\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    applied = module.set_entity_pose_with_gz(
+        "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz",
+        "scenario_fire",
+        (4.3, 3.0, -10.0, 0.0, 0.0, 0.0),
+    )
+
+    assert applied is True
+    arguments, options = calls[0]
+    assert arguments[:4] == [
+        "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz",
+        "service",
+        "-s",
+        "/world/substation/set_pose",
+    ]
+    assert "gz.msgs.Pose" in arguments
+    assert "gz.msgs.Boolean" in arguments
+    assert 'name: "scenario_fire"' in arguments[-1]
+    assert "position: {x: 4.3, y: 3.0, z: -10.0}" in arguments[-1]
+    assert options["timeout"] == 3.0

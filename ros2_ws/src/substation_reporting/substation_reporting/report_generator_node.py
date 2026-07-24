@@ -494,8 +494,11 @@ class ReportGeneratorNode(Node):
         }
         filename = filenames[format_name]
         directory = self._work_root / group_id
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / filename).write_bytes(payload)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / filename).write_bytes(payload)
+        except OSError:
+            return False
         stamp = self.get_clock().now().to_msg()
         source_topic = (
             "/reporting/generate_diagnostic_bundle"

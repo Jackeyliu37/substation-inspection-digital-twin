@@ -326,9 +326,33 @@ def test_map_reports_and_diagnostics_are_read_only_snapshots():
     status, _, body = _http(app, "GET", "/api/v1/reports")
     assert status == 200
     assert body["data"]["items"][0]["report_id"] == "report-1"
+    assert body["data"]["generation"]["status"] == "ready"
     status, _, body = _http(app, "GET", "/api/v1/diagnostics")
     assert status == 200
     assert body["data"]["items"][0]["name"] == "gateway"
+
+
+def test_report_snapshot_explains_progress_before_automatic_generation():
+    state = GatewayState(
+        mission={
+            "state": "running",
+            "completed_tasks": 3,
+            "total_tasks": 10,
+            "tasks": [],
+        },
+        ready_dependencies={"reporting": True},
+    )
+    app = create_app(state=state)
+
+    status, _, body = _http(app, "GET", "/api/v1/reports")
+
+    assert status == 200
+    assert body["data"]["generation"] == {
+        "status": "waiting_for_mission",
+        "message": "巡检进行中，完成全部设备后自动生成报告。",
+        "completed_tasks": 3,
+        "total_tasks": 10,
+    }
 
 
 def test_reporting_index_groups_artifacts_and_downloads_through_adapter():

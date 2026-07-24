@@ -55,15 +55,6 @@ def generate_launch_description() -> LaunchDescription:
         arguments=["--ros-args", "-p", f"config_file:={bridge_path}"],
         output="screen",
     )
-    set_pose_bridge = Node(
-        package="ros_gz_bridge",
-        executable="parameter_bridge",
-        name="substation_set_pose_bridge",
-        arguments=[
-            "/world/substation/set_pose@ros_gz_interfaces/srv/SetEntityPose"
-        ],
-        output="screen",
-    )
     image_bridge = Node(
         package="ros_gz_image",
         executable="image_bridge",
@@ -116,7 +107,6 @@ def generate_launch_description() -> LaunchDescription:
             AppendEnvironmentVariable("GZ_SIM_RESOURCE_PATH", model_paths),
             gazebo,
             topic_bridge,
-            set_pose_bridge,
             image_bridge,
             robot_state_publisher,
             asset_tf,

@@ -122,6 +122,7 @@ def test_root_installer_prepares_service_home_and_runtime_caches() -> None:
         "/var/lib/substation/.gz/sim/log",
         "/var/lib/substation/.cache",
         "/var/lib/substation/.config",
+        "/var/lib/substation/reports/.work",
     ):
         assert path in script
 

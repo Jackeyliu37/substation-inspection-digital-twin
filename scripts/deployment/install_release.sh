@@ -64,6 +64,7 @@ install -d -m 0750 -o substation -g substation \
   /var/lib/substation/sqlite \
   /var/lib/substation/evidence \
   /var/lib/substation/reports \
+  /var/lib/substation/reports/.work \
   /var/lib/substation/diagnostics \
   /var/lib/substation/rosbag2 \
   /var/log/substation

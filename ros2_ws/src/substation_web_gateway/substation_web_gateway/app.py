@@ -228,6 +228,37 @@ def pack_camera_frame(state: GatewayState, *, connection_id: str) -> bytes:
     return header + encoded_metadata + jpeg
 
 
+def _report_generation(state: GatewayState, *, has_reports: bool) -> dict[str, Any]:
+    mission = state.mission if isinstance(state.mission, dict) else {}
+    try:
+        completed_tasks = int(mission.get("completed_tasks", 0))
+        total_tasks = int(mission.get("total_tasks", 0))
+    except (TypeError, ValueError):
+        completed_tasks = total_tasks = 0
+    status = str(mission.get("state", "idle"))
+    if has_reports:
+        generation_status = "ready"
+        message = "报告已生成，可下载网页、PDF 和证据包。"
+    elif not bool(state.ready_dependencies.get("reporting")):
+        generation_status = "unavailable"
+        message = "报告生成服务不可用，请查看系统状态。"
+    elif status == "succeeded":
+        generation_status = "generating"
+        message = "巡检已完成，报告生成中。"
+    elif status in {"ready", "running", "paused", "stopping"}:
+        generation_status = "waiting_for_mission"
+        message = "巡检进行中，完成全部设备后自动生成报告。"
+    else:
+        generation_status = "idle"
+        message = "开始并完成一次巡检后将自动生成报告。"
+    return {
+        "status": generation_status,
+        "message": message,
+        "completed_tasks": completed_tasks,
+        "total_tasks": total_tasks,
+    }
+
+
 class CommandStore:
     """Single-writer SQLite store for idempotency and command records."""
 
@@ -1134,12 +1165,22 @@ def create_app(
                     item["created_at"] = metadata.get("created_at")
             for item in groups.values():
                 item["formats"].sort()
+            report_items = sorted(
+                groups.values(), key=lambda item: str(item["report_id"])
+            )
             return snapshot_response({
-                "items": sorted(groups.values(), key=lambda item: str(item["report_id"])),
+                "items": report_items,
                 "next_cursor": None,
+                "generation": _report_generation(
+                    state, has_reports=bool(report_items)
+                ),
             }, request)
         items = sorted(state.reports, key=lambda item: str(item.get("report_id", "")))
-        return snapshot_response({"items": items, "next_cursor": None}, request)
+        return snapshot_response({
+            "items": items,
+            "next_cursor": None,
+            "generation": _report_generation(state, has_reports=bool(items)),
+        }, request)
 
     @app.get("/api/v1/diagnostics")
     async def diagnostics(request: Request) -> Response:

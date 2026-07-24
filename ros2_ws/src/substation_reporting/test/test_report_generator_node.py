@@ -233,6 +233,32 @@ def test_bundle_sources_mark_missing_rosbag_as_unavailable(tmp_path) -> None:
     assert "capture_status: unavailable" in metadata
     assert "message_count: 0" in metadata
 
+
+def test_submit_artifact_reports_unavailable_when_work_directory_is_not_writable(
+    tmp_path, monkeypatch
+) -> None:
+    module = node_module()
+    node = module.ReportGeneratorNode.__new__(module.ReportGeneratorNode)
+    node._work_root = tmp_path / "report-work"
+    node._store_client = type("ReadyStore", (), {
+        "service_is_ready": lambda self: True,
+    })()
+
+    def deny_mkdir(_path, *args, **kwargs):
+        raise PermissionError("report work directory is not writable")
+
+    monkeypatch.setattr(Path, "mkdir", deny_mkdir)
+
+    assert node._submit_artifact(
+        str(uuid4()),
+        "pdf",
+        str(uuid4()),
+        str(uuid4()),
+        1,
+        b"%PDF-1.4",
+        "application/pdf",
+    ) is False
+
 def wait_future(future, timeout_s: float):
     deadline = time.monotonic() + timeout_s
     while not future.done() and time.monotonic() < deadline:

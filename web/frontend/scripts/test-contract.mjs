@@ -158,6 +158,10 @@ for (const closureFeature of [
   "气体 × 10%",
   "组合场景 × 15%",
   "event.payload?.description",
+  "巡检进行中",
+  "报告生成中",
+  "报告已生成",
+  "报告生成服务不可用",
 ]) {
   if (!page.includes(closureFeature)) throw new Error(`missing inspection closure UI: ${closureFeature}`);
 }

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import shutil
+import subprocess
 from threading import Lock, Thread
 
 from ament_index_python.packages import get_package_share_directory
 from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from geometry_msgs.msg import Pose
 import rclpy
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -15,9 +16,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from ros_gz_interfaces.msg import Entity
-from ros_gz_interfaces.srv import SetEntityPose
 from sensor_msgs.msg import BatteryState
+from substation_interfaces.msg import RunContext
 
 from .scenario_catalog import ApplyResult, Command, Pose as ScenarioPose
 from .scenario_catalog import ScenarioCatalog, ScenarioEngine, ScenarioError
@@ -144,6 +144,49 @@ def _quaternion_from_rpy(roll: float, pitch: float, yaw: float) -> tuple[float, 
     )
 
 
+def set_entity_pose_with_gz(
+    executable: str,
+    name: str,
+    values: ScenarioPose,
+    *,
+    timeout_s: float = 2.5,
+) -> bool:
+    """Move a scenario prop through Gazebo Transport in the active partition."""
+
+    x, y, z, roll, pitch, yaw = values
+    qx, qy, qz, qw = _quaternion_from_rpy(roll, pitch, yaw)
+    request = (
+        f'name: "{name}", '
+        f"position: {{x: {x}, y: {y}, z: {z}}}, "
+        f"orientation: {{x: {qx}, y: {qy}, z: {qz}, w: {qw}}}"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "service",
+                "-s",
+                "/world/substation/set_pose",
+                "--reqtype",
+                "gz.msgs.Pose",
+                "--reptype",
+                "gz.msgs.Boolean",
+                "--timeout",
+                str(round(timeout_s * 1000)),
+                "--req",
+                request,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s + 0.5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = f"{completed.stdout}\n{completed.stderr}".lower()
+    return completed.returncode == 0 and "data: true" in output
+
+
 class ScenarioManager(Node):
     def __init__(self) -> None:
         super().__init__("scenario_manager")
@@ -160,6 +203,8 @@ class ScenarioManager(Node):
             ).value
         )
         self.run_id = str(self.declare_parameter("run_id", "").value)
+        self._run_context_revision = -1
+        self._gz_executable = shutil.which("gz") or "gz"
         self.declare_parameter("command_id", "")
         self.declare_parameter("scenario_id", "normal")
         self.declare_parameter("scenario_action", "reset")
@@ -227,10 +272,11 @@ class ScenarioManager(Node):
             BatteryState, "/battery_state", q_stream
         )
         callback_group = ReentrantCallbackGroup()
-        self.pose_client = self.create_client(
-            SetEntityPose,
-            "/world/substation/set_pose",
-            callback_group=callback_group,
+        self.create_subscription(
+            RunContext,
+            "/system/run_context",
+            self._on_run_context,
+            q_state,
         )
         self.add_on_set_parameters_callback(self._on_parameters)
         self.create_timer(0.1, self._process_pending, callback_group=callback_group)
@@ -281,23 +327,17 @@ class ScenarioManager(Node):
         )
         return SetParametersResult(successful=True)
 
+    def _on_run_context(self, message: RunContext) -> None:
+        if message.schema_version != RunContext.SCHEMA_VERSION or not message.run_id:
+            return
+        revision = int(message.context_revision)
+        if message.run_id == self.run_id and revision < self._run_context_revision:
+            return
+        self.run_id = message.run_id
+        self._run_context_revision = revision
+
     def _set_pose(self, name: str, values: ScenarioPose) -> bool:
-        if not self.pose_client.wait_for_service(timeout_sec=2.0):
-            return False
-        x, y, z, roll, pitch, yaw = values
-        request = SetEntityPose.Request()
-        request.entity = Entity(name=name, type=Entity.MODEL)
-        request.pose = Pose()
-        request.pose.position.x = x
-        request.pose.position.y = y
-        request.pose.position.z = z
-        qx, qy, qz, qw = _quaternion_from_rpy(roll, pitch, yaw)
-        request.pose.orientation.x = qx
-        request.pose.orientation.y = qy
-        request.pose.orientation.z = qz
-        request.pose.orientation.w = qw
-        response = self.pose_client.call(request, timeout_sec=2.0)
-        return response is not None and response.success
+        return set_entity_pose_with_gz(self._gz_executable, name, values)
 
     def _apply_command(self, command: Command) -> None:
         try:
