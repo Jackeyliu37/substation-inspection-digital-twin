@@ -5,6 +5,13 @@ import { Canvas } from "@react-three/fiber";
 import { newCommandId } from "./command-id.mjs";
 import { decodeOccupancyData, worldToMapPixel } from "./map-utils.mjs";
 import {
+  DEFAULT_VIEWPORT,
+  panViewport,
+  rotateViewport,
+  viewportTransform,
+  zoomViewport,
+} from "./map-viewport.mjs";
+import {
   assetLabel,
   categoryLabel,
   commandErrorLabel,
@@ -279,6 +286,8 @@ function MapView({ robot, map, assets, mission }) {
 
 function OccupancyMap({ map, robot, assets, mission }) {
   const canvasRef = useRef(null);
+  const dragRef = useRef(null);
+  const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
   const width = Number(map.width_cells);
   const height = Number(map.height_cells);
   useEffect(() => {
@@ -301,7 +310,26 @@ function OccupancyMap({ map, robot, assets, mission }) {
   const robotPixel = robot?.pose ? worldToMapPixel(robot.pose, map) : null;
   const goals = Array.isArray(mission?.tasks) ? mission.tasks.map((task) => worldToMapPixel(task.goal, map)).filter(Boolean) : [];
   const route = [robotPixel, ...goals].filter(Boolean).map((point) => `${point.x},${point.y}`).join(" ");
-  return <div className="occupancy-wrap"><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="机器人、设备和任务路线叠加层">{route && <polyline points={route} className="route-line" />}{assets.map((asset) => { const point = asset.pose ? worldToMapPixel(asset.pose, map) : null; return point ? <circle key={asset.asset_id} cx={point.x} cy={point.y} r="3" className={`asset-point ${asset.risk?.level ?? "unknown"}`} /> : null; })}{goals.map((point, index) => <g key={index}><circle cx={point.x} cy={point.y} r="4" className="goal-point" /><text x={point.x + 5} y={point.y - 4}>{index + 1}</text></g>)}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg><span className="map-origin">{map.resolution_m.toFixed(2)} m/cell · {width}×{height}</span></div>;
+  const handleWheel = (event) => {
+    event.preventDefault();
+    setViewport((current) => zoomViewport(current, event.deltaY < 0 ? 1.2 : 1 / 1.2));
+  };
+  const handlePointerDown = (event) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  const handlePointerMove = (event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setViewport((current) => panViewport(current, event.clientX - drag.x, event.clientY - drag.y));
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  const handlePointerUp = (event) => {
+    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const stopToolbarPointer = (event) => event.stopPropagation();
+  return <div className="occupancy-wrap" onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onDoubleClick={() => setViewport(DEFAULT_VIEWPORT)}><div className="map-transform-layer" style={{ transform: viewportTransform(viewport) }}><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="机器人、设备和任务路线叠加层">{route && <polyline points={route} className="route-line" />}{assets.map((asset) => { const point = asset.pose ? worldToMapPixel(asset.pose, map) : null; return point ? <g key={asset.asset_id}><circle cx={point.x} cy={point.y} r="3" className={`asset-point ${asset.risk?.level ?? "unknown"}`} /><text x={point.x + 4} y={point.y - 3}>{assetLabel(asset.asset_id)}</text></g> : null; })}{goals.map((point, index) => <g key={index}><circle cx={point.x} cy={point.y} r="4" className="goal-point" /><text x={point.x + 5} y={point.y - 4}>{index + 1}</text></g>)}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg></div><div className="map-toolbar" onPointerDown={stopToolbarPointer}><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 1.25))}>放大</button><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 0.8))}>缩小</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, -15))}>向左旋转</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, 15))}>向右旋转</button><button type="button" onClick={() => setViewport(DEFAULT_VIEWPORT)}>复位地图</button></div><span className="map-origin">每格 {map.resolution_m.toFixed(2)} 米 · {width}×{height} · {viewport.scale.toFixed(2)} 倍 · {viewport.rotation}°</span><span className="map-help">滚轮缩放 · 拖拽移动 · 双击复位</span></div>;
 }
 
 function RiskView({ assets, alerts }) {

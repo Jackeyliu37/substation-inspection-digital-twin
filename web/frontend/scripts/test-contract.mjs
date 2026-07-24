@@ -3,6 +3,13 @@ import { resolve } from "node:path";
 import { newCommandId } from "../app/command-id.mjs";
 import { decodeOccupancyData, worldToMapPixel } from "../app/map-utils.mjs";
 import {
+  DEFAULT_VIEWPORT,
+  panViewport,
+  rotateViewport,
+  viewportTransform,
+  zoomViewport,
+} from "../app/map-viewport.mjs";
+import {
   assetLabel,
   categoryLabel,
   commandErrorLabel,
@@ -78,6 +85,11 @@ for (const implementationTerm of [
   "gas-high",
   "meter-limit",
   "combined-risk-obstacle",
+  "viewportTransform(viewport)",
+  "onWheel={handleWheel}",
+  "onPointerDown={handlePointerDown}",
+  "向左旋转",
+  "复位地图",
 ]) {
   if (!page.includes(implementationTerm)) throw new Error(`missing live console behavior: ${implementationTerm}`);
 }
@@ -112,5 +124,16 @@ for (const [actual, expected] of expectedLabels) {
 if (categoryLabel("future_device") !== "future_device") throw new Error("unknown category fallback changed");
 if (!commandErrorLabel("wait for no active goal and 0.5 seconds of zero velocity").includes("停止当前任务")) {
   throw new Error("motion-safety error is not localized");
+}
+const zoomed = zoomViewport(DEFAULT_VIEWPORT, 20);
+if (zoomed.scale !== 6) throw new Error(`map maximum zoom clamp failed: ${zoomed.scale}`);
+const zoomedOut = zoomViewport(DEFAULT_VIEWPORT, 0.01);
+if (zoomedOut.scale !== 0.75) throw new Error(`map minimum zoom clamp failed: ${zoomedOut.scale}`);
+const panned = panViewport(DEFAULT_VIEWPORT, 18, -7);
+if (panned.x !== 18 || panned.y !== -7) throw new Error(`map pan failed: ${JSON.stringify(panned)}`);
+const rotated = rotateViewport(DEFAULT_VIEWPORT, 15);
+if (rotated.rotation !== 15) throw new Error(`map rotation failed: ${rotated.rotation}`);
+if (viewportTransform({ scale: 2, x: 18, y: -7, rotation: 15 }) !== "translate(18px, -7px) rotate(15deg) scale(2)") {
+  throw new Error("map CSS transform is not deterministic");
 }
 console.log(`frontend contract: PASS (${requiredViews.length} views, REST/WS boundary locked)`);
