@@ -82,4 +82,4 @@ deployment_filenames:
 meter_reader:
   locator_logical_model: meter_locator
   opencv_config_file: configs/meter_reader.yaml
-  opencv_config_sha256: c2694c7f40464a29e68000813ff8d6b24b5d97963e3bd5115ca8dbb7a1afba73
+  opencv_config_sha256: 57bad4b553ad10b1c8c6d854ab5ca3d1be3b5ae1d13660da3008cc01c532631f

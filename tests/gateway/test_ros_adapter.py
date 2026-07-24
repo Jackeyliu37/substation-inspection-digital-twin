@@ -42,6 +42,33 @@ RUN_ID = "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f"
 MISSION_ID = "0c5efce1-655b-413d-9847-da203fb5ca5e"
 
 
+def test_projector_encodes_real_annotated_rgb_frame_as_jpeg() -> None:
+    state = GatewayState()
+    projector = RosStateProjector(state)
+    message = Image()
+    message.header.frame_id = "camera_optical_frame"
+    message.header.stamp.sec = 12
+    message.height = 2
+    message.width = 2
+    message.encoding = "rgb8"
+    message.step = 6
+    message.data = bytes([255, 0, 0] * 4)
+
+    projector.on_annotated_image(message)
+
+    assert state.camera_jpeg is not None
+    assert state.camera_jpeg.startswith(b"\xff\xd8")
+    assert state.camera_jpeg.endswith(b"\xff\xd9")
+    assert state.camera_metadata == {
+        "source_topic": "/perception/annotated_image",
+        "source_frame_id": "camera_optical_frame",
+        "source_ros_time": {"sec": 12, "nanosec": 0},
+        "width": 2,
+        "height": 2,
+        "encoding": "jpeg",
+    }
+
+
 def _http_get(app, path: str):
     async def invoke():
         sent = []

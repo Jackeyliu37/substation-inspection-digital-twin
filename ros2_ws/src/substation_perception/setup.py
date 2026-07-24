@@ -14,6 +14,7 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE}"]),
         (f"share/{PACKAGE}", ["package.xml"]),
         (f"share/{PACKAGE}/launch", glob("launch/*.launch.py")),
+        (f"share/{PACKAGE}/config", ["../../../configs/meter_reader.yaml"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -26,6 +27,11 @@ setup(
         "console_scripts": [
             "environment_normalizer = substation_perception.environment_normalizer:main",
             "placeholder_detector = substation_perception.placeholder_node:main",
+            "safety_detector = substation_perception.production_nodes:safety_main",
+            "equipment_detector = substation_perception.production_nodes:equipment_main",
+            "defect_classifier = substation_perception.production_nodes:fault_main",
+            "detection_aggregator = substation_perception.detection_aggregator:main",
+            "meter_reader = substation_perception.meter_reader:main",
         ],
     },
 )

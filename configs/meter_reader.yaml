@@ -12,5 +12,9 @@ assets:
     maximum: 2.0
     unit: MPa
 opencv:
-  method: project-owned-placeholder
-  note: Calibration and pointer geometry must be validated on the Gazebo meter test split before strict production acceptance.
+  method: hsv-red-needle-vector-v1
+  start_angle_radians: -2.35619449019
+  end_angle_radians: 2.35619449019
+  minimum_red_saturation: 90
+  minimum_red_value: 45
+  note: The locator supplies the crop; OpenCV extracts the project-owned red needle and maps its calibrated sweep to the asset range.

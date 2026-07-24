@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import math
 import re
+import uuid
 
 from std_msgs.msg import Header
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
@@ -82,6 +83,47 @@ def to_development_detections(
 
         hypothesis = ObjectHypothesisWithPose()
         hypothesis.hypothesis.class_id = f"placeholder/coco/{class_name}"
+        hypothesis.hypothesis.score = float(candidate.score)
+        item.results.append(hypothesis)
+        output.detections.append(item)
+    return output
+
+
+def to_production_detections(
+    header: Header,
+    image_width: int,
+    image_height: int,
+    detections: Sequence[RawDetection],
+    *,
+    module: str,
+    id_factory=uuid.uuid4,
+) -> Detection2DArray:
+    if module not in {"safety", "equipment", "defect"}:
+        raise DetectionContractError("PRODUCTION_MODULE_INVALID")
+    if image_width <= 0 or image_height <= 0:
+        raise DetectionContractError("IMAGE_DIMENSIONS_INVALID")
+    if header.frame_id != "camera_optical_frame":
+        raise DetectionContractError("FRAME_ID_INVALID")
+
+    output = Detection2DArray(header=header)
+    for candidate in detections:
+        class_name = normalize_class_name(candidate.class_name)
+        bounded = _clip_xyxy(candidate.xyxy, image_width, image_height)
+        if not class_name or not _valid_score(candidate.score) or bounded is None:
+            continue
+        x1, y1, x2, y2 = bounded
+        item = Detection2D(header=header)
+        evidence_id = id_factory()
+        try:
+            item.id = str(uuid.UUID(str(evidence_id)))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise DetectionContractError("EVIDENCE_ID_INVALID") from error
+        item.bbox.center.position.x = (x1 + x2) / 2.0
+        item.bbox.center.position.y = (y1 + y2) / 2.0
+        item.bbox.size_x = x2 - x1
+        item.bbox.size_y = y2 - y1
+        hypothesis = ObjectHypothesisWithPose()
+        hypothesis.hypothesis.class_id = f"{module}/{class_name}"
         hypothesis.hypothesis.score = float(candidate.score)
         item.results.append(hypothesis)
         output.detections.append(item)

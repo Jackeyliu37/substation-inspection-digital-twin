@@ -15,9 +15,11 @@ import math
 import threading
 from typing import Any
 
+import cv2
 from diagnostic_msgs.msg import DiagnosticArray
 from map_msgs.msg import OccupancyGridUpdate
 from nav_msgs.msg import OccupancyGrid, Odometry
+import numpy as np
 import rclpy
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
@@ -25,7 +27,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, Image
 from substation_interfaces.msg import (
     AssetRiskArray,
     InspectionTaskArray,
@@ -146,6 +148,41 @@ class RosStateProjector:
 
     def _bump(self) -> None:
         self.state.snapshot_revision += 1
+
+    def on_annotated_image(self, message: Image) -> None:
+        if (
+            message.header.frame_id != "camera_optical_frame"
+            or message.encoding != "rgb8"
+            or message.width <= 0
+            or message.height <= 0
+            or message.step != message.width * 3
+            or len(message.data) != message.step * message.height
+        ):
+            return
+        try:
+            image = np.frombuffer(bytes(message.data), dtype=np.uint8).reshape(
+                (message.height, message.width, 3)
+            )
+            ok, encoded = cv2.imencode(
+                ".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+                [int(cv2.IMWRITE_JPEG_QUALITY), 85],
+            )
+        except (ValueError, cv2.error):
+            return
+        if not ok:
+            return
+        self.state.camera_jpeg = bytes(encoded)
+        self.state.camera_metadata = {
+            "source_topic": "/perception/annotated_image",
+            "source_frame_id": message.header.frame_id,
+            "source_ros_time": {
+                "sec": int(message.header.stamp.sec),
+                "nanosec": int(message.header.stamp.nanosec),
+            },
+            "width": int(message.width),
+            "height": int(message.height),
+            "encoding": "jpeg",
+        }
 
     def set_ros_graph_ready(self, *, ros: bool, gazebo: bool, nav2: bool) -> None:
         changed = any(
@@ -756,6 +793,12 @@ class RosGatewayNode(Node):
         self.create_subscription(DiagnosticArray, "/diagnostics", self.projector.on_diagnostics, q_event)
         self.create_subscription(Odometry, "/odom", self._on_odom, q_sensor)
         self.create_subscription(BatteryState, "/battery_state", self.projector.on_battery, q_stream)
+        self.create_subscription(
+            Image,
+            "/perception/annotated_image",
+            self.projector.on_annotated_image,
+            q_sensor,
+        )
         self.create_subscription(
             ManualVelocityStatus,
             "/mission/manual_velocity_status",

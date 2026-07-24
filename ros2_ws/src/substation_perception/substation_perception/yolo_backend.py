@@ -140,3 +140,35 @@ class YoloBackend:
         except Exception as error:
             raise BackendError("YOLO_INFERENCE_FAILED") from error
         return _parse_single_result(results)
+
+
+class FaultClassifierBackend(YoloBackend):
+    def classify(self, image_rgb: np.ndarray) -> tuple[str, float]:
+        if (
+            not isinstance(image_rgb, np.ndarray)
+            or image_rgb.dtype != np.uint8
+            or image_rgb.ndim != 3
+            or image_rgb.shape[2] != 3
+            or image_rgb.size == 0
+        ):
+            raise BackendError("IMAGE_RGB_INVALID")
+        try:
+            results = self._model()(image_rgb, verbose=False, device=0)  # type: ignore[operator]
+            if not isinstance(results, Sequence) or len(results) != 1:
+                raise BackendError("YOLO_OUTPUT_INVALID")
+            result = results[0]
+            index = int(result.probs.top1)
+            score = float(result.probs.top1conf.detach().cpu().item())
+            class_name = result.names[index]
+        except BackendError:
+            raise
+        except Exception as error:
+            raise BackendError("YOLO_OUTPUT_INVALID") from error
+        if (
+            not isinstance(class_name, str)
+            or not class_name
+            or not math.isfinite(score)
+            or not 0.0 <= score <= 1.0
+        ):
+            raise BackendError("YOLO_OUTPUT_INVALID")
+        return class_name, score
