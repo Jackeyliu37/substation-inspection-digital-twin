@@ -1,0 +1,21 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string evidence_id
+string run_id
+uint64 context_revision
+string media_type
+string content_sha256
+string metadata_canonical_json
+string source_topic
+int32 source_ros_sec
+uint32 source_ros_nanosec
+string source_frame_id
+string source_message_type
+uint32 source_index
+uint8[] content
+---
+uint32 schema_version
+bool accepted
+uint64 evidence_revision
+string error_code
+string error_message

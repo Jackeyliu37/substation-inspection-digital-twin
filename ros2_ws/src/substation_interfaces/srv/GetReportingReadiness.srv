@@ -1,0 +1,9 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+---
+uint32 schema_version
+bool evidence_store_writable
+bool report_generator_ready
+bool time_mapping_ready
+string error_code
+string error_message

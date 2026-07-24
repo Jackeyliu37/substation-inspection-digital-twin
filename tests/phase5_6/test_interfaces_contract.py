@@ -16,8 +16,19 @@ def test_phase5_6_interfaces_are_generated_ros_definitions() -> None:
         "msg/ManualVelocityCommand.msg", "msg/ManualVelocityStatus.msg",
         "srv/EmergencyStop.srv", "srv/ResetEmergencyStop.srv", "srv/ManageMission.srv",
         "srv/PrioritizeAsset.srv", "srv/ReplanMission.srv", "action/ExecuteInspection.action",
+        "srv/RecordRunTimeMapping.srv", "srv/QueryRunTimeMapping.srv",
+        "srv/StoreEvidence.srv", "srv/FreezeEvidence.srv", "srv/QueryEvidence.srv",
+        "srv/ReadEvidenceChunk.srv", "srv/GetReportingReadiness.srv",
+        "srv/GenerateReport.srv", "srv/GenerateDiagnosticBundle.srv",
     ):
         assert (PACKAGE / relative).is_file(), relative
+    cmake = (PACKAGE / "CMakeLists.txt").read_text(encoding="utf-8")
+    for service in (
+        "RecordRunTimeMapping", "QueryRunTimeMapping", "StoreEvidence",
+        "FreezeEvidence", "QueryEvidence", "ReadEvidenceChunk",
+        "GetReportingReadiness", "GenerateReport", "GenerateDiagnosticBundle",
+    ):
+        assert f'"srv/{service}.srv"' in cmake
 
 
 def test_phase5_6_sources_do_not_consume_truth_or_placeholder_topics() -> None:

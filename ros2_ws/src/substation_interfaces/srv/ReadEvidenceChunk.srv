@@ -1,0 +1,14 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string evidence_id
+uint64 offset_bytes
+uint32 max_bytes
+---
+uint32 schema_version
+bool found
+uint64 size_bytes
+string content_sha256
+uint8[] content
+bool eof
+string error_code
+string error_message

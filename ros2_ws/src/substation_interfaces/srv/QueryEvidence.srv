@@ -1,0 +1,15 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string evidence_id
+---
+uint32 schema_version
+bool found
+string run_id
+uint64 context_revision
+uint64 evidence_revision
+string media_type
+string content_sha256
+uint64 size_bytes
+string metadata_canonical_json
+string error_code
+string error_message

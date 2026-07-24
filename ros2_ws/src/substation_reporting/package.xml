@@ -6,6 +6,10 @@
   <maintainer email="jackeyliu37@users.noreply.github.com">jackeyliu37</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>substation_interfaces</exec_depend>
   <test_depend>ament_pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

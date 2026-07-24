@@ -1,0 +1,12 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string command_id
+string run_id
+string mission_id
+string[] formats
+---
+uint32 schema_version
+bool accepted
+string report_id
+string error_code
+string error_message

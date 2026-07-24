@@ -26,6 +26,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ReplanMission.srv"
   "srv/RequestReinspection.srv"
   "srv/AcknowledgeAlert.srv"
+  "srv/RecordRunTimeMapping.srv"
+  "srv/QueryRunTimeMapping.srv"
+  "srv/StoreEvidence.srv"
+  "srv/FreezeEvidence.srv"
+  "srv/QueryEvidence.srv"
+  "srv/ReadEvidenceChunk.srv"
+  "srv/GetReportingReadiness.srv"
+  "srv/GenerateReport.srv"
+  "srv/GenerateDiagnosticBundle.srv"
   "action/ExecuteInspection.action"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )

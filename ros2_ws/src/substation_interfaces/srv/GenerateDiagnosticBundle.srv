@@ -1,0 +1,11 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string command_id
+string run_id
+string reason
+---
+uint32 schema_version
+bool accepted
+string diagnostic_id
+string error_code
+string error_message

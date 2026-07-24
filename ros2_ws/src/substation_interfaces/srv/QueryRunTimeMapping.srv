@@ -1,0 +1,12 @@
+uint32 SCHEMA_VERSION=1
+uint32 schema_version
+string run_id
+---
+uint32 schema_version
+bool found
+uint64 context_revision
+int32 anchor_ros_sec
+uint32 anchor_ros_nanosec
+string anchor_utc
+string error_code
+string error_message

@@ -29,18 +29,30 @@ class EvidenceRecord:
 class EvidenceStore:
     """Single-writer SQLite metadata store with content-addressed objects."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        database_path: str | Path | None = None,
+    ) -> None:
         self._root = Path(root).resolve()
         self._objects = self._root / "objects"
         self._root.mkdir(parents=True, exist_ok=True)
         self._objects.mkdir(parents=True, exist_ok=True)
-        self._db_path = self._root / "evidence.sqlite3"
+        self._db_path = (
+            self._root / "evidence.sqlite3"
+            if database_path is None
+            else Path(database_path).resolve()
+        )
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = FULL")
         return connection
 
     def _initialize(self) -> None:
@@ -91,7 +103,7 @@ class EvidenceStore:
         anchor_utc: datetime,
     ) -> dict[str, Any]:
         self._validate_uuid(run_id, "RUN_ID_INVALID")
-        if context_revision < 0 or anchor_ros_nanosec not in range(1_000_000_000):
+        if context_revision < 1 or anchor_ros_nanosec not in range(1_000_000_000):
             raise ValueError("TIME_MAPPING_INVALID")
         if anchor_utc.tzinfo is None:
             raise ValueError("TIME_MAPPING_INVALID")
@@ -145,7 +157,7 @@ class EvidenceStore:
         self._validate_uuid(run_id, "RUN_ID_INVALID")
         evidence_id = evidence_id or str(uuid.uuid4())
         self._validate_uuid(evidence_id, "EVIDENCE_ID_INVALID")
-        if not media_type or not isinstance(payload, bytes):
+        if context_revision < 1 or not media_type or not isinstance(payload, bytes):
             raise ValueError("EVIDENCE_INPUT_INVALID")
         digest = hashlib.sha256(payload).hexdigest()
         metadata_json = self._metadata_json(metadata)
@@ -205,3 +217,13 @@ class EvidenceStore:
         with object_path.open("rb") as stream:
             stream.seek(start)
             return stream.read(end - start)
+
+    def check_writable(self) -> bool:
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("SELECT 1")
+                connection.rollback()
+        except (OSError, sqlite3.Error):
+            return False
+        return True

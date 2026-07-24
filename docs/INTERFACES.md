@@ -825,7 +825,7 @@ string error_code
 string error_message
 ```
 
-`media_type` 只允许 `image/jpeg`、`application/json`、`application/pdf`、`application/zip`；`content_sha256` 是 64 个小写十六进制字符，metadata 必须是 RFC 8785 canonical object JSON，`max_bytes` 范围 1～1048576。Store/Freeze 必须原子校验内容摘要、标准消息归属字段和 RunContext 后写入内容与 metadata；只有 `substation_reporting/evidence_store` 写对象、`evidence.sqlite3` 或最终目录。`FreezeEvidence` 只接受 JPEG SOI/EOI、camera topic 和当前 Gateway 已验的 frame；相同 evidence_id/内容/metadata 幂等，不同值为 `EVIDENCE_ID_CONFLICT`。Query/Read 从不泄露文件路径；Gateway 仅用它们实现只读 metadata 和 Range 下载。
+`media_type` 只允许 `image/jpeg`、`application/json`、`application/pdf`、`application/zip`、`text/html`；其中 `text/html` 只用于 report generator 提交 `GenerateReport.formats` 中的 HTML 报告，不能用于任意 Web 内容。`content_sha256` 是 64 个小写十六进制字符，metadata 必须是 RFC 8785 canonical object JSON，`max_bytes` 范围 1～1048576。Store/Freeze 必须原子校验内容摘要、标准消息归属字段和 RunContext 后写入内容与 metadata；只有 `substation_reporting/evidence_store` 写对象、`evidence.sqlite3` 或最终目录。`FreezeEvidence` 只接受 JPEG SOI/EOI、camera topic 和当前 Gateway 已验的 frame；相同 evidence_id/内容/metadata 幂等，不同值为 `EVIDENCE_ID_CONFLICT`。Query/Read 从不泄露文件路径；Gateway 仅用它们实现只读 metadata 和 Range 下载。
 
 `srv/GetReportingReadiness.srv`、`srv/GenerateReport.srv` 与 `srv/GenerateDiagnosticBundle.srv`
 
