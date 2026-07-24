@@ -9,10 +9,12 @@ import uuid
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from substation_description.asset_registry import load_asset_registry
+from substation_interfaces.action import ExecuteInspection
 from substation_interfaces.msg import AssetRiskArray, InspectionTask as InspectionTaskMessage
 from substation_interfaces.msg import InspectionTaskArray, RunContext
 from substation_interfaces.srv import EmergencyStop, ResetEmergencyStop
@@ -208,6 +210,19 @@ class TaskManagerNode(Node):
             self._store,
         )
         self._context_revision = 1
+        self._continue_on_unreachable = bool(self.declare_parameter(
+            "continue_on_unreachable", True
+        ).value)
+        self._inspection_client = ActionClient(
+            self,
+            ExecuteInspection,
+            "/mission/execute_inspection",
+        )
+        self._inspection_goal_handle = None
+        self._inspection_send_future = None
+        self._inspection_cancel_future = None
+        self._dispatched_execution_signature: tuple[int, int] | None = None
+        self._replacement_requested = False
         q_state = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -239,6 +254,8 @@ class TaskManagerNode(Node):
         response.latch_revision = result.latch_revision
         response.state_revision = self._runtime.state_revision
         if result.accepted:
+            self._replacement_requested = False
+            self._cancel_execution_goal()
             self._cmd_vel_pub.publish(Twist())
         else:
             response.error_code = "VALIDATION_FAILED"
@@ -273,11 +290,90 @@ class TaskManagerNode(Node):
         context.started_at = stamp
         context.reason_code = "MISSION_ACTIVE"
         context.reason = "risk-driven inspection runtime"
-        tasks = self._runtime.snapshot()
-        tasks.header.stamp = stamp
-        tasks.header.frame_id = "map"
+        tasks = self._current_stamped_snapshot(stamp)
         self._context_pub.publish(context)
         self._tasks_pub.publish(tasks)
+        self._dispatch_execution_snapshot(tasks)
+
+    def _current_stamped_snapshot(self, stamp=None) -> InspectionTaskArray:
+        tasks = self._runtime.snapshot()
+        tasks.header.stamp = stamp or self.get_clock().now().to_msg()
+        tasks.header.frame_id = "map"
+        return tasks
+
+    def _dispatch_execution_snapshot(self, snapshot: InspectionTaskArray) -> None:
+        if (
+            snapshot.emergency_stop_latched
+            or snapshot.robot_mode != InspectionTaskArray.MODE_AUTONOMOUS
+        ):
+            self._cancel_execution_goal()
+            return
+        signature = (snapshot.state_revision, snapshot.queue_revision)
+        if self._dispatched_execution_signature == signature:
+            return
+        if not self._inspection_client.server_is_ready():
+            return
+        if self._inspection_send_future is not None:
+            self._replacement_requested = True
+            return
+        if self._inspection_goal_handle is not None:
+            self._replacement_requested = True
+            self._cancel_execution_goal()
+            return
+
+        goal = ExecuteInspection.Goal()
+        goal.schema_version = ExecuteInspection.Goal.SCHEMA_VERSION
+        goal.header = snapshot.header
+        goal.command_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{snapshot.run_id}:{snapshot.mission_id}:{signature[0]}:{signature[1]}",
+        ))
+        goal.run_id = snapshot.run_id
+        goal.mission_id = snapshot.mission_id
+        goal.route_id = snapshot.route_id
+        goal.state_revision = snapshot.state_revision
+        goal.queue_revision = snapshot.queue_revision
+        goal.tasks = snapshot.tasks
+        goal.continue_on_unreachable = self._continue_on_unreachable
+        self._dispatched_execution_signature = signature
+        self._inspection_send_future = self._inspection_client.send_goal_async(goal)
+        self._inspection_send_future.add_done_callback(self._on_execution_goal_response)
+
+    def _on_execution_goal_response(self, future) -> None:
+        self._inspection_send_future = None
+        goal_handle = future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            self._dispatched_execution_signature = None
+            return
+        self._inspection_goal_handle = goal_handle
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda completed, expected=goal_handle: self._on_execution_result(
+                completed, expected
+            )
+        )
+        if self._replacement_requested:
+            self._cancel_execution_goal()
+
+    def _on_execution_result(self, _future, expected_goal_handle) -> None:
+        if self._inspection_goal_handle is expected_goal_handle:
+            self._inspection_goal_handle = None
+        self._inspection_cancel_future = None
+        if self._replacement_requested:
+            self._replacement_requested = False
+            self._dispatch_execution_snapshot(self._current_stamped_snapshot())
+
+    def _cancel_execution_goal(self) -> None:
+        if (
+            self._inspection_goal_handle is None
+            or self._inspection_cancel_future is not None
+        ):
+            return
+        self._inspection_cancel_future = self._inspection_goal_handle.cancel_goal_async()
+        self._inspection_cancel_future.add_done_callback(self._on_execution_cancelled)
+
+    def _on_execution_cancelled(self, _future) -> None:
+        self._inspection_cancel_future = None
 
 
 def main(args=None) -> None:

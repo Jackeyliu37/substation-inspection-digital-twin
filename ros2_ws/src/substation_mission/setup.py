@@ -10,7 +10,10 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE}"]),
         (f"share/{PACKAGE}", ["package.xml"]),
         (f"share/{PACKAGE}/config", ["../../../configs/mission_ordering.yaml"]),
-        (f"share/{PACKAGE}/launch", ["launch/substation_core.launch.py"]),
+        (f"share/{PACKAGE}/launch", [
+            "launch/substation_core.launch.py",
+            "launch/inspection_executor.launch.py",
+        ]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -19,5 +22,8 @@ setup(
     description="Mission ordering and emergency-stop ownership.",
     license="Apache-2.0",
     tests_require=["pytest"],
-    entry_points={"console_scripts": ["task_manager = substation_mission.mission_node:main"]},
+    entry_points={"console_scripts": [
+        "task_manager = substation_mission.mission_node:main",
+        "inspection_executor = substation_mission.inspection_executor:main",
+    ]},
 )
