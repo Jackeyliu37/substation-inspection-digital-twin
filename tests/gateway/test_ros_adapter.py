@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -231,6 +232,34 @@ def test_gateway_restart_does_not_recreate_missing_active_run_mapping() -> None:
         context.shutdown()
 
 
+def test_gateway_restart_queries_existing_mapping_for_ended_run() -> None:
+    context = Context()
+    rclpy.init(context=context)
+    gateway = RosGatewayNode(GatewayState(), context=context)
+    response = QueryRunTimeMapping.Response()
+    response.schema_version = 1
+    response.found = True
+    response.context_revision = 17
+    response.anchor_ros_sec = 100
+    response.anchor_ros_nanosec = 250_000_000
+    response.anchor_utc = "2026-07-22T14:00:00.000000Z"
+    query = _ReadyServiceClient(response)
+    gateway._query_mapping = query
+    ended = _run_context()
+    ended.lifecycle = RunContext.LIFECYCLE_ENDED
+    ended.ended_at.sec = 140
+
+    try:
+        gateway._on_context(ended)
+
+        assert len(query.requests) == 1
+        assert gateway.projector._time_mapping is not None
+        assert gateway.projector.state.ready_dependencies["run_context"] is True
+    finally:
+        gateway.destroy_node()
+        context.shutdown()
+
+
 def _mission(run_id: str = RUN_ID) -> InspectionTaskArray:
     message = InspectionTaskArray()
     message.schema_version = 1
@@ -351,6 +380,38 @@ def test_republished_identical_state_snapshots_do_not_advance_web_revision() -> 
     assert projection.on_twin(_twin()) is True
     assert projection.on_risk(_risk()) is True
     assert state.snapshot_revision == asset_revision
+
+
+def test_all_twin_assets_are_exposed_even_before_each_has_a_risk_sample() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    projection.on_run_context(_run_context())
+    twin = _twin()
+    breaker = copy.deepcopy(twin.status[0])
+    breaker.name = "breaker-01"
+    for value in breaker.values:
+        if value.key == "category":
+            value.value = "breaker"
+        elif value.key == "pose_x_m":
+            value.value = "0.5"
+        elif value.key == "pose_y_m":
+            value.value = "3.5"
+    twin.status.append(breaker)
+
+    assert projection.on_twin(twin) is True
+    assert projection.on_risk(_risk()) is True
+
+    assert [asset["asset_id"] for asset in state.assets] == ["breaker-01", "transformer-01"]
+    assert state.assets[0]["risk"] == {
+        "score_0_100": 0.0,
+        "level": "unknown",
+        "visual_0_1": 0.0,
+        "temperature_0_1": 0.0,
+        "smoke_0_1": 0.0,
+        "gas_0_1": 0.0,
+        "context_0_1": 0.0,
+    }
+    assert state.assets[1]["risk"]["level"] == "attention"
 
 
 def test_matching_mission_transition_notifies_command_terminal_observer() -> None:

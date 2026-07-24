@@ -1,9 +1,4 @@
-"""Minimal HTTP/WebSocket adapter for the substation Web contract.
-
-The domain nodes remain the owners of risk, mission, and digital-twin state.
-This module only exposes protocol-shaped fixtures until the rclpy adapters are
-wired to their authoritative topics and services.
-"""
+"""HTTP/WebSocket adapter for the production substation ROS graph."""
 
 from __future__ import annotations
 
@@ -14,6 +9,7 @@ import json
 import math
 import re
 import sqlite3
+import struct
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -47,6 +43,43 @@ def _canonical_json(payload: Any) -> bytes:
     # The request model is JSON-compatible; sorting keys and using compact
     # separators gives stable idempotency for reordered object keys/whitespace.
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def load_production_models(
+    manifest_path: str | Path,
+    production_root: str | Path,
+) -> list[dict[str, Any]]:
+    """Project the locked model manifest and installed immutable weights."""
+    import yaml
+
+    manifest = yaml.safe_load(Path(manifest_path).read_text(encoding="utf-8"))
+    artifacts = manifest.get("artifacts", []) if isinstance(manifest, dict) else []
+    deployment_names = manifest.get("deployment_filenames", {}) if isinstance(manifest, dict) else {}
+    if not isinstance(artifacts, list) or not isinstance(deployment_names, dict):
+        raise ValueError("MODEL_MANIFEST_INVALID")
+    root = Path(production_root)
+    models: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            raise ValueError("MODEL_MANIFEST_INVALID")
+        logical_model = str(artifact["logical_model"])
+        digest = str(artifact["sha256"])
+        filename = str(deployment_names[logical_model])
+        weight = root / digest / filename
+        models.append({
+            "logical_model": logical_model,
+            "module": str(artifact["module"]),
+            "filename": filename,
+            "sha256": digest,
+            "classes": list(artifact.get("class_names", [])),
+            "metric_name": artifact.get("metric_name"),
+            "best_metric": artifact.get("best_metric"),
+            "acceptance_status": artifact.get("acceptance_status"),
+            "threshold_waived": bool(artifact.get("threshold_waived", False)),
+            "installed": weight.is_file() and weight.stat().st_size > 0,
+            "size_bytes": weight.stat().st_size if weight.is_file() else 0,
+        })
+    return models
 
 
 def _problem(
@@ -86,6 +119,15 @@ class GatewayState:
     assets: list[dict[str, Any]] = field(default_factory=list)
     robot: dict[str, Any] | None = None
     map_snapshot: dict[str, Any] | None = None
+    models: list[dict[str, Any]] = field(default_factory=list)
+    scenario: dict[str, Any] = field(default_factory=lambda: {
+        "scenario_id": "normal",
+        "action": "reset",
+        "status": "unknown",
+        "active": False,
+        "scenario_revision": "0",
+        "error_code": None,
+    })
     reports: list[dict[str, Any]] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=lambda: {"items": []})
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -142,6 +184,48 @@ class GatewayState:
             "generated_at": _utc_now(),
             "data": data,
         }
+
+
+def pack_camera_frame(state: GatewayState, *, connection_id: str) -> bytes:
+    """Pack the newest camera JPEG using the locked SSCF v1 framing."""
+    jpeg = state.camera_jpeg
+    if jpeg is None or not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+        raise ValueError("CAMERA_FRAME_INVALID")
+    metadata_source = state.camera_metadata
+    width = int(metadata_source["width"])
+    height = int(metadata_source["height"])
+    sequence = int(state.next_sequence())
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "connection_id": connection_id,
+        "run_id": state.run_id,
+        "captured_at": metadata_source.get("captured_at") or _utc_now(),
+        "source_ros_time": metadata_source["source_ros_time"],
+        "ros_frame_id": metadata_source["source_frame_id"],
+        "encoding": "jpeg",
+        "annotated": True,
+        "detections_sequence": str(sequence),
+        "evidence_id": metadata_source.get("evidence_id"),
+    }
+    encoded_metadata = _canonical_json(metadata)
+    if not 1 <= len(encoded_metadata) <= 16_384 or not 1 <= len(jpeg) <= 2_097_152:
+        raise ValueError("CAMERA_FRAME_INVALID")
+    header = struct.pack(
+        "!4sBBHQQIIII16s8s",
+        b"SSCF",
+        1,
+        1,
+        64,
+        sequence,
+        int(state.snapshot_revision),
+        len(encoded_metadata),
+        len(jpeg),
+        width,
+        height,
+        uuid.UUID(state.stream_epoch).bytes,
+        b"\0" * 8,
+    )
+    return header + encoded_metadata + jpeg
 
 
 class CommandStore:
@@ -282,6 +366,7 @@ class CommandStore:
             "robot.manual_velocity": 1.0,
             "robot.emergency_stop": 2.0,
             "robot.emergency_stop_reset": 5.0,
+            "simulation.scenario": 30.0,
         }
         now_text = now_utc or _utc_now()
         try:
@@ -534,6 +619,78 @@ class CommandStore:
             )
             return True
 
+    def complete_from_scenario(
+        self,
+        command_id: str,
+        scenario: dict[str, Any],
+        run_id: str | None,
+    ) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM commands WHERE command_id=?", (command_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["kind"] != "simulation.scenario"
+                or row["status"] not in {"accepted", "executing"}
+                or row["run_id"] != run_id
+            ):
+                return False
+            expectation = json.loads(row["expectation_json"] or "{}")
+            payload = expectation.get("payload") or {}
+            service = expectation.get("service") or {}
+            if (
+                scenario.get("command_id") != command_id
+                or scenario.get("scenario_id") != payload.get("scenario_id")
+                or scenario.get("action") != payload.get("action")
+                or scenario.get("status") not in {"applied", "failed"}
+            ):
+                return False
+            try:
+                revision = int(scenario.get("scenario_revision", -1))
+                if revision <= int(service.get("scenario_revision", -1)):
+                    return False
+            except (TypeError, ValueError):
+                return False
+            succeeded = scenario["status"] == "applied"
+            completed_at = _utc_now()
+            result = {
+                "run_id": run_id,
+                "scenario_id": scenario["scenario_id"],
+                "action": scenario["action"],
+                "scenario_revision": str(revision),
+                "active": bool(scenario.get("active")),
+            } if succeeded else None
+            error = None if succeeded else {
+                "code": scenario.get("error_code") or "SCENARIO_APPLY_FAILED",
+                "message": scenario.get("error_code") or "Gazebo rejected the scenario command.",
+                "retryable": True,
+            }
+            self._connection.execute(
+                """
+                UPDATE commands
+                SET status=?, started_at=accepted_at, completed_at=?, result_json=?, error_json=?
+                WHERE command_id=? AND status IN ('accepted', 'executing')
+                """,
+                (
+                    "succeeded" if succeeded else "failed",
+                    completed_at,
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result else None,
+                    json.dumps(error, ensure_ascii=False, separators=(",", ":")) if error else None,
+                    command_id,
+                ),
+            )
+            self._connection.commit()
+            self._notify_transition(
+                command_id=command_id,
+                kind=row["kind"],
+                status="succeeded" if succeeded else "failed",
+                run_id=run_id,
+                result=result,
+                error=error,
+            )
+            return True
+
 
 def create_app(
     *,
@@ -776,11 +933,12 @@ def create_app(
         except Exception:
             return _problem(request, 503, unavailable_code, "The ROS Service call failed.")
         if not service_result.get("accepted", False):
-            code = service_result.get("error_code") or unavailable_code
+            code = str(service_result.get("error_code") or unavailable_code).split(":", 1)[0]
             status = 503 if code in {
                 unavailable_code, "NAVIGATION_UNAVAILABLE", "AUDIT_STORAGE_UNAVAILABLE"
-            } else 404 if code == "MISSION_NOT_FOUND" else 422 if code in {
-                "VALIDATION_FAILED", "MODE_INVALID", "RESET_CONFIRMATION_REQUIRED"
+            } else 404 if code in {"MISSION_NOT_FOUND", "SCENARIO_NOT_FOUND"} else 422 if code in {
+                "VALIDATION_FAILED", "MODE_INVALID", "RESET_CONFIRMATION_REQUIRED",
+                "SCENARIO_ACTION_INVALID", "SCENARIO_PARAMETER_INVALID",
             } else 409
             return _problem(
                 request,
@@ -871,6 +1029,14 @@ def create_app(
         if state.map_snapshot is None:
             return _problem(request, 503, "MAP_UNAVAILABLE", "A validated map snapshot is not available.")
         return snapshot_response(state.map_snapshot, request)
+
+    @app.get("/api/v1/models")
+    async def models(request: Request) -> Response:
+        return snapshot_response({"items": state.models}, request)
+
+    @app.get("/api/v1/simulation/scenario")
+    async def scenario_snapshot(request: Request) -> Response:
+        return snapshot_response(state.scenario, request)
 
     @app.get("/api/v1/evidence/{evidence_id}")
     async def evidence_metadata(evidence_id: str, request: Request) -> Response:
@@ -1339,6 +1505,25 @@ def create_app(
             require_fresh_robot=True,
         )
 
+    @app.post("/api/v1/simulation/scenario")
+    async def simulation_scenario(request: Request) -> Response:
+        if not bool(state.system.get("simulation_mode")):
+            return _problem(
+                request, 403, "SIMULATION_MODE_REQUIRED", "Simulation mode is required."
+            )
+        run_context = state.system.get("run_context")
+        if not isinstance(run_context, dict) or run_context.get("lifecycle") != "active":
+            return _problem(
+                request, 409, "RUN_CONTEXT_MISMATCH", "An ACTIVE RunContext is required."
+            )
+        return await dispatch_json_service_command(
+            request,
+            kind="simulation.scenario",
+            adapter_method="dispatch_scenario",
+            unavailable_code="GAZEBO_UNAVAILABLE",
+            allowed_fields={"scenario_id", "action", "parameters", "reason"},
+        )
+
     @app.websocket("/ws/telemetry")
     async def telemetry(websocket: WebSocket) -> None:
         if "substation.v1" not in websocket.scope.get("subprotocols", []):
@@ -1470,24 +1655,42 @@ def create_app(
         })
         if connection_id is None:
             return
-        if state.camera_jpeg is not None:
-            await websocket.send({"type": "websocket.send", "bytes": state.camera_jpeg})
+        last_frame_key = None
+        heartbeat_at = asyncio.get_running_loop().time()
         while True:
+            metadata = state.camera_metadata
+            source_time = metadata.get("source_ros_time") if isinstance(metadata, dict) else None
+            frame_key = (
+                source_time.get("sec") if isinstance(source_time, dict) else None,
+                source_time.get("nanosec") if isinstance(source_time, dict) else None,
+                len(state.camera_jpeg) if state.camera_jpeg is not None else 0,
+            )
+            if state.camera_jpeg is not None and frame_key != last_frame_key:
+                try:
+                    await websocket.send_bytes(
+                        pack_camera_frame(state, connection_id=connection_id)
+                    )
+                    last_frame_key = frame_key
+                except ValueError:
+                    last_frame_key = frame_key
             try:
-                message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
+                message = await asyncio.wait_for(websocket.receive(), timeout=0.05)
             except asyncio.TimeoutError:
-                await websocket.send_json({
-                    "schema_version": SCHEMA_VERSION,
-                    "stream": "camera",
-                    "stream_epoch": state.stream_epoch,
-                    "connection_id": connection_id,
-                    "run_id": state.run_id,
-                    "sequence": state.next_sequence(),
-                    "snapshot_revision": str(state.snapshot_revision),
-                    "timestamp": _utc_now(),
-                    "type": "heartbeat",
-                    "payload": {"server_time": _utc_now(), "camera_available": state.camera_jpeg is not None},
-                })
+                now = asyncio.get_running_loop().time()
+                if now - heartbeat_at >= 1.0:
+                    await websocket.send_json({
+                        "schema_version": SCHEMA_VERSION,
+                        "stream": "camera",
+                        "stream_epoch": state.stream_epoch,
+                        "connection_id": connection_id,
+                        "run_id": state.run_id,
+                        "sequence": state.next_sequence(),
+                        "snapshot_revision": str(state.snapshot_revision),
+                        "timestamp": _utc_now(),
+                        "type": "heartbeat",
+                        "payload": {"server_time": _utc_now(), "camera_available": state.camera_jpeg is not None},
+                    })
+                    heartbeat_at = now
                 continue
             if message.get("type") == "websocket.disconnect":
                 return
@@ -1504,7 +1707,13 @@ def main() -> None:
 
     from .ros_adapter import RosGatewayAdapter
 
-    state = GatewayState()
+    manifest = Path.cwd() / "models" / "manifest.yaml"
+    production_root = Path("/var/lib/substation/models/production")
+    state = GatewayState(
+        models=load_production_models(manifest, production_root)
+        if manifest.is_file()
+        else []
+    )
     uvicorn.run(
         create_app(
             state=state,

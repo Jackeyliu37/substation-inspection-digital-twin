@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { newCommandId } from "./command-id.mjs";
+import { decodeOccupancyData, worldToMapPixel } from "./map-utils.mjs";
 
 const VIEWS = [
   ["dashboard", "驾驶舱", "总览"],
@@ -20,10 +21,14 @@ const SNAPSHOT_ENDPOINTS = [
   "/api/v1/robot/state",
   "/api/v1/assets",
   "/api/v1/missions/current",
+  "/api/v1/map",
+  "/api/v1/models",
+  "/api/v1/simulation/scenario",
+  "/api/v1/reports",
 ];
-
-const now = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
+const REQUIRED_ENDPOINTS = SNAPSHOT_ENDPOINTS.slice(0, 4);
 const apiData = (value) => value?.data ?? value ?? null;
+const now = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
 
 function socketUrl(path) {
   if (typeof window === "undefined") return path;
@@ -49,31 +54,39 @@ export default function HomePage() {
   const [snapshots, setSnapshots] = useState({});
   const [events, setEvents] = useState([]);
   const [cameraUrl, setCameraUrl] = useState(null);
+  const [cameraMeta, setCameraMeta] = useState(null);
+  const [cameraFps, setCameraFps] = useState(0);
+  const [trail, setTrail] = useState([]);
   const [commandNote, setCommandNote] = useState("尚未提交命令");
   const [loading, setLoading] = useState(false);
   const cameraObjectUrl = useRef(null);
+  const cameraTimes = useRef([]);
   const lastMessageAt = useRef(0);
 
-  const refresh = useCallback(async () => {
-    setConnection("recovering");
+  const refresh = useCallback(async (showProgress = false) => {
+    if (showProgress) setCommandNote("正在刷新实时快照…");
     try {
-      const responses = await Promise.all(SNAPSHOT_ENDPOINTS.map(async (endpoint) => {
+      const settled = await Promise.allSettled(SNAPSHOT_ENDPOINTS.map(async (endpoint) => {
         const response = await fetch(endpoint, { headers: { accept: "application/json" }, cache: "no-store" });
         if (!response.ok) throw new Error(`${endpoint}: ${response.status}`);
         return [endpoint, apiData(await response.json())];
       }));
-      setSnapshots(Object.fromEntries(responses));
-      const optional = await Promise.allSettled(["/api/v1/map", "/api/v1/reports"].map(async (endpoint) => [endpoint, apiData(await (await fetch(endpoint, { headers: { accept: "application/json" }, cache: "no-store" })).json())]));
-      setSnapshots((current) => Object.fromEntries([...Object.entries(current), ...optional.flatMap((result) => result.status === "fulfilled" ? [result.value] : [])]));
+      const fulfilled = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      setSnapshots((current) => ({ ...current, ...Object.fromEntries(fulfilled) }));
+      const available = new Set(fulfilled.map(([endpoint]) => endpoint));
+      if (!REQUIRED_ENDPOINTS.every((endpoint) => available.has(endpoint))) throw new Error("required snapshot unavailable");
       setConnection("live");
       lastMessageAt.current = Date.now();
+      if (showProgress) setCommandNote("实时快照已刷新");
     } catch {
       setConnection("offline");
+      if (showProgress) setCommandNote("刷新失败：Gateway 快照不可用");
     }
   }, []);
 
   const sendCommand = useCallback(async (endpoint, body = {}) => {
     setLoading(true);
+    setCommandNote("命令提交中…");
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -83,23 +96,24 @@ export default function HomePage() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.detail || payload?.title || payload?.code || `HTTP ${response.status}`);
       setCommandNote(`命令已受理 ${payload.command_id ?? payload.data?.command_id ?? ""}`.trim());
+      window.setTimeout(() => refresh(false), 500);
     } catch (error) {
       setCommandNote(`命令未提交：${error.message}`);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
-    refresh();
+    refresh(false);
     const receive = (message) => {
-      if (message?.type !== "stream.open") lastMessageAt.current = Date.now();
+      lastMessageAt.current = Date.now();
       if (message?.type === "system.health") setSnapshots((current) => ({ ...current, "/api/v1/system/status": message.payload }));
       if (message?.type === "robot.state") setSnapshots((current) => ({ ...current, "/api/v1/robot/state": message.payload }));
       if (message?.type === "mission.state") setSnapshots((current) => ({ ...current, "/api/v1/missions/current": message.payload }));
       if (message?.type === "risk.assets") setSnapshots((current) => ({ ...current, "/api/v1/assets": message.payload }));
-      if (message?.type && message.type !== "heartbeat" && message.type !== "stream.open") {
-        setEvents((current) => [{ type: message.type, timestamp: message.timestamp, payload: message.payload }, ...current].slice(0, 20));
+      if (message?.type && !["heartbeat", "stream.open"].includes(message.type)) {
+        setEvents((current) => [{ type: message.type, timestamp: message.timestamp, payload: message.payload }, ...current].slice(0, 50));
       }
       setConnection("live");
     };
@@ -108,34 +122,45 @@ export default function HomePage() {
       if (path === "/ws/camera") socket.binaryType = "arraybuffer";
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {
-          try { receive(JSON.parse(event.data)); } catch { setConnection("offline"); }
-        } else if (path === "/ws/camera") {
-          const frame = new Uint8Array(event.data);
-          const header = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-          const headerLength = header.getUint16(6, false);
-          const metadataLength = header.getUint32(24, false);
-          const jpegLength = header.getUint32(28, false);
-          if (headerLength !== 64 || metadataLength < 1 || metadataLength > 16384 || jpegLength < 1 || jpegLength > 2097152 || frame.byteLength !== 64 + metadataLength + jpegLength) return;
-          const jpeg = frame.slice(64 + metadataLength);
-          if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8 || jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) return;
-          const objectUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
-          if (cameraObjectUrl.current) URL.revokeObjectURL(cameraObjectUrl.current);
-          cameraObjectUrl.current = objectUrl;
-          setCameraUrl(objectUrl);
-          lastMessageAt.current = Date.now();
+          try { receive(JSON.parse(event.data)); } catch { /* ignore a malformed volatile message */ }
+          return;
         }
+        if (path !== "/ws/camera") return;
+        const frame = new Uint8Array(event.data);
+        if (frame.byteLength < 64 || String.fromCharCode(...frame.slice(0, 4)) !== "SSCF" || frame[4] !== 1) return;
+        const header = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+        const headerLength = header.getUint16(6, false);
+        const metadataLength = header.getUint32(24, false);
+        const jpegLength = header.getUint32(28, false);
+        if (headerLength !== 64 || metadataLength < 1 || metadataLength > 16384 || jpegLength < 1 || jpegLength > 2097152 || frame.byteLength !== 64 + metadataLength + jpegLength) return;
+        let metadata;
+        try { metadata = JSON.parse(new TextDecoder().decode(frame.slice(64, 64 + metadataLength))); } catch { return; }
+        const jpeg = frame.slice(64 + metadataLength);
+        if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8 || jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) return;
+        const objectUrl = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
+        if (cameraObjectUrl.current) URL.revokeObjectURL(cameraObjectUrl.current);
+        cameraObjectUrl.current = objectUrl;
+        setCameraUrl(objectUrl);
+        setCameraMeta(metadata);
+        const time = performance.now();
+        cameraTimes.current = [...cameraTimes.current.filter((item) => time - item < 2000), time];
+        if (cameraTimes.current.length > 1) setCameraFps((cameraTimes.current.length - 1) * 1000 / (time - cameraTimes.current[0]));
+        lastMessageAt.current = Date.now();
+        setConnection("live");
       };
-      socket.onerror = () => setConnection((state) => state === "live" ? "recovering" : "offline");
-      socket.onclose = () => setConnection((state) => state === "live" ? "recovering" : state);
+      socket.onerror = () => setConnection((state) => state === "offline" ? state : "recovering");
+      socket.onclose = () => setConnection((state) => state === "offline" ? state : "recovering");
       return socket;
     };
     const sockets = [openSocket("/ws/telemetry"), openSocket("/ws/events"), openSocket("/ws/camera")];
-    const timer = window.setInterval(() => {
-      if (lastMessageAt.current && Date.now() - lastMessageAt.current > 5000) setConnection("offline");
+    const poller = window.setInterval(() => refresh(false), 2000);
+    const watchdog = window.setInterval(() => {
+      if (lastMessageAt.current && Date.now() - lastMessageAt.current > 6000) setConnection("offline");
     }, 1000);
     return () => {
       sockets.forEach((socket) => socket.close());
-      window.clearInterval(timer);
+      window.clearInterval(poller);
+      window.clearInterval(watchdog);
       if (cameraObjectUrl.current) URL.revokeObjectURL(cameraObjectUrl.current);
     };
   }, [refresh]);
@@ -145,30 +170,45 @@ export default function HomePage() {
   const assets = snapshots["/api/v1/assets"];
   const mission = snapshots["/api/v1/missions/current"];
   const map = snapshots["/api/v1/map"];
+  const models = snapshots["/api/v1/models"];
+  const scenario = snapshots["/api/v1/simulation/scenario"];
   const reports = snapshots["/api/v1/reports"];
+  const assetItems = Array.isArray(assets?.items) ? assets.items : [];
+  const modelItems = Array.isArray(models?.items) ? models.items : [];
+  const routeGoals = Array.isArray(mission?.tasks) ? mission.tasks.map((task) => task.goal).filter(Boolean) : [];
+  const alertItems = events.filter((event) => event.payload?.alert_id).map((event) => event.payload);
   const controlsDisabled = connection !== "live" || loading;
-  const assetItems = Array.isArray(assets?.assets) ? assets.assets : [];
-  const alertItems = Array.isArray(assets?.alerts) ? assets.alerts : [];
+
+  useEffect(() => {
+    const pose = robot?.pose;
+    if (!pose || !Number.isFinite(pose.x_m) || !Number.isFinite(pose.y_m)) return;
+    setTrail((current) => {
+      const last = current.at(-1);
+      if (last && Math.hypot(last.x_m - pose.x_m, last.y_m - pose.y_m) < 0.03) return current;
+      return [...current, { x_m: pose.x_m, y_m: pose.y_m }].slice(-160);
+    });
+  }, [robot?.pose?.x_m, robot?.pose?.y_m]);
+
   const renderView = useMemo(() => ({
     dashboard: <Dashboard robot={robot} mission={mission} assets={assetItems} alerts={alertItems} events={events} onCommand={sendCommand} disabled={controlsDisabled} />,
-    twin: <TwinView assets={assetItems} />,
-    map: <MapView robot={robot} map={map} onCommand={sendCommand} disabled={controlsDisabled} />,
-    risk: <RiskView assets={assetItems} alerts={alertItems} onCommand={sendCommand} disabled={controlsDisabled} />,
-    perception: <PerceptionView cameraUrl={cameraUrl} />,
-    scenario: <ScenarioView onCommand={sendCommand} disabled={controlsDisabled} />,
+    twin: <TwinView assets={assetItems} robot={robot} routeGoals={routeGoals} trail={trail} />,
+    map: <MapView robot={robot} map={map} assets={assetItems} mission={mission} />,
+    risk: <RiskView assets={assetItems} alerts={alertItems} />,
+    perception: <PerceptionView cameraUrl={cameraUrl} cameraMeta={cameraMeta} cameraFps={cameraFps} models={modelItems} />,
+    scenario: <ScenarioView scenario={scenario} system={system} onCommand={sendCommand} disabled={controlsDisabled} />,
     reports: <ReportsView connection={connection} reports={reports} />,
-    system: <SystemView system={system} events={events} onRefresh={refresh} />,
-  }), [alertItems, assetItems, cameraUrl, connection, controlsDisabled, events, map, mission, refresh, reports, robot, sendCommand]);
+    system: <SystemView system={system} models={modelItems} events={events} onRefresh={() => refresh(true)} />,
+  }), [alertItems, assetItems, cameraFps, cameraMeta, cameraUrl, connection, controlsDisabled, events, map, mission, modelItems, refresh, robot, routeGoals, scenario, sendCommand, system, trail]);
 
   return <main className="control-center">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">S</span><div><strong>变电站巡检</strong><small>控制中心</small></div></div>
       <nav aria-label="主导航">{VIEWS.map(([id, label, short]) => <button key={id} className={view === id ? "nav-item active" : "nav-item"} onClick={() => setView(id)}><span>{short.slice(0, 1)}</span>{label}</button>)}</nav>
-      <div className="sidebar-foot"><span>产品入口</span><small>仅通过 Gateway /api 与 /ws</small></div>
+      <div className="sidebar-foot"><span>生产运行入口</span><small>Gazebo · ROS 2 · Gateway</small></div>
     </aside>
     <section className="workbench">
-      <header className="topbar"><div><span className="eyebrow">OPERATIONS / {VIEWS.find(([id]) => id === view)?.[1]}</span><h1>{VIEWS.find(([id]) => id === view)?.[1]}</h1></div><div className="top-actions"><span className="clock">{now()}</span><StatusPill connection={connection} /><button className="icon-button" title="刷新 Gateway 快照" onClick={refresh}>R</button>{robot?.emergency_stop?.latched && <button className="secondary" onClick={() => sendCommand("/api/v1/robot/emergency-stop/reset", { observed_latch_revision: String(robot.emergency_stop.latch_revision), confirm: true, reason: "operator web emergency reset" })} disabled={loading}>解除紧停</button>}<button className="emergency" onClick={() => sendCommand("/api/v1/robot/emergency-stop", { reason: "operator web emergency stop" })} disabled={loading}>紧急停止</button></div></header>
-      {connection !== "live" && <div className="connection-banner"><strong>Gateway 不可用</strong><span>无法读取实时状态。普通控制已禁用；紧急停止会继续尝试通过独立 HTTP 请求提交。</span></div>}
+      <header className="topbar"><div><span className="eyebrow">OPERATIONS / {VIEWS.find(([id]) => id === view)?.[1]}</span><h1>{VIEWS.find(([id]) => id === view)?.[1]}</h1></div><div className="top-actions"><span className="clock">{now()}</span><StatusPill connection={connection} /><button className="icon-button" title="刷新 Gateway 快照" onClick={() => refresh(true)}>R</button>{robot?.emergency_stop?.latched && <button className="secondary" onClick={() => sendCommand("/api/v1/robot/emergency-stop/reset", { observed_latch_revision: String(robot.emergency_stop.latch_revision), confirm: true, reason: "operator web emergency reset" })} disabled={loading}>解除紧停</button>}<button className="emergency" onClick={() => sendCommand("/api/v1/robot/emergency-stop", { reason: "operator web emergency stop" })} disabled={loading}>紧急停止</button></div></header>
+      {connection === "offline" && <div className="connection-banner"><strong>Gateway 不可用</strong><span>实时快照已中断，控制操作暂时禁用。</span></div>}
       <div className="command-note" aria-live="polite">{commandNote}</div>
       <div className="view-content">{renderView[view]}</div>
     </section>
@@ -176,27 +216,118 @@ export default function HomePage() {
 }
 
 function Dashboard({ robot, mission, assets, alerts, events, onCommand, disabled }) {
+  const highRisk = assets.filter((asset) => ["alert", "emergency"].includes(asset.risk?.level)).length;
   const missionBody = { mission_id: mission?.mission_id ?? "", reason: "operator web mission control" };
-  return <><div className="metric-grid"><Metric label="机器人模式" value={robot?.mode} detail={robot?.task_id ? `任务 ${robot.task_id}` : "等待机器人状态"} /><Metric label="电量" value={robot?.battery_percent != null ? `${robot.battery_percent}%` : "--"} detail="Gateway 归一化模拟值" /><Metric label="高风险资产" value={assets.filter((asset) => asset.risk_level === "HIGH" || asset.risk_level === "CRITICAL").length} detail="来自资产风险快照" tone="warning" /><Metric label="未确认告警" value={alerts.filter((alert) => !alert.acknowledged_at).length} detail="需要操作员确认" tone="danger" /></div><div className="dashboard-grid"><section className="panel mission-panel"><PanelTitle title="巡检任务" action="查看队列" /><div className="progress"><i style={{ width: `${Math.round((mission?.progress_0_1 ?? 0) * 100)}%` }} /></div><div className="mission-stats"><strong>{mission?.state ?? "等待任务"}</strong><span>{Math.round((mission?.progress_0_1 ?? 0) * 100)}% 完成</span></div><div className="button-row"><button onClick={() => onCommand("/api/v1/missions/start", { route_id: "default-route", reason: "operator web mission start" })} disabled={disabled || !["succeeded", "failed", "stopped"].includes(mission?.state)}>开始巡检</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/pause", missionBody)} disabled={disabled || mission?.state !== "running"}>暂停</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/resume", missionBody)} disabled={disabled || mission?.state !== "paused"}>继续</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/stop", missionBody)} disabled={disabled || !["ready", "running", "paused", "stopping"].includes(mission?.state)}>停止</button></div></section><section className="panel"><PanelTitle title="风险优先级" action="打开风险" />{assets.length ? <AssetRows assets={assets.slice(0, 4)} /> : <EmptyState title="等待资产快照">风险由 Gateway 聚合后显示。</EmptyState>}</section><section className="panel event-panel"><PanelTitle title="事件流" action="最近 20 条" />{events.length ? events.slice(0, 6).map((event, index) => <div className="event" key={`${event.type}-${index}`}><span className="event-dot" /><div><strong>{event.type}</strong><small>{event.timestamp ?? "实时事件"}</small></div></div>) : <EmptyState title="没有实时事件">连接建立后会在此显示命令与告警状态。</EmptyState>}</section></div></>;
+  return <><div className="metric-grid"><Metric label="机器人模式" value={robot?.mode} detail={robot?.current_task_id ? `任务 ${robot.current_task_id.slice(0, 8)}` : "机器人在线"} /><Metric label="电量" value={robot?.battery_percent != null ? `${robot.battery_percent.toFixed(0)}%` : "--"} detail={robot?.stale ? "位姿已过期" : "实时仿真电量"} /><Metric label="高风险资产" value={highRisk} detail={`${assets.length} 个孪生资产`} tone="warning" /><Metric label="风险事件" value={alerts.length} detail="当前运行事件流" tone="danger" /></div><div className="dashboard-grid"><section className="panel mission-panel"><PanelTitle title="巡检任务" action={mission?.route_id ?? "等待路线"} /><div className="progress"><i style={{ width: `${Math.round((mission?.progress_0_1 ?? 0) * 100)}%` }} /></div><div className="mission-stats"><strong>{mission?.state ?? "等待任务"}</strong><span>{Math.round((mission?.progress_0_1 ?? 0) * 100)}% 完成</span></div><div className="button-row"><button onClick={() => onCommand("/api/v1/missions/start", { route_id: "default-route", reason: "operator web mission start" })} disabled={disabled || !["idle", "succeeded", "failed", "stopped"].includes(mission?.state)}>开始巡检</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/pause", missionBody)} disabled={disabled || mission?.state !== "running"}>暂停</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/resume", missionBody)} disabled={disabled || mission?.state !== "paused"}>继续</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/stop", missionBody)} disabled={disabled || !["ready", "running", "paused", "stopping"].includes(mission?.state)}>停止</button></div></section><section className="panel"><PanelTitle title="资产状态" action={`${assets.length} 个设备`} />{assets.length ? <AssetRows assets={assets.slice(0, 5)} /> : <EmptyState title="等待资产快照">数字孪生状态尚未到达。</EmptyState>}</section><section className="panel event-panel"><PanelTitle title="事件流" action="最近 50 条" />{events.length ? events.slice(0, 7).map((event, index) => <div className="event" key={`${event.type}-${index}`}><span className="event-dot" /><div><strong>{event.payload?.asset_id ?? event.type}</strong><small>{event.timestamp ?? "实时事件"}</small></div></div>) : <EmptyState title="运行平稳">尚无新的风险或命令事件。</EmptyState>}</section></div></>;
 }
 
-function TwinView({ assets }) {
-  return <section className="panel twin-panel"><PanelTitle title="三维数字孪生" action={assets.length ? `${assets.length} 个 Gateway 资产` : "等待资产快照"} /><div className="twin-stage"><Canvas camera={{ position: [5, 4, 7], fov: 45 }} dpr={[1, 1.5]}><color attach="background" args={["#081117"]} /><ambientLight intensity={1.2} /><directionalLight position={[4, 7, 3]} intensity={3} /><gridHelper args={[12, 12, "#29434c", "#172930"]} /><mesh position={[0, -0.2, 0]}><boxGeometry args={[5.5, 0.35, 3.5]} /><meshStandardMaterial color="#1a3740" /></mesh>{assets.slice(0, 12).map((asset, index) => <AssetMesh key={asset.asset_id ?? index} asset={asset} index={index} />)}<mesh position={[0, 0.45, 1.6]}><boxGeometry args={[0.75, 0.45, 0.55]} /><meshStandardMaterial color="#42c3a1" /></mesh></Canvas>{!assets.length && <div className="twin-overlay">资产几何体将在 Gateway `/api/v1/assets` 快照到达后绑定 asset_id 和风险颜色。</div>}</div><p className="twin-note">这是当前运行快照的三维视图；前端不读取 ROS Topic，也不把静态模型当作生产设备状态。</p></section>;
+function TwinView({ assets, robot, routeGoals, trail }) {
+  return <section className="panel twin-panel"><PanelTitle title="三维数字孪生" action={`${assets.length} 个设备 · 机器人${robot?.stale ? "位姿过期" : "在线"}`} /><div className="twin-stage"><Canvas camera={{ position: [12, 10, 14], fov: 48 }} dpr={[1, 1.5]}><color attach="background" args={["#071016"]} /><ambientLight intensity={1.35} /><directionalLight position={[6, 12, 4]} intensity={3.2} /><YardModel />{assets.map((asset) => <AssetModel key={asset.asset_id} asset={asset} />)}{routeGoals.map((goal, index) => <RouteMarker key={`${goal.x_m}-${goal.y_m}-${index}`} goal={goal} index={index} />)}{trail.filter((_, index) => index % 4 === 0).map((point, index) => <mesh key={`${point.x_m}-${point.y_m}-${index}`} position={[point.x_m, 0.08, -point.y_m]}><sphereGeometry args={[0.055, 8, 8]} /><meshStandardMaterial color="#5ad7bd" emissive="#174e43" /></mesh>)}{robot?.pose && <RobotModel robot={robot} />}</Canvas><div className="twin-legend"><strong>实时 ROS 坐标</strong><span><i className="legend-robot" />巡检机器人</span><span><i className="legend-route" />任务目标</span><span><i className="legend-risk" />高风险设备</span></div></div><div className="twin-summary">{assets.map((asset) => <span key={asset.asset_id}><b>{asset.asset_id}</b>{asset.pose ? `${asset.pose.x_m.toFixed(1)}, ${asset.pose.y_m.toFixed(1)}` : "--"}</span>)}</div></section>;
 }
 
-function AssetMesh({ asset, index }) {
-  const risk = String(asset.risk_level ?? "").toLowerCase();
-  const color = risk === "critical" || risk === "high" ? "#ee6a6a" : risk === "medium" ? "#f2b94b" : "#42c3a1";
-  const x = ((index % 4) - 1.5) * 1.25;
-  const z = (Math.floor(index / 4) - 1) * 1.05;
-  return <mesh position={[x, 0.32 + (index % 2) * 0.22, z]}><boxGeometry args={[0.42, 0.65 + (index % 3) * 0.18, 0.42]} /><meshStandardMaterial color={color} /></mesh>;
+function YardModel() {
+  return <group><mesh position={[0, -0.07, 0]}><boxGeometry args={[16, 0.12, 12]} /><meshStandardMaterial color="#26353a" /></mesh><mesh position={[0, 0.015, 0]}><boxGeometry args={[1.5, 0.025, 11.4]} /><meshStandardMaterial color="#827a36" /></mesh><mesh position={[0, 0.02, 0]}><boxGeometry args={[15.4, 0.025, 1.5]} /><meshStandardMaterial color="#827a36" /></mesh><mesh position={[5, 0.03, -3]}><boxGeometry args={[2.4, 0.03, 2.4]} /><meshStandardMaterial color="#8d2927" transparent opacity={0.62} /></mesh>{[[0, 0.6, -5.9, 16, 1.2, .18], [0, 0.6, 5.9, 16, 1.2, .18], [-7.9, .6, 0, .18, 1.2, 12], [7.9, .6, 0, .18, 1.2, 12]].map(([x, y, z, sx, sy, sz], index) => <mesh key={index} position={[x, y, z]}><boxGeometry args={[sx, sy, sz]} /><meshStandardMaterial color="#31434a" /></mesh>)}<gridHelper args={[16, 16, "#39545c", "#1d3037"]} position={[0, 0.04, 0]} /></group>;
 }
 
-function MapView({ robot, map }) { return <div className="map-layout"><section className="panel map-canvas"><PanelTitle title="作业地图" action={map ? `revision ${map.map_revision ?? "已同步"}` : "等待地图"} /><div className="grid-map"><span className="robot-dot">R</span><span className="map-label">地图数据将由 Gateway `/api/v1/map` 和 telemetry map.update 提供</span></div></section><section className="panel navigation-panel"><PanelTitle title="导航状态" action="只读验收视图" /><p>当前位姿：{robot?.pose ? `${robot.pose.x_m?.toFixed?.(2)}, ${robot.pose.y_m?.toFixed?.(2)}` : "--"}</p><p className="muted">任务导航由巡检队列驱动；浏览器不直接向 Nav2 发送目标。</p></section></div>; }
-function RiskView({ assets, alerts, onCommand, disabled }) { return <div className="two-column"><section className="panel"><PanelTitle title="资产风险" action={`${assets.length} 项资产`} />{assets.length ? <AssetRows assets={assets} actions={(asset) => <button className="compact" onClick={() => onCommand(`/api/v1/assets/${asset.asset_id}/prioritize`)} disabled={disabled}>优先巡检</button>} /> : <EmptyState title="等待风险快照">风险等级和分数不由浏览器推导。</EmptyState>}</section><section className="panel"><PanelTitle title="告警确认" action={`${alerts.length} 条`} />{alerts.length ? alerts.map((alert) => <div className="alert-row" key={alert.alert_id}><div><strong>{alert.asset_id ?? alert.alert_id}</strong><small>{alert.message ?? alert.level}</small></div><button className="compact" onClick={() => onCommand(`/api/v1/alerts/${alert.alert_id}/acknowledge`)} disabled={disabled || Boolean(alert.acknowledged_at)}>确认</button></div>) : <EmptyState title="无待确认告警">Gateway 事件流会同步最新告警。</EmptyState>}</section></div>; }
-function PerceptionView({ cameraUrl }) { return <div className="perception-layout"><section className="panel camera-panel"><PanelTitle title="检测视频" action="Gateway camera stream" />{cameraUrl ? <img className="camera-frame" src={cameraUrl} alt="Gateway 标注相机帧" /> : <EmptyState title="等待相机帧">仅显示 Gateway `/ws/camera` 提供的带框 JPEG，不订阅 ROS 图像 Topic。</EmptyState>}</section><section className="panel model-panel"><PanelTitle title="模型状态" action="生产集成待定" /><strong>production model unavailable</strong><p>当前官方 YOLO11n 仅是开发占位；生产权重、指标和 manifest 尚未由训练发布物接入。</p></section></div>; }
-function ScenarioView({ onCommand, disabled }) { const scenarios = [["normal", "基准巡检"], ["smoke", "烟雾风险"], ["gas", "气体风险"], ["meter_fault", "仪表异常"], ["combined_risk_obstacle", "组合风险与障碍"]]; return <section className="panel scenario-panel"><PanelTitle title="Gazebo 仿真场景" action="仅 Gateway 控制" /><div className="scenario-grid">{scenarios.map(([id, label]) => <button key={id} className="scenario-card" onClick={() => onCommand("/api/v1/simulation/scenario", { scenario_id: id })} disabled={disabled}><span>SCN</span><strong>{label}</strong><small>{id}</small></button>)}</div></section>; }
-function ReportsView({ connection, reports }) { const items = Array.isArray(reports?.reports) ? reports.reports : Array.isArray(reports) ? reports : []; return <section className="panel reports-panel"><PanelTitle title="巡检报告" action="证据不可变" />{items.length ? <div className="asset-list">{items.map((report) => <div className="report-row" key={report.report_id}><div><strong>{report.report_id}</strong><small>{report.generated_at ?? report.status ?? "已归档"}</small></div>{report.download_url && <a href={report.download_url}>下载</a>}</div>)}</div> : <EmptyState title={connection === "live" ? "等待报告列表" : "Gateway 不可用"}>{connection === "live" ? "报告将从 `/api/v1/reports` 读取并保留下载摘要。" : "恢复连接后加载报告与诊断包。"}</EmptyState>}</section>; }
-function SystemView({ system, events, onRefresh }) { const components = Array.isArray(system?.components) ? system.components : []; return <div className="two-column"><section className="panel"><PanelTitle title="组件健康" action={system?.overall ?? "等待状态"} />{components.length ? components.map((component) => <div className="component-row" key={component.name}><span className={`health-dot ${String(component.status).toLowerCase()}`} /><strong>{component.name}</strong><small>{component.status}</small></div>) : <EmptyState title="等待系统快照">Gazebo、GPU、模型和服务健康由 Gateway 汇总。</EmptyState>}<button className="secondary refresh-button" onClick={onRefresh}>重新获取快照</button></section><section className="panel"><PanelTitle title="系统事件" action={`${events.length} 条`} />{events.length ? events.map((event, index) => <div className="event" key={`${event.type}-${index}`}><span className="event-dot" /><div><strong>{event.type}</strong><small>{event.timestamp ?? "实时"}</small></div></div>) : <EmptyState title="没有事件">事件 WebSocket 建立后显示。</EmptyState>}</section></div>; }
-function AssetRows({ assets, actions }) { return <div className="asset-list">{assets.map((asset) => <div className="asset-row" key={asset.asset_id}><span className={`risk-marker ${String(asset.risk_level ?? "unknown").toLowerCase()}`} /><div><strong>{asset.name ?? asset.asset_id}</strong><small>{asset.risk_level ?? "UNKNOWN"} {asset.risk_score != null ? `· ${asset.risk_score}` : ""}</small></div>{actions?.(asset)}</div>)}</div>; }
-function PanelTitle({ title, action }) { return <header className="panel-title"><h2>{title}</h2><span>{action}</span></header>; }
+function AssetModel({ asset }) {
+  const pose = asset.pose;
+  if (!pose) return null;
+  const level = asset.risk?.level ?? "unknown";
+  const color = level === "emergency" || level === "alert" ? "#ee6a6a" : level === "attention" ? "#f2b94b" : "#61bfa9";
+  const category = String(asset.category ?? "");
+  let geometry;
+  if (category.includes("transformer") && !category.includes("current") && !category.includes("potential")) {
+    geometry = <><mesh position={[0, .75, 0]}><boxGeometry args={[1.6, 1.5, 1.3]} /><meshStandardMaterial color={color} /></mesh>{[-.5, 0, .5].map((x) => <mesh key={x} position={[x, 1.75, 0]}><cylinderGeometry args={[.11, .11, .65, 12]} /><meshStandardMaterial color="#c8ae79" /></mesh>)}</>;
+  } else if (category === "breaker") {
+    geometry = <><mesh position={[0, .3, 0]}><boxGeometry args={[1, .6, .65]} /><meshStandardMaterial color={color} /></mesh>{[-.32, 0, .32].map((x) => <mesh key={x} position={[x, 1, 0]}><cylinderGeometry args={[.1, .12, 1, 12]} /><meshStandardMaterial color="#b99b72" /></mesh>)}</>;
+  } else if (category.includes("disconnect_switch")) {
+    geometry = <>{[-.48, .48].map((x) => <mesh key={x} position={[x, .72, 0]}><cylinderGeometry args={[.1, .12, 1.2, 12]} /><meshStandardMaterial color="#c4aa7c" /></mesh>)}<mesh position={[0, 1.32, 0]}><boxGeometry args={[1.1, .07, .08]} /><meshStandardMaterial color={color} /></mesh></>;
+  } else if (category === "analog_meter") {
+    geometry = <><mesh position={[0, 1.15, 0]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[.23, .23, .12, 24]} /><meshStandardMaterial color="#e2e2d8" /></mesh><mesh position={[0, 1.16, -.08]}><boxGeometry args={[.018, .16, .018]} /><meshStandardMaterial color="#c93434" /></mesh></>;
+  } else if (category.includes("insulator") || category.includes("arrester") || category.includes("current_transformer")) {
+    geometry = <mesh position={[0, .75, 0]}><cylinderGeometry args={[.25, .32, 1.5, 18]} /><meshStandardMaterial color={color} /></mesh>;
+  } else {
+    geometry = <mesh position={[0, .65, 0]}><boxGeometry args={[.7, 1.3, .7]} /><meshStandardMaterial color={color} /></mesh>;
+  }
+  return <group position={[pose.x_m, 0, -pose.y_m]}>{geometry}{["alert", "emergency"].includes(level) && <pointLight position={[0, 1.8, 0]} color="#ff554c" intensity={4} distance={2.5} />}</group>;
+}
+
+function RobotModel({ robot }) {
+  const pose = robot.pose;
+  const yaw = Math.atan2(2 * ((pose.qw ?? 1) * (pose.qz ?? 0)), 1 - 2 * (pose.qz ?? 0) ** 2);
+  return <group position={[pose.x_m, .08, -pose.y_m]} rotation={[0, -yaw, 0]}><mesh position={[0, .25, 0]}><boxGeometry args={[.9, .32, .62]} /><meshStandardMaterial color="#42c3a1" emissive="#123c35" /></mesh>{[-.38, .38].flatMap((x) => [-.28, .28].map((z) => <mesh key={`${x}-${z}`} position={[x, .16, z]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[.14, .14, .1, 12]} /><meshStandardMaterial color="#12191e" /></mesh>))}<mesh position={[0, .72, 0]}><cylinderGeometry args={[.035, .05, .7, 10]} /><meshStandardMaterial color="#c9d7db" /></mesh><mesh position={[0, 1.08, -.02]}><boxGeometry args={[.26, .17, .2]} /><meshStandardMaterial color="#192b35" /></mesh><mesh position={[0, 1.08, -.13]}><circleGeometry args={[.055, 16]} /><meshStandardMaterial color="#5bb8f2" emissive="#1f6f9e" /></mesh></group>;
+}
+
+function RouteMarker({ goal, index }) {
+  return <group position={[goal.x_m, .06, -goal.y_m]}><mesh><cylinderGeometry args={[.16, .16, .05, 20]} /><meshStandardMaterial color="#58aef0" emissive="#174a70" /></mesh><mesh position={[0, .3, 0]}><coneGeometry args={[.09, .25, 12]} /><meshStandardMaterial color={index === 0 ? "#ffffff" : "#8dcbf7"} /></mesh></group>;
+}
+
+function MapView({ robot, map, assets, mission }) {
+  return <div className="map-layout"><section className="panel map-canvas"><PanelTitle title="占据地图与任务路线" action={map ? `revision ${map.map_revision}` : "等待地图"} />{map ? <OccupancyMap map={map} robot={robot} assets={assets} mission={mission} /> : <EmptyState title="地图尚未到达">等待 Gateway `/api/v1/map` 快照。</EmptyState>}</section><section className="panel navigation-panel"><PanelTitle title="导航状态" action={robot?.stale ? "位姿过期" : "实时位姿"} /><p>当前坐标：{robot?.pose ? `${robot.pose.x_m.toFixed(2)}, ${robot.pose.y_m.toFixed(2)} m` : "--"}</p><p>线速度：{robot?.twist ? `${robot.twist.linear_x_m_s.toFixed(2)} m/s` : "--"}</p><p>当前任务：{robot?.current_task_id?.slice(0, 8) ?? "无"}</p><div className="map-key"><span><i className="key-free" />可通行</span><span><i className="key-wall" />障碍/围栏</span><span><i className="key-asset" />设备</span><span><i className="key-route" />巡检路线</span></div></section></div>;
+}
+
+function OccupancyMap({ map, robot, assets, mission }) {
+  const canvasRef = useRef(null);
+  const width = Number(map.width_cells);
+  const height = Number(map.height_cells);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || map.data_encoding !== "base64-int8-row-major-v1") return;
+    let values;
+    try { values = decodeOccupancyData(map.data, width, height); } catch { return; }
+    const context = canvas.getContext("2d");
+    const image = context.createImageData(width, height);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const value = values[y * width + x];
+        const offset = ((height - 1 - y) * width + x) * 4;
+        const color = value < 0 ? [8, 17, 23] : value >= 65 ? [186, 91, 80] : value > 10 ? [91, 105, 111] : [31, 48, 56];
+        image.data.set([...color, 255], offset);
+      }
+    }
+    context.putImageData(image, 0, 0);
+  }, [height, map.data, map.data_encoding, width]);
+  const robotPixel = robot?.pose ? worldToMapPixel(robot.pose, map) : null;
+  const goals = Array.isArray(mission?.tasks) ? mission.tasks.map((task) => worldToMapPixel(task.goal, map)).filter(Boolean) : [];
+  const route = [robotPixel, ...goals].filter(Boolean).map((point) => `${point.x},${point.y}`).join(" ");
+  return <div className="occupancy-wrap"><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="机器人、设备和任务路线叠加层">{route && <polyline points={route} className="route-line" />}{assets.map((asset) => { const point = asset.pose ? worldToMapPixel(asset.pose, map) : null; return point ? <circle key={asset.asset_id} cx={point.x} cy={point.y} r="3" className={`asset-point ${asset.risk?.level ?? "unknown"}`} /> : null; })}{goals.map((point, index) => <g key={index}><circle cx={point.x} cy={point.y} r="4" className="goal-point" /><text x={point.x + 5} y={point.y - 4}>{index + 1}</text></g>)}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg><span className="map-origin">{map.resolution_m.toFixed(2)} m/cell · {width}×{height}</span></div>;
+}
+
+function RiskView({ assets, alerts }) {
+  return <div className="two-column"><section className="panel"><PanelTitle title="资产风险" action={`${assets.length} 项资产`} />{assets.length ? <AssetRows assets={assets} /> : <EmptyState title="等待风险快照">风险等级由 ROS 风险节点计算。</EmptyState>}</section><section className="panel"><PanelTitle title="风险事件" action={`${alerts.length} 条`} />{alerts.length ? alerts.map((alert, index) => <div className="alert-row" key={alert.alert_id ?? index}><span className="risk-marker alert" /><div><strong>{alert.asset_id ?? alert.alert_id}</strong><small>{alert.current_level ?? alert.event ?? "风险变化"}</small></div></div>) : <EmptyState title="当前无告警">运行事件流没有未处理风险事件。</EmptyState>}</section></div>;
+}
+
+function PerceptionView({ cameraUrl, cameraMeta, cameraFps, models }) {
+  return <div className="perception-layout"><section className="panel camera-panel"><PanelTitle title="实时感知画面" action={cameraUrl ? `${cameraFps.toFixed(1)} FPS · ${cameraMeta?.ros_frame_id ?? "camera"}` : "等待相机"} />{cameraUrl ? <><img className="camera-frame" src={cameraUrl} alt="机器人实时标注相机画面" /><div className="camera-meta"><span>{cameraMeta?.captured_at ?? "实时 ROS 帧"}</span><span>{cameraMeta?.annotated ? "已叠加检测结果" : "原始帧"}</span></div></> : <EmptyState title="等待第一帧">Gateway 已连接，正在等待 `/perception/annotated_image`。</EmptyState>}</section><section className="panel model-panel"><PanelTitle title="模型状态" action="生产权重已接入" />{models.length ? <div className="model-list">{models.map((model) => <div className={`model-card ${model.installed ? "installed" : "missing"}`} key={model.logical_model}><div><strong>{model.logical_model}</strong><span>{model.installed ? "运行权重已安装" : "权重缺失"}</span></div><small>{model.metric_name ?? "metric"}: {model.best_metric != null ? Number(model.best_metric).toFixed(3) : "--"}</small><small>{model.classes?.length ?? 0} 类 · {model.sha256?.slice(0, 10)}…</small>{model.threshold_waived && <em>已按项目决策接受阈值豁免</em>}</div>)}</div> : <EmptyState title="模型清单不可用">等待 Gateway 读取生产 manifest。</EmptyState>}</section></div>;
+}
+
+function ScenarioView({ scenario, system, onCommand, disabled }) {
+  const activeRun = system?.run_context?.lifecycle === "active";
+  const scenarios = [
+    ["normal", "基准巡检", {}],
+    ["ppe", "未佩戴安全帽", { asset_id: "breaker-01" }],
+    ["fire-smoke", "火焰与烟雾", { asset_id: "transformer-01", smoke_0_1: 0.8 }],
+    ["gas-high", "气体超限", { asset_id: "transformer-01", gas_ppm: 180.0 }],
+    ["meter-limit", "仪表越限", { asset_id: "meter-pressure-01", meter_reading: 1.6 }],
+    ["combined-risk-obstacle", "组合风险与障碍", { asset_id: "transformer-01", temperature_celsius: 90.0, smoke_0_1: 0.7, gas_ppm: 180.0, obstacle_progress_0_1: 0.5 }],
+  ];
+  return <section className="panel scenario-panel"><PanelTitle title="Gazebo 仿真场景" action={scenario ? `${scenario.scenario_id} · ${scenario.status}` : "等待状态"} />{!activeRun && <div className="scenario-notice">先在驾驶舱点击“开始巡检”建立 ACTIVE RunContext，再触发验收场景。</div>}<div className="scenario-grid">{scenarios.map(([id, label, parameters]) => <button key={id} className={`scenario-card ${scenario?.active && scenario?.scenario_id === id ? "selected" : ""}`} onClick={() => onCommand("/api/v1/simulation/scenario", { scenario_id: id, action: "trigger", parameters, reason: "operator web scenario trigger" })} disabled={disabled || !activeRun}><span>GAZEBO SCENARIO</span><strong>{label}</strong><small>{id}</small></button>)}</div><div className="scenario-actions"><button className="secondary" onClick={() => onCommand("/api/v1/simulation/scenario", { scenario_id: scenario?.scenario_id ?? "normal", action: "reset", parameters: {}, reason: "operator web scenario reset" })} disabled={disabled || !activeRun}>复位当前场景</button><span>revision {scenario?.scenario_revision ?? "0"}{scenario?.active ? " · 已激活" : " · 未激活"}</span></div></section>;
+}
+
+function ReportsView({ connection, reports }) {
+  const items = Array.isArray(reports?.items) ? reports.items : [];
+  return <section className="panel reports-panel"><PanelTitle title="巡检报告" action="证据不可变" />{items.length ? <div className="asset-list">{items.map((report) => <div className="report-row" key={report.report_id}><div><strong>{report.report_id}</strong><small>{report.created_at ?? report.status ?? "已归档"}</small></div>{report.download_urls && Object.entries(report.download_urls).map(([format, url]) => <a key={format} href={url}>{format.toUpperCase()}</a>)}</div>)}</div> : <EmptyState title={connection === "live" ? "当前运行尚无报告" : "Gateway 不可用"}>完成巡检任务后会生成 HTML/PDF 与证据包。</EmptyState>}</section>;
+}
+
+function SystemView({ system, models, events, onRefresh }) {
+  const components = Array.isArray(system?.components) ? system.components : [];
+  return <div className="two-column"><section className="panel"><PanelTitle title="组件健康" action={system?.overall ?? "等待状态"} />{components.map((component) => <div className="component-row" key={component.name}><span className={`health-dot ${String(component.status).toLowerCase()}`} /><strong>{component.name}</strong><small>{component.status}</small></div>)}{models.map((model) => <div className="component-row" key={model.logical_model}><span className={`health-dot ${model.installed ? "ok" : "error"}`} /><strong>{model.logical_model}</strong><small>{model.installed ? "production" : "missing"}</small></div>)}{!components.length && !models.length && <EmptyState title="等待系统快照">Gazebo、Nav2、模型和服务健康尚未到达。</EmptyState>}<button className="secondary refresh-button" onClick={onRefresh}>重新获取快照</button></section><section className="panel"><PanelTitle title="运行上下文" action={system?.run_context?.lifecycle ?? "unknown"} /><dl className="system-facts"><dt>Run ID</dt><dd>{system?.run_context ? "已建立" : "无"}</dd><dt>仿真模式</dt><dd>{system?.simulation_mode ? "开启" : "关闭"}</dd><dt>事件数量</dt><dd>{events.length}</dd><dt>紧急停止</dt><dd>{system?.emergency_stop_latched ? "已锁存" : "未锁存"}</dd></dl></section></div>;
+}
+
+function AssetRows({ assets }) {
+  return <div className="asset-list">{assets.map((asset) => <div className="asset-row" key={asset.asset_id}><span className={`risk-marker ${String(asset.risk?.level ?? "unknown").toLowerCase()}`} /><div><strong>{asset.asset_id}</strong><small>{asset.category} · {asset.risk?.level ?? "unknown"} {asset.risk?.score_0_100 != null ? `· ${asset.risk.score_0_100.toFixed(1)}` : ""}</small></div><span className="asset-coordinate">{asset.pose ? `${asset.pose.x_m.toFixed(1)}, ${asset.pose.y_m.toFixed(1)}` : "--"}</span></div>)}</div>;
+}
+
+function PanelTitle({ title, action }) {
+  return <header className="panel-title"><h2>{title}</h2><span>{action}</span></header>;
+}

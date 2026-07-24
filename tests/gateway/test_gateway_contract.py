@@ -7,6 +7,7 @@ environment does not need an optional HTTP client dependency.
 import asyncio
 import hashlib
 import json
+import struct
 import sys
 import uuid
 from pathlib import Path
@@ -15,6 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_gateway"))
 from substation_interfaces.msg import ManualVelocityStatus
+import substation_web_gateway.app as gateway_app
 from substation_web_gateway.app import CommandStore, GatewayState, create_app
 
 
@@ -396,6 +398,168 @@ def test_events_and_camera_open_without_fabricating_frames():
     assert camera_open["stream"] == "camera"
     assert camera_open["payload"]["camera_available"] is False
     assert not any(item.get("bytes") for item in camera if item["type"] == "websocket.send")
+
+
+def test_camera_frame_uses_locked_binary_header_and_metadata_contract():
+    state = GatewayState(
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        snapshot_revision=77,
+        camera_jpeg=b"\xff\xd8camera\xff\xd9",
+        camera_metadata={
+            "source_frame_id": "camera_optical_frame",
+            "source_ros_time": {"sec": 12, "nanosec": 34},
+            "width": 640,
+            "height": 480,
+            "captured_at": "2026-07-24T11:00:00.000000Z",
+        },
+    )
+    connection_id = "57d8cf69-ff22-4c0e-bc47-24d1b9eaf539"
+
+    frame = gateway_app.pack_camera_frame(state, connection_id=connection_id)
+
+    assert frame[:4] == b"SSCF"
+    assert frame[4:8] == b"\x01\x01\x00\x40"
+    sequence, revision, metadata_length, jpeg_length, width, height = struct.unpack(
+        "!QQIIII", frame[8:40]
+    )
+    assert sequence == 1
+    assert revision == 77
+    assert (width, height) == (640, 480)
+    assert jpeg_length == len(state.camera_jpeg)
+    assert uuid.UUID(bytes=frame[40:56]) == uuid.UUID(state.stream_epoch)
+    assert frame[56:64] == b"\0" * 8
+    metadata = json.loads(frame[64:64 + metadata_length])
+    assert metadata["connection_id"] == connection_id
+    assert metadata["run_id"] == state.run_id
+    assert metadata["ros_frame_id"] == "camera_optical_frame"
+    assert metadata["annotated"] is True
+    assert frame[-jpeg_length:] == state.camera_jpeg
+
+
+def test_model_snapshot_discovers_all_imported_weights_and_metrics(tmp_path):
+    manifest = tmp_path / "manifest.yaml"
+    production = tmp_path / "production"
+    digest = "a" * 64
+    target = production / digest / "yolo11n_safety.pt"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"weights")
+    manifest.write_text(
+        """schema_version: 1
+artifacts:
+  - logical_model: yolo11n_safety
+    module: safety
+    filename: source.pt
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    class_names: [person, smoke]
+    metric_name: metrics/mAP50(B)
+    best_metric: 0.69297
+    acceptance_status: passed
+    threshold_waived: true
+deployment_filenames:
+  yolo11n_safety: yolo11n_safety.pt
+""",
+        encoding="utf-8",
+    )
+
+    models = gateway_app.load_production_models(manifest, production)
+
+    assert models == [{
+        "logical_model": "yolo11n_safety",
+        "module": "safety",
+        "filename": "yolo11n_safety.pt",
+        "sha256": digest,
+        "classes": ["person", "smoke"],
+        "metric_name": "metrics/mAP50(B)",
+        "best_metric": 0.69297,
+        "acceptance_status": "passed",
+        "threshold_waived": True,
+        "installed": True,
+        "size_bytes": 7,
+    }]
+
+
+def test_models_and_scenario_are_real_gateway_snapshots_and_commands():
+    observed = []
+
+    class Adapter:
+        def dispatch_scenario(self, *, command_id, payload):
+            observed.append((command_id, payload))
+            return {"accepted": True, "scenario_revision": 8, "error_code": "", "error_message": ""}
+
+    state = GatewayState(
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        models=[{"logical_model": "yolo11n_safety", "installed": True}],
+        scenario={"scenario_id": "normal", "status": "applied", "active": False, "scenario_revision": "7"},
+    )
+    state.system["simulation_mode"] = True
+    state.system["run_context"] = {"lifecycle": "active"}
+    app = create_app(state=state, adapter=Adapter())
+
+    status, _, body = _http(app, "GET", "/api/v1/models")
+    assert status == 200
+    assert body["data"]["items"][0]["logical_model"] == "yolo11n_safety"
+    status, _, body = _http(app, "GET", "/api/v1/simulation/scenario")
+    assert status == 200
+    assert body["data"]["scenario_revision"] == "7"
+
+    payload = {
+        "scenario_id": "gas-high",
+        "action": "trigger",
+        "parameters": {"asset_id": "transformer-01", "gas_ppm": 180.0},
+        "reason": "operator web scenario trigger",
+    }
+    status, _, body = _http(
+        app,
+        "POST",
+        "/api/v1/simulation/scenario",
+        headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+        body=json.dumps(payload).encode(),
+    )
+    assert status == 202
+    assert body["status"] == "accepted"
+    assert uuid.UUID(observed[0][0])
+    assert observed[0][1] == payload
+
+
+def test_matching_scenario_state_completes_the_gateway_command():
+    store = CommandStore()
+    command_id = str(uuid.uuid4())
+    payload = {
+        "scenario_id": "gas-high",
+        "action": "trigger",
+        "parameters": {"asset_id": "transformer-01", "gas_ppm": 180.0},
+        "reason": "operator web scenario trigger",
+    }
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/simulation/scenario",
+        key=str(uuid.uuid4()),
+        body_sha256="0" * 64,
+        kind="simulation.scenario",
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        accepted_at="2026-07-24T11:00:00.000000Z",
+        response={"status": "accepted"},
+        expectation={"payload": payload, "service": {"scenario_revision": 7}},
+    )
+    scenario = {
+        "scenario_id": "gas-high",
+        "command_id": command_id,
+        "action": "trigger",
+        "status": "applied",
+        "active": True,
+        "scenario_revision": "8",
+        "error_code": None,
+    }
+
+    assert store.complete_from_scenario(
+        command_id,
+        scenario,
+        "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+    ) is True
+    row = store.get(command_id)
+    assert row["status"] == "succeeded"
+    assert json.loads(row["result_json"])["scenario_revision"] == "8"
 
 
 def test_idempotency_persists_command_and_replays_exact_response():

@@ -21,6 +21,7 @@ from map_msgs.msg import OccupancyGridUpdate
 from nav_msgs.msg import OccupancyGrid, Odometry
 import numpy as np
 import rclpy
+from rcl_interfaces.srv import SetParametersAtomically
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -129,10 +130,17 @@ def _float32(value: float) -> float:
 class RosStateProjector:
     """Validate authoritative ROS snapshots before exposing Web state."""
 
-    def __init__(self, state: GatewayState, *, command_observer=None) -> None:
+    def __init__(
+        self,
+        state: GatewayState,
+        *,
+        command_observer=None,
+        scenario_command_observer=None,
+    ) -> None:
         self.state = state
         self.state.authoritative_required = True
         self._command_observer = command_observer
+        self._scenario_command_observer = scenario_command_observer
         self._context: RunContext | None = None
         self._twin_by_asset: dict[str, dict[str, Any]] = {}
         self._risk_by_asset: dict[str, dict[str, Any]] = {}
@@ -183,6 +191,11 @@ class RosStateProjector:
             "height": int(message.height),
             "encoding": "jpeg",
         }
+        captured_at = self.ros_time_to_utc(
+            message.header.stamp.sec, message.header.stamp.nanosec
+        )
+        if captured_at is not None:
+            self.state.camera_metadata["captured_at"] = captured_at
 
     def set_ros_graph_ready(self, *, ros: bool, gazebo: bool, nav2: bool) -> None:
         changed = any(
@@ -587,9 +600,15 @@ class RosStateProjector:
         items = []
         for asset_id in sorted(self._twin_by_asset):
             twin = self._twin_by_asset[asset_id]
-            risk = self._risk_by_asset.get(asset_id)
-            if risk is None:
-                continue
+            risk = self._risk_by_asset.get(asset_id, {
+                "score_0_100": 0.0,
+                "level": "unknown",
+                "visual_0_1": 0.0,
+                "temperature_0_1": 0.0,
+                "smoke_0_1": 0.0,
+                "gas_0_1": 0.0,
+                "context_0_1": 0.0,
+            })
             items.append({
                 "asset_id": asset_id,
                 "category": twin["category"],
@@ -604,6 +623,47 @@ class RosStateProjector:
                 "stale": False,
             })
         self.state.assets = items
+
+    def on_scenario_state(self, message: DiagnosticArray) -> bool:
+        accepted = None
+        for status in message.status:
+            values = {item.key: item.value for item in status.values}
+            if values.get("run_id") != self.state.run_id:
+                continue
+            try:
+                active_text = values["active"]
+                if active_text not in {"true", "false"}:
+                    continue
+                accepted = {
+                    "scenario_id": status.name,
+                    "command_id": values["command_id"] or None,
+                    "action": values["action"],
+                    "status": values["status"],
+                    "active": active_text == "true",
+                    "scenario_revision": str(int(values["scenario_revision"])),
+                    "source_ros_time": {
+                        "sec": int(values["applied_ros_sec"]),
+                        "nanosec": int(values["applied_ros_nanosec"]),
+                    },
+                    "error_code": values["error_code"] or None,
+                }
+            except (KeyError, ValueError):
+                continue
+        if accepted is None:
+            return False
+        if accepted == self.state.scenario:
+            return True
+        self.state.scenario = accepted
+        if (
+            self._scenario_command_observer is not None
+            and accepted.get("command_id")
+            and accepted.get("status") in {"applied", "failed"}
+        ):
+            self._scenario_command_observer(
+                accepted["command_id"], accepted, self.state.run_id
+            )
+        self._bump()
+        return True
 
     def on_alert(self, message: RiskAlert) -> bool:
         if message.schema_version != RiskAlert.SCHEMA_VERSION or message.run_id != self.state.run_id:
@@ -724,13 +784,18 @@ class RosGatewayNode(Node):
         context=None,
         command_observer=None,
         manual_command_observer=None,
+        scenario_command_observer=None,
     ) -> None:
         super().__init__(
             "web_gateway",
             context=context,
             parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
         )
-        self.projector = RosStateProjector(state, command_observer=command_observer)
+        self.projector = RosStateProjector(
+            state,
+            command_observer=command_observer,
+            scenario_command_observer=scenario_command_observer,
+        )
         self._manual_command_observer = manual_command_observer
         self._manual_command_context: dict[str, tuple[str, int]] = {}
         self._mapping_query_inflight = False
@@ -793,6 +858,12 @@ class RosGatewayNode(Node):
             OccupancyGridUpdate, "/map_updates", self.projector.on_map_update, q_event
         )
         self.create_subscription(DiagnosticArray, "/diagnostics", self.projector.on_diagnostics, q_event)
+        self.create_subscription(
+            DiagnosticArray,
+            "/simulation/scenario_state",
+            self.projector.on_scenario_state,
+            q_state,
+        )
         self.create_subscription(Odometry, "/odom", self._on_odom, q_sensor)
         self.create_subscription(BatteryState, "/battery_state", self.projector.on_battery, q_stream)
         self.create_subscription(
@@ -828,6 +899,9 @@ class RosGatewayNode(Node):
         )
         self._set_robot_mode = self.create_client(
             SetRobotMode, "/mission/set_robot_mode"
+        )
+        self._set_scenario_parameters = self.create_client(
+            SetParametersAtomically, "/scenario_manager/set_parameters_atomically"
         )
         self._query_evidence = self.create_client(QueryEvidence, "/reporting/query_evidence")
         self._list_reporting_artifacts = self.create_client(
@@ -1087,6 +1161,77 @@ class RosGatewayNode(Node):
         self._manual_velocity.publish(message)
         return {"accepted": True, "error_code": "", "error_message": ""}
 
+    def dispatch_scenario(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not self._set_scenario_parameters.service_is_ready():
+            return {
+                "accepted": False,
+                "error_code": "GAZEBO_UNAVAILABLE",
+                "error_message": "/scenario_manager/set_parameters_atomically is unavailable.",
+            }
+        action = payload.get("action")
+        scenario_id = payload.get("scenario_id")
+        parameters = payload.get("parameters")
+        reason = payload.get("reason")
+        if action not in {"start", "trigger", "reset"}:
+            return {
+                "accepted": False,
+                "error_code": "SCENARIO_ACTION_INVALID",
+                "error_message": "action must be start, trigger, or reset.",
+            }
+        if not isinstance(scenario_id, str) or not scenario_id or not isinstance(parameters, dict):
+            return {
+                "accepted": False,
+                "error_code": "SCENARIO_PARAMETER_INVALID",
+                "error_message": "scenario_id and parameters are required.",
+            }
+        if not isinstance(reason, str) or not reason.strip():
+            return {
+                "accepted": False,
+                "error_code": "VALIDATION_FAILED",
+                "error_message": "reason is required.",
+            }
+        if any(
+            not isinstance(key, str)
+            or not isinstance(value, (str, int, float, bool))
+            or isinstance(value, (dict, list))
+            for key, value in parameters.items()
+        ):
+            return {
+                "accepted": False,
+                "error_code": "SCENARIO_PARAMETER_INVALID",
+                "error_message": "Scenario parameters must be scalar values.",
+            }
+        request = SetParametersAtomically.Request()
+        request.parameters = [
+            Parameter("command_id", value=command_id).to_parameter_msg(),
+            Parameter("scenario_id", value=scenario_id).to_parameter_msg(),
+            Parameter("scenario_action", value=action).to_parameter_msg(),
+            Parameter(
+                "scenario_parameters_json",
+                value=json.dumps(parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            ).to_parameter_msg(),
+        ]
+        response = self._wait_for_service_future(
+            self._set_scenario_parameters.call_async(request), 3.0
+        )
+        if response is None:
+            return {
+                "accepted": False,
+                "error_code": "GAZEBO_UNAVAILABLE",
+                "error_message": "Scenario parameter service timed out.",
+            }
+        if not response.result.successful:
+            code = response.result.reason or "SCENARIO_CONFLICT"
+            return {"accepted": False, "error_code": code, "error_message": code}
+        return {
+            "accepted": True,
+            "scenario_revision": int(self.projector.state.scenario.get("scenario_revision", "0")),
+            "error_code": "",
+            "error_message": "",
+        }
+
     def read_evidence_range(self, evidence_id: str, offset: int, length: int) -> bytes:
         if not self._read_evidence.service_is_ready():
             raise RuntimeError("/reporting/read_evidence_chunk is unavailable")
@@ -1189,9 +1334,9 @@ class RosGatewayNode(Node):
         if message.lifecycle == RunContext.LIFECYCLE_STARTING:
             self._mapping_creation_runs.add(message.run_id)
             return
-        if message.lifecycle == RunContext.LIFECYCLE_ACTIVE:
+        if message.run_id and message.lifecycle != RunContext.LIFECYCLE_IDLE:
             self._ensure_time_mapping(message)
-        elif message.lifecycle in (
+        if message.lifecycle in (
             RunContext.LIFECYCLE_IDLE,
             RunContext.LIFECYCLE_ENDED,
         ):
@@ -1305,7 +1450,7 @@ class RosGatewayNode(Node):
         now = self.get_clock().now().to_msg()
         self.projector.update_robot_staleness(now.sec, now.nanosec)
         context = self.projector._context
-        if context is not None and context.lifecycle == RunContext.LIFECYCLE_ACTIVE:
+        if context is not None and context.run_id and context.lifecycle != RunContext.LIFECYCLE_IDLE:
             self._ensure_time_mapping(context)
         if self._readiness_inflight or not self._reporting_readiness.service_is_ready():
             self.projector.set_reporting_readiness(
@@ -1385,6 +1530,21 @@ class RosGatewayAdapter:
                 "manual", message, run_id, context_revision, applied_at
             )
 
+    def _observe_scenario_command(
+        self,
+        command_id: str,
+        scenario: dict[str, Any],
+        run_id: str | None,
+    ) -> None:
+        if self._command_store is None:
+            return
+        if self._command_store.complete_from_scenario(command_id, scenario, run_id):
+            self._terminal_observations.pop(command_id, None)
+        elif self._command_store.get(command_id) is None:
+            self._terminal_observations[command_id] = (
+                "scenario", scenario, run_id
+            )
+
     def replay_terminal(self, command_id: str) -> None:
         observation = self._terminal_observations.get(command_id)
         if observation is None:
@@ -1392,11 +1552,14 @@ class RosGatewayAdapter:
         if observation[0] == "mission":
             _, mission, run_id = observation
             self._observe_mission_command(command_id, mission, run_id)
-        else:
+        elif observation[0] == "manual":
             _, message, run_id, context_revision, applied_at = observation
             self._observe_manual_command(
                 message, run_id, context_revision, applied_at
             )
+        else:
+            _, scenario, run_id = observation
+            self._observe_scenario_command(command_id, scenario, run_id)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -1407,6 +1570,7 @@ class RosGatewayAdapter:
             context=self._context,
             command_observer=self._observe_mission_command,
             manual_command_observer=self._observe_manual_command,
+            scenario_command_observer=self._observe_scenario_command,
         )
         self._executor = MultiThreadedExecutor(num_threads=2, context=self._context)
         self._executor.add_node(self._node)
@@ -1514,6 +1678,17 @@ class RosGatewayAdapter:
                 "error_message": "Gateway ROS adapter is not running.",
             }
         return self._node.dispatch_manual_velocity(command_id=command_id, payload=payload)
+
+    def dispatch_scenario(
+        self, *, command_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "accepted": False,
+                "error_code": "GAZEBO_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.dispatch_scenario(command_id=command_id, payload=payload)
 
     def read_evidence_range(self, evidence_id: str, offset: int, length: int) -> bytes:
         if self._node is None:
