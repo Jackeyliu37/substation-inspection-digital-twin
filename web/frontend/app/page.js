@@ -11,6 +11,7 @@ import {
   viewportTransform,
   zoomViewport,
 } from "./map-viewport.mjs";
+import { recoverySteps } from "./command-flow.mjs";
 import {
   assetLabel,
   categoryLabel,
@@ -47,6 +48,51 @@ const SNAPSHOT_ENDPOINTS = [
 const REQUIRED_ENDPOINTS = SNAPSHOT_ENDPOINTS.slice(0, 4);
 const apiData = (value) => value?.data ?? value ?? null;
 const now = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
+const delay = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+async function fetchSnapshot(endpoint) {
+  const response = await fetch(endpoint, { headers: { accept: "application/json" }, cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.detail || payload?.code || `HTTP ${response.status}`);
+  return apiData(payload);
+}
+
+async function waitForSnapshot(endpoint, predicate, timeoutMilliseconds = 8000) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  let snapshot = null;
+  while (Date.now() < deadline) {
+    snapshot = await fetchSnapshot(endpoint);
+    if (predicate(snapshot)) return snapshot;
+    await delay(200);
+  }
+  throw new Error("等待机器人状态更新超时");
+}
+
+async function waitForCommand(commandId, timeoutMilliseconds = 8000) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  let command = null;
+  while (Date.now() < deadline) {
+    command = await fetchSnapshot(`/api/v1/commands/${commandId}`);
+    if (command?.status === "succeeded") return command;
+    if (command?.status && command.status !== "accepted") {
+      throw new Error(command.error?.message || command.error?.code || "命令执行失败");
+    }
+    await delay(200);
+  }
+  throw new Error("等待命令执行结果超时");
+}
+
+async function submitCommand(endpoint, body, { waitForTerminal = true } = {}) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json", "Idempotency-Key": newCommandId(globalThis.crypto) },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.detail || payload?.title || payload?.code || `HTTP ${response.status}`);
+  if (waitForTerminal && payload.command_id) return waitForCommand(payload.command_id);
+  return payload;
+}
 
 function socketUrl(path) {
   if (typeof window === "undefined") return path;
@@ -106,15 +152,9 @@ export default function HomePage() {
     setLoading(true);
     setCommandNote("命令提交中…");
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json", "Idempotency-Key": newCommandId(globalThis.crypto) },
-        body: JSON.stringify(body),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.detail || payload?.title || payload?.code || `HTTP ${response.status}`);
-      setCommandNote(`命令已受理 ${payload.command_id ?? payload.data?.command_id ?? ""}`.trim());
-      window.setTimeout(() => refresh(false), 500);
+      const payload = await submitCommand(endpoint, body);
+      setCommandNote(`命令执行成功 ${payload.command_id ?? ""}`.trim());
+      await refresh(false);
     } catch (error) {
       setCommandNote(`命令未提交：${commandErrorLabel(error.message)}`);
     } finally {
@@ -207,8 +247,99 @@ export default function HomePage() {
     });
   }, [robot?.pose?.x_m, robot?.pose?.y_m]);
 
+  const recoverAutonomousInspection = useCallback(async () => {
+    setLoading(true);
+    setCommandNote("正在检查机器人安全状态…");
+    try {
+      let currentRobot = await fetchSnapshot("/api/v1/robot/state");
+      let currentMission = await fetchSnapshot("/api/v1/missions/current");
+      let steps = recoverySteps(robot, mission);
+      steps = recoverySteps(currentRobot, currentMission);
+      if (!steps.length) {
+        setCommandNote("自动巡检已经在运行");
+        return;
+      }
+      for (const step of steps) {
+        if (step === "stop") {
+          setCommandNote("正在停止旧任务并等待机器人静止…");
+          await submitCommand("/api/v1/missions/stop", {
+            mission_id: currentMission.mission_id,
+            reason: "operator guided autonomous recovery stop",
+          });
+          currentMission = await waitForSnapshot("/api/v1/missions/current", (value) => value?.state === "stopped");
+          await delay(700);
+        }
+        if (step === "reset") {
+          setCommandNote("正在解除紧急停止…");
+          let reset = false;
+          for (let attempt = 0; attempt < 4 && !reset; attempt += 1) {
+            currentRobot = await fetchSnapshot("/api/v1/robot/state");
+            try {
+              await submitCommand("/api/v1/robot/emergency-stop/reset", {
+                observed_latch_revision: String(currentRobot.emergency_stop.latch_revision),
+                confirm: true,
+                reason: "operator guided autonomous recovery reset",
+              });
+              reset = true;
+            } catch (error) {
+              if (!String(error.message).includes("MOTION_SAFETY_BARRIER_PENDING") && !String(error.message).includes("zero velocity")) throw error;
+              await delay(750);
+            }
+          }
+          if (!reset) throw new Error("MOTION_SAFETY_BARRIER_PENDING");
+          currentRobot = await waitForSnapshot("/api/v1/robot/state", (value) => value?.emergency_stop?.latched === false);
+        }
+        if (step === "start") {
+          setCommandNote("正在建立新的巡检任务…");
+          await submitCommand("/api/v1/missions/start", {
+            route_id: "default-route",
+            reason: "operator guided autonomous inspection start",
+          }, { waitForTerminal: false });
+          currentMission = await waitForSnapshot("/api/v1/missions/current", (value) => value?.state === "running" && Boolean(value?.mission_id));
+        }
+        if (step === "resume") {
+          setCommandNote("正在继续巡检任务…");
+          await submitCommand("/api/v1/missions/resume", {
+            mission_id: currentMission.mission_id,
+            reason: "operator guided autonomous inspection resume",
+          });
+          currentMission = await waitForSnapshot("/api/v1/missions/current", (value) => value?.state === "running");
+        }
+        if (step === "autonomous") {
+          setCommandNote("正在切换为自动巡检模式…");
+          let autonomous = false;
+          for (let attempt = 0; attempt < 4 && !autonomous; attempt += 1) {
+            currentMission = await fetchSnapshot("/api/v1/missions/current");
+            currentRobot = await fetchSnapshot("/api/v1/robot/state");
+            try {
+              await submitCommand("/api/v1/robot/mode", {
+                mission_id: currentMission.mission_id,
+                target_mode: "autonomous",
+                observed_state_revision: String(currentMission.state_revision),
+                observed_latch_revision: String(currentRobot.emergency_stop.latch_revision),
+                reason: "operator guided autonomous mode",
+              });
+              autonomous = true;
+            } catch (error) {
+              if (!String(error.message).includes("MOTION_SAFETY_BARRIER_PENDING") && !String(error.message).includes("zero velocity")) throw error;
+              await delay(750);
+            }
+          }
+          if (!autonomous) throw new Error("MOTION_SAFETY_BARRIER_PENDING");
+          await waitForSnapshot("/api/v1/robot/state", (value) => value?.mode === "autonomous");
+        }
+      }
+      await refresh(false);
+      setCommandNote("自动巡检已启动，请在地图或三维数字孪生中观察机器人移动");
+    } catch (error) {
+      setCommandNote(`自动巡检启动失败：${commandErrorLabel(error.message)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [mission, refresh, robot]);
+
   const renderView = useMemo(() => ({
-    dashboard: <Dashboard robot={robot} mission={mission} assets={assetItems} alerts={alertItems} events={events} onCommand={sendCommand} disabled={controlsDisabled} />,
+    dashboard: <Dashboard robot={robot} mission={mission} assets={assetItems} alerts={alertItems} events={events} onCommand={sendCommand} onRecover={recoverAutonomousInspection} disabled={controlsDisabled} />,
     twin: <TwinView assets={assetItems} robot={robot} routeGoals={routeGoals} trail={trail} />,
     map: <MapView robot={robot} map={map} assets={assetItems} mission={mission} />,
     risk: <RiskView assets={assetItems} alerts={alertItems} />,
@@ -216,7 +347,7 @@ export default function HomePage() {
     scenario: <ScenarioView scenario={scenario} system={system} onCommand={sendCommand} disabled={controlsDisabled} />,
     reports: <ReportsView connection={connection} reports={reports} />,
     system: <SystemView system={system} models={modelItems} events={events} onRefresh={() => refresh(true)} />,
-  }), [alertItems, assetItems, cameraFps, cameraMeta, cameraUrl, connection, controlsDisabled, events, map, mission, modelItems, refresh, robot, routeGoals, scenario, sendCommand, system, trail]);
+  }), [alertItems, assetItems, cameraFps, cameraMeta, cameraUrl, connection, controlsDisabled, events, map, mission, modelItems, recoverAutonomousInspection, refresh, robot, routeGoals, scenario, sendCommand, system, trail]);
 
   return <main className="control-center">
     <aside className="sidebar">
@@ -225,22 +356,24 @@ export default function HomePage() {
       <div className="sidebar-foot"><span>生产运行入口</span><small>仿真环境 · 机器人系统 · 数据服务</small></div>
     </aside>
     <section className="workbench">
-      <header className="topbar"><div><span className="eyebrow">智能巡检 / {VIEWS.find(([id]) => id === view)?.[1]}</span><h1>{VIEWS.find(([id]) => id === view)?.[1]}</h1></div><div className="top-actions"><span className="clock">{now()}</span><StatusPill connection={connection} /><button className="icon-button" title="刷新实时数据" onClick={() => refresh(true)}>刷新</button>{robot?.emergency_stop?.latched && <button className="secondary" onClick={() => sendCommand("/api/v1/robot/emergency-stop/reset", { observed_latch_revision: String(robot.emergency_stop.latch_revision), confirm: true, reason: "operator web emergency reset" })} disabled={loading}>解除紧停</button>}<button className="emergency" onClick={() => sendCommand("/api/v1/robot/emergency-stop", { reason: "operator web emergency stop" })} disabled={loading}>紧急停止</button></div></header>
+      <header className="topbar"><div><span className="eyebrow">智能巡检 / {VIEWS.find(([id]) => id === view)?.[1]}</span><h1>{VIEWS.find(([id]) => id === view)?.[1]}</h1></div><div className="top-actions"><span className="clock">{now()}</span><StatusPill connection={connection} /><button className="icon-button" title="刷新实时数据" onClick={() => refresh(true)}>刷新</button><button className="emergency" onClick={() => sendCommand("/api/v1/robot/emergency-stop", { reason: "operator web emergency stop" })} disabled={loading}>紧急停止</button></div></header>
       {connection === "offline" && <div className="connection-banner"><strong>数据服务不可用</strong><span>实时数据已中断，控制操作暂时禁用。</span></div>}
+      {robot?.emergency_stop?.latched && <div className="safety-banner"><strong>机器人已紧急停止</strong><span>请点击“恢复并开始自动巡检”。系统会先停止旧任务、等待机器人静止，再安全解除锁定。</span></div>}
       <div className="command-note" aria-live="polite">{commandNote}</div>
       <div className="view-content">{renderView[view]}</div>
     </section>
   </main>;
 }
 
-function Dashboard({ robot, mission, assets, alerts, events, onCommand, disabled }) {
+function Dashboard({ robot, mission, assets, alerts, events, onCommand, onRecover, disabled }) {
   const highRisk = assets.filter((asset) => ["alert", "emergency"].includes(asset.risk?.level)).length;
   const missionBody = { mission_id: mission?.mission_id ?? "", reason: "operator web mission control" };
-  return <><div className="metric-grid"><Metric label="机器人模式" value={robotModeLabel(robot?.mode)} detail={robot?.current_task_id ? `任务 ${robot.current_task_id.slice(0, 8)}` : "机器人在线"} /><Metric label="电量" value={robot?.battery_percent != null ? `${robot.battery_percent.toFixed(0)}%` : "--"} detail={robot?.stale ? "位姿已过期" : "实时仿真电量"} /><Metric label="高风险资产" value={highRisk} detail={`${assets.length} 个孪生资产`} tone="warning" /><Metric label="风险事件" value={alerts.length} detail="当前运行事件流" tone="danger" /></div><div className="dashboard-grid"><section className="panel mission-panel"><PanelTitle title="巡检任务" action={mission?.route_id ? "默认巡检路线" : "等待路线"} /><div className="progress"><i style={{ width: `${Math.round((mission?.progress_0_1 ?? 0) * 100)}%` }} /></div><div className="mission-stats"><strong>{missionStateLabel(mission?.state ?? "idle")}</strong><span>{Math.round((mission?.progress_0_1 ?? 0) * 100)}% 完成</span></div><div className="button-row"><button onClick={() => onCommand("/api/v1/missions/start", { route_id: "default-route", reason: "operator web mission start" })} disabled={disabled || !["idle", "succeeded", "failed", "stopped"].includes(mission?.state)}>开始巡检</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/pause", missionBody)} disabled={disabled || mission?.state !== "running"}>暂停</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/resume", missionBody)} disabled={disabled || mission?.state !== "paused"}>继续</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/stop", missionBody)} disabled={disabled || !["ready", "running", "paused", "stopping"].includes(mission?.state)}>停止</button></div></section><section className="panel"><PanelTitle title="资产状态" action={`${assets.length} 个设备`} />{assets.length ? <AssetRows assets={assets.slice(0, 5)} /> : <EmptyState title="等待资产数据">数字孪生状态尚未到达。</EmptyState>}</section><section className="panel event-panel"><PanelTitle title="事件流" action="最近 50 条" />{events.length ? events.slice(0, 7).map((event, index) => <div className="event" key={`${event.type}-${index}`}><span className="event-dot" /><div><strong>{event.payload?.asset_id ? assetLabel(event.payload.asset_id) : eventLabel(event.type)}</strong><small>{event.timestamp ?? "实时事件"}</small></div></div>) : <EmptyState title="运行平稳">尚无新的风险或命令事件。</EmptyState>}</section></div></>;
+  const autonomousRunning = robot?.mode === "autonomous" && mission?.state === "running" && !robot?.emergency_stop?.latched;
+  return <><div className="metric-grid"><Metric label="机器人模式" value={robotModeLabel(robot?.mode)} detail={robot?.current_task_id ? `任务 ${robot.current_task_id.slice(0, 8)}` : "机器人在线"} /><Metric label="电量" value={robot?.battery_percent != null ? `${robot.battery_percent.toFixed(0)}%` : "--"} detail={robot?.stale ? "位姿已过期" : "实时仿真电量"} /><Metric label="高风险资产" value={highRisk} detail={`${assets.length} 个孪生资产`} tone="warning" /><Metric label="风险事件" value={alerts.length} detail="当前运行事件流" tone="danger" /></div><div className="dashboard-grid"><section className="panel mission-panel"><PanelTitle title="巡检任务" action={mission?.route_id ? "默认巡检路线" : "等待路线"} /><div className="progress"><i style={{ width: `${Math.round((mission?.progress_0_1 ?? 0) * 100)}%` }} /></div><div className="mission-stats"><strong>{missionStateLabel(mission?.state ?? "idle")}</strong><span>{Math.round((mission?.progress_0_1 ?? 0) * 100)}% 完成</span></div><div className="operator-guide"><strong>人工验收</strong><span>点击主按钮后，机器人会解除安全锁定并沿十个设备目标自动巡检。请在地图或三维数字孪生中观察位置和轨迹变化。</span></div><div className="button-row"><button className="primary-action" onClick={onRecover} disabled={disabled || autonomousRunning}>{autonomousRunning ? "自动巡检运行中" : "恢复并开始自动巡检"}</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/pause", missionBody)} disabled={disabled || mission?.state !== "running"}>暂停</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/resume", missionBody)} disabled={disabled || mission?.state !== "paused"}>继续</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/stop", missionBody)} disabled={disabled || !["ready", "running", "paused", "stopping"].includes(mission?.state)}>停止</button></div></section><section className="panel"><PanelTitle title="资产状态" action={`${assets.length} 个设备`} />{assets.length ? <AssetRows assets={assets.slice(0, 5)} /> : <EmptyState title="等待资产数据">数字孪生状态尚未到达。</EmptyState>}</section><section className="panel event-panel"><PanelTitle title="事件流" action="最近 50 条" />{events.length ? events.slice(0, 7).map((event, index) => <div className="event" key={`${event.type}-${index}`}><span className="event-dot" /><div><strong>{event.payload?.asset_id ? assetLabel(event.payload.asset_id) : eventLabel(event.type)}</strong><small>{event.timestamp ?? "实时事件"}</small></div></div>) : <EmptyState title="运行平稳">尚无新的风险或命令事件。</EmptyState>}</section></div></>;
 }
 
 function TwinView({ assets, robot, routeGoals, trail }) {
-  return <section className="panel twin-panel"><PanelTitle title="三维数字孪生" action={`${assets.length} 个设备 · 机器人${robot?.stale ? "位姿过期" : "在线"}`} /><div className="twin-stage"><Canvas camera={{ position: [12, 10, 14], fov: 48 }} dpr={[1, 1.5]}><color attach="background" args={["#071016"]} /><ambientLight intensity={1.35} /><directionalLight position={[6, 12, 4]} intensity={3.2} /><YardModel />{assets.map((asset) => <AssetModel key={asset.asset_id} asset={asset} />)}{routeGoals.map((goal, index) => <RouteMarker key={`${goal.x_m}-${goal.y_m}-${index}`} goal={goal} index={index} />)}{trail.filter((_, index) => index % 4 === 0).map((point, index) => <mesh key={`${point.x_m}-${point.y_m}-${index}`} position={[point.x_m, 0.08, -point.y_m]}><sphereGeometry args={[0.055, 8, 8]} /><meshStandardMaterial color="#5ad7bd" emissive="#174e43" /></mesh>)}{robot?.pose && <RobotModel robot={robot} />}</Canvas><div className="twin-legend"><strong>实时机器人坐标</strong><span><i className="legend-robot" />巡检机器人</span><span><i className="legend-route" />任务目标</span><span><i className="legend-risk" />高风险设备</span><small>拖动旋转 · 滚轮缩放</small></div></div><div className="twin-summary">{assets.map((asset) => <span key={asset.asset_id}><b>{assetLabel(asset.asset_id)}</b>{asset.pose ? `${asset.pose.x_m.toFixed(1)}, ${asset.pose.y_m.toFixed(1)}` : "--"}</span>)}</div></section>;
+  return <section className="panel twin-panel"><PanelTitle title="三维数字孪生" action={`${assets.length} 个设备 · 机器人${robot?.stale ? "位姿过期" : "在线"}`} /><div className="twin-stage"><Canvas camera={{ position: [12, 10, 14], fov: 48 }} dpr={[1, 1.5]}><color attach="background" args={["#071016"]} /><ambientLight intensity={1.35} /><directionalLight position={[6, 12, 4]} intensity={3.2} /><YardModel />{assets.map((asset) => <AssetModel key={asset.asset_id} asset={asset} />)}{routeGoals.map((goal, index) => <RouteMarker key={`${goal.x_m}-${goal.y_m}-${index}`} goal={goal} index={index} />)}{trail.filter((_, index) => index % 4 === 0).map((point, index) => <mesh key={`${point.x_m}-${point.y_m}-${index}`} position={[point.x_m, 0.08, -point.y_m]}><sphereGeometry args={[0.055, 8, 8]} /><meshStandardMaterial color="#5ad7bd" emissive="#174e43" /></mesh>)}{robot?.pose && <RobotModel robot={robot} />}</Canvas><div className="twin-legend"><strong>实时机器人坐标</strong><span><i className="legend-robot" />巡检机器人</span><span><i className="legend-route" />任务目标</span><span><i className="legend-risk" />高风险设备</span></div></div><div className="twin-summary">{assets.map((asset) => <span key={asset.asset_id}><b>{assetLabel(asset.asset_id)}</b>{asset.pose ? `${asset.pose.x_m.toFixed(1)}, ${asset.pose.y_m.toFixed(1)}` : "--"}</span>)}</div></section>;
 }
 
 function YardModel() {

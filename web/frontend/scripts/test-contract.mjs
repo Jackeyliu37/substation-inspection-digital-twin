@@ -10,6 +10,12 @@ import {
   zoomViewport,
 } from "../app/map-viewport.mjs";
 import {
+  needsAutonomousMode,
+  needsMissionStart,
+  needsMissionStop,
+  recoverySteps,
+} from "../app/command-flow.mjs";
+import {
   assetLabel,
   categoryLabel,
   commandErrorLabel,
@@ -31,7 +37,7 @@ for (const view of requiredViews) {
 for (const endpoint of ["/api/v1/system/status", "/api/v1/robot/state", "/api/v1/assets", "/api/v1/missions/current", "/api/v1/map", "/api/v1/models", "/api/v1/simulation/scenario", "/api/v1/reports"]) {
   if (!page.includes(endpoint)) throw new Error(`missing REST endpoint: ${endpoint}`);
 }
-for (const command of ["/api/v1/missions/resume", "/api/v1/missions/stop"]) {
+for (const command of ["/api/v1/missions/resume", "/api/v1/missions/stop", "/api/v1/robot/mode"]) {
   if (!page.includes(command)) throw new Error(`missing mission command: ${command}`);
 }
 for (const socket of ["/ws/telemetry", "/ws/events", "/ws/camera"]) {
@@ -54,6 +60,9 @@ if (page.includes("rosbridge") || page.includes("rclpy") || page.includes("/perc
 }
 if (!css.includes("--accent") || !css.includes("grid-template-columns")) {
   throw new Error("missing control-center visual system");
+}
+for (const readabilityTerm of ["font-size:16px", ".safety-banner", ".operator-guide", ".primary-action"]) {
+  if (!css.includes(readabilityTerm)) throw new Error(`missing operator readability style: ${readabilityTerm}`);
 }
 
 const nativeId = "123e4567-e89b-42d3-a456-426614174000";
@@ -90,6 +99,10 @@ for (const implementationTerm of [
   "onPointerDown={handlePointerDown}",
   "向左旋转",
   "复位地图",
+  "恢复并开始自动巡检",
+  "recoverySteps(robot, mission)",
+  "waitForSnapshot",
+  "waitForCommand",
 ]) {
   if (!page.includes(implementationTerm)) throw new Error(`missing live console behavior: ${implementationTerm}`);
 }
@@ -136,4 +149,20 @@ if (rotated.rotation !== 15) throw new Error(`map rotation failed: ${rotated.rot
 if (viewportTransform({ scale: 2, x: 18, y: -7, rotation: 15 }) !== "translate(18px, -7px) rotate(15deg) scale(2)") {
   throw new Error("map CSS transform is not deterministic");
 }
+const latched = { mode: "estop", emergency_stop: { latched: true } };
+const manual = { mode: "manual", emergency_stop: { latched: false } };
+const autonomous = { mode: "autonomous", emergency_stop: { latched: false } };
+if (!needsMissionStop(latched, { state: "running" })) throw new Error("latched running mission must stop first");
+if (!needsMissionStart({ state: "stopped" })) throw new Error("stopped mission must be started");
+if (!needsAutonomousMode(manual)) throw new Error("manual robot must enter autonomous mode");
+if (JSON.stringify(recoverySteps(latched, { state: "running" })) !== JSON.stringify(["stop", "reset", "start", "autonomous"])) {
+  throw new Error("latched recovery flow is unsafe or incomplete");
+}
+if (JSON.stringify(recoverySteps(manual, { state: "stopped" })) !== JSON.stringify(["start", "autonomous"])) {
+  throw new Error("stopped manual recovery flow is incomplete");
+}
+if (JSON.stringify(recoverySteps(manual, { state: "paused" })) !== JSON.stringify(["resume", "autonomous"])) {
+  throw new Error("paused mission recovery flow is incomplete");
+}
+if (recoverySteps(autonomous, { state: "running" }).length !== 0) throw new Error("healthy autonomous flow must be a no-op");
 console.log(`frontend contract: PASS (${requiredViews.length} views, REST/WS boundary locked)`);
