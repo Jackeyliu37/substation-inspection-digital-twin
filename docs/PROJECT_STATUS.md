@@ -4,7 +4,7 @@
 
 ### 2026-07-24 production integration checkpoint
 
-- 当前源码提交为 `4af3fac419adc93f10388390e67e2113f73d5f07`；对应 immutable release 候选已构建于 `/var/lib/substation/releases-staging/4af3fac419adc93f10388390e67e2113f73d5f07`，包含常规项目 README 整理。
+- README 整理提交为 `4af3fac419adc93f10388390e67e2113f73d5f07`；包含该提交及本轮状态文档的 immutable release 候选已构建于 `/var/lib/substation/releases-staging/b49cbf597f70de8b3de072de67f419d27c5016ad`。
 - 生产四模型 ROS 管线、ACTIVE RunContext gating、独立模块输出、同 stamp 聚合、Gateway JPEG、仪表 OpenCV reader、rosbag2/report bundle、mission lifecycle/motion barrier 和 immutable release 已实现并通过对应契约测试。
 - 已定位并修复 release merged-install 的 Python 路径解析错误：原实现会寻找 `/var/lib/substation/releases-staging/.venv/bin/python`，导致五个生产感知进程启动即退出；现在同时支持 workspace isolated-install、release merged-install 和 `/opt/substation/current`。
 - installer 已在 root 安装时把 `substation` 加入现有 `render` 与 `video` 设备组，满足 OGRE2/EGL 直接设备访问；不引入显示会话或 X Server。

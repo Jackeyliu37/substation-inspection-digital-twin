@@ -4,7 +4,7 @@
 
 ### 最新恢复重点（2026-07-24）
 
-- 当前源码提交为 `4af3fac419adc93f10388390e67e2113f73d5f07`；对应 immutable release 候选为 `/var/lib/substation/releases-staging/4af3fac419adc93f10388390e67e2113f73d5f07`。该候选包含已整理的常规 README。
+- README 整理提交为 `4af3fac419adc93f10388390e67e2113f73d5f07`；包含该提交及本轮状态文档的 immutable release 候选为 `/var/lib/substation/releases-staging/b49cbf597f70de8b3de072de67f419d27c5016ad`。
 - 训练 run 的 GitHub 归档路径固定为 `artifacts/phase4/substation_yolo_runs.zip`；其 SHA-256 为 `fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce`。不展开提交 run 目录。
 - 生产感知已经修复 release merged-install 路径解析；本地 overlay 和 immutable release 均会找到当前 release 内的 `.venv/bin/python`。
 - `scripts/deployment/install_release.sh` 现在会把 `substation` 加入 `render`/`video` 组。root 安装前不要把 systemd 生产部署写成完成。
