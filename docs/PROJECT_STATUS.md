@@ -2,10 +2,11 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 四个训练 artifact 已按用户授权导入并建立 production 映射，但 safety 的 `mAP50=0.69297` 低于文档硬门槛 `0.75`，本轮以显式 operator waiver 记录；Phase 5～8 已完成受限开发实现与契约验证，但尚不是严格生产交付。
+- 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 四个训练 artifact 已按用户授权导入并建立 production 映射，但 safety 的 `mAP50=0.69297` 低于文档硬门槛 `0.75`，本轮以显式 operator waiver 记录；Phase 5～9 的受限实现、契约和构建验证已完成，但尚不是严格生产交付。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。它在真实 Gazebo 场景中触发 `combined-risk-obstacle`，确认 transformer-01 风险为 68 分 / ALERT，任务队列重排到 transformer-01 首位，证据 SHA-256 全部通过且无残留进程。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接入权威 RunContext、数字孪生、风险、任务、地图/增量和 diagnostics；同 run/revision 校验、ROS-time→UTC、float32 Web 规范化、Web snapshot revision 幂等及 reporting readiness 均 fail-closed。mission POST 只有 `/mission/manage` 实际接受后才写 accepted；evidence metadata 与 200/206/304/400/416 Range 下载只经 reporting Service。生产入口会加载 ROS/colcon 环境，安装后进程 smoke 为 `/healthz=200`、缺权威 ROS 图时 `/readyz=503`。
-- Phase 8 前端开发检查点：`df30574`。八工作区和 REST/WebSocket-only 边界已实现；`npm test` 和 `npm run build` 已通过。主机没有可用 Chrome，尚未进行 Playwright 截图或浏览器端到端验收。
+- Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。八工作区和 REST/WebSocket-only 边界已实现；本轮重新执行 `npm test`（`frontend contract: PASS (8 views, REST/WS boundary locked)`）和 `npm run build`（Next.js 16.2.11，退出码 0）。Playwright 1.61.1 可用，但 Chromium/Chrome 二进制仍未安装，因此没有伪造浏览器截图或端到端验收。
+- Phase 9 部署检查点：systemd、Nginx、Foxglove 和 safe-stop 契约已重新验证；Gateway/接口/部署回归为 `49 passed`，documentation gate 为 `PASS`。Nginx 片段通过临时 `events/http` 包装配置的 `nginx -t` 语法检查；产品服务未启动，`/opt/substation/current` release、Windows LAN、真实 Foxglove 和演示闭环仍待现场验收。
 - Phase 6 任务持久化检查点：`e73f60a`。`substation_mission` 现在以单写者方式把任务队列、机器人模式、全局 state revision 和紧急停止锁存写入 `/var/lib/substation/sqlite/mission.sqlite3`；同 run 恢复完整快照，新 run 保留锁存并推进 revision。包级重建与测试为 `11 tests, 0 errors, 0 failures, 0 skipped`；直接对安装后的 `task_manager` 发送 SIGTERM 的 smoke 得到 SQLite `state_revision=1`、`emergency_stop_latched=0`，日志无 `Traceback/ERROR/FATAL/RCLError` 且无残留节点进程。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器把同 revision 完整队列发到 `/mission/execute_inspection`，执行器顺序调用标准 `/navigate_to_pose`；风险重排会取消当前普通目标并提交新队首，紧停会取消活动 Nav2 goal，不可达任务按 `continue_on_unreachable` 跳过或失败。显式 launch 与无 Nav2 fail-closed smoke 已验证；`ExecuteInspection` goal 缺失的 `schema_version` 契约字段已补齐。
 - Phase 6 mission 生命周期检查点：`19a983d`。`/mission/manage` 已实现 pause/resume/stop 和 stop 后 start 新 run；Action feedback/result 将 active/succeeded/skipped/failed/cancelled task、mission terminal、RunContext lifecycle 与 transition command 原子写回 `mission.sqlite3`。风险重排会把被取消的 ACTIVE task 安全重排回 QUEUED，已完成任务不重复执行；Gateway command 仅在 matching 权威 mission 快照后从 accepted 转 succeeded。
@@ -27,6 +28,7 @@
 - Phase 4 占位运行时已验证实现提交：`ff87d7d43a712e2549e4d36571fad01e6d8cf1eb`；live smoke `passed`，run ID `e2e3c709-63ee-4c7d-a41e-f099547acced`，完成时间 `2026-07-23T19:02:45Z`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/e2e3c709-63ee-4c7d-a41e-f099547acced/04-perception-placeholder`。
 - Phase 4 模型 handoff：用户上传的 `artifacts/phase4/substation_yolo_runs.zip` SHA-256 为 `fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce`、大小 `83,036,921` 字节；四个 `best.pt` 的 task、类别顺序、训练配置和 metrics 已校验，导入报告为 `artifacts/phase4/model-import-report.json`，生产副本位于 `/var/lib/substation/models/production/<sha256>/`。安全模型最佳 mAP50 为 `0.69297`，按用户明确要求以 waiver 计入；严格验收仍需重新训练或撤销 waiver。
 - 正在运行的项目服务：无。Gazebo、ROS 项目节点、Gateway、前端、Foxglove Bridge 和 Nginx 均未作为产品服务运行。
+- 仓库根目录不再保留 `.phase1-run.failed-*.env` 未跟踪文件；原文件已安全移至 `/tmp/phase1-run.failed-a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca.env`（权限 `600`），未写入 Git。
 
 ## Phase 1 验证记录
 

@@ -4,10 +4,11 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 9 集成前收口。Phase 4 四个用户训练 artifact 已导入；上传 ZIP、模型哈希、训练 metrics 和 waiver 记录在 `artifacts/phase4/` 与 `models/manifest.yaml`。严格生产验收仍未完成。
+- 当前阶段：Phase 9 集成前收口。Phase 4 四个用户训练 artifact 已导入；上传 ZIP、模型哈希、训练 metrics 和 waiver 记录在 `artifacts/phase4/` 与 `models/manifest.yaml`。Phase 8/9 的受限构建、契约和部署静态检查已完成；严格生产验收仍未完成。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接权威 RunContext、数字孪生、风险、任务、地图/增量、diagnostics 和 reporting readiness；严格同 run/revision gate、时间映射、幂等 Web revision、mission Service 受理 gate 及 evidence metadata/Range 下载已通过真实 rclpy 与 ASGI 测试。安装后进程 smoke 为 `/healthz=200`、缺 ROS 图 `/readyz=503`，SIGINT 正常退出且无残留。
-- Phase 8 前端开发检查点：`df30574`，`npm test` 与 `npm run build` 已通过；没有 Chrome，因此没有 Playwright 浏览器证据。
+- Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。本轮 `npm test` 与 `npm run build` 均退出码 0；Playwright 1.61.1 已安装但 Chromium 二进制不可用，因此没有 Playwright 浏览器证据。
+- Phase 9 部署检查点：Gateway/接口/部署回归本轮 `49 passed`，documentation gate `PASS`；Nginx 片段经临时完整配置包装后 `nginx -t` 成功。未启动任何产品服务，真实 `/opt/substation/current` release、Windows LAN、Foxglove 和演示验收仍待现场执行。
 - Phase 6 任务持久化检查点：`e73f60a`。`mission.sqlite3` 由任务管理器单写，保存任务队列、机器人模式、state/queue/latch revisions 和紧急停止锁存；同 run 恢复快照，新 run 不会隐式解除锁存。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器是 `/mission/execute_inspection` 客户端，巡检执行器是其 Action server 和标准 `/navigate_to_pose` 唯一项目客户端；真实 rclpy 集成测试覆盖完整队列、风险重排目标替换、不可达策略和紧停取消。
 - Phase 6 mission 生命周期检查点：`19a983d`。`/mission/manage` pause/resume/stop 与 stop 后 start 已接通；Action feedback/result 回写 task/mission terminal、RunContext 和 SQLite，风险重排不会重跑 terminal task。Gateway 只有在 matching transition_command_id 权威快照后才把 command 标为 succeeded。
@@ -29,6 +30,7 @@
 - Phase 4 占位运行时实现提交：`ff87d7d43a712e2549e4d36571fad01e6d8cf1eb`；run ID `e2e3c709-63ee-4c7d-a41e-f099547acced`，结果 `passed`，immutable evidence `/var/lib/substation/evidence/acceptance/e2e3c709-63ee-4c7d-a41e-f099547acced/04-perception-placeholder`。该结果明确为 `development_placeholder`、`production_ready=false`，不是 Phase 4 生产验收。
 - Phase 4 导入摘要：archive SHA-256 `fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce`；safety/equipment/fault/meter 最佳指标分别为 `0.69297/0.84187/0.99673/0.99500`。安全指标低于文档阈值，按用户明确要求记录 operator-approved waiver，不应在后续报告中隐去。
 - 当前运行的项目服务：无。
+- 根目录未跟踪的 `.phase1-run.failed-*.env` 已移出仓库并保留在 `/tmp/phase1-run.failed-a9ab99ee-a85e-4c6f-a9bd-65b421efc8ca.env`，权限 `600`；恢复入口不依赖该文件。
 
 ## 验证与恢复命令
 
