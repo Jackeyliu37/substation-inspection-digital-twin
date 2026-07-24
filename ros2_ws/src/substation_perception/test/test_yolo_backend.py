@@ -52,12 +52,12 @@ class FakeResult:
 class FakeModel:
     def __init__(self, results: list[FakeResult]) -> None:
         self.results = results
-        self.calls: list[tuple[tuple[int, ...], bool, int, bool]] = []
+        self.calls: list[tuple[tuple[int, ...], bool, int, int]] = []
 
     def __call__(
-        self, image: np.ndarray, *, verbose: bool, device: int, half: bool
+        self, image: np.ndarray, *, verbose: bool, device: int, quantize: int
     ) -> list[FakeResult]:
-        self.calls.append((image.shape, verbose, device, half))
+        self.calls.append((image.shape, verbose, device, quantize))
         return self.results
 
 
@@ -119,8 +119,8 @@ def test_backend_loads_once_and_returns_framework_neutral_boxes(
     assert second == first
     assert constructed_paths == [str(verified_model.path)]
     assert model.calls == [
-        ((32, 48, 3), False, 0, True),
-        ((32, 48, 3), False, 0, True),
+        ((32, 48, 3), False, 0, 16),
+        ((32, 48, 3), False, 0, 16),
     ]
 
 
@@ -138,7 +138,7 @@ def test_classifier_uses_cuda_half_precision(verified_model: VerifiedModel) -> N
     ).classify(np.zeros((32, 48, 3), dtype=np.uint8))
 
     assert (class_name, score) == ("fire extinguisher", 0.75)
-    assert model.calls == [((32, 48, 3), False, 0, True)]
+    assert model.calls == [((32, 48, 3), False, 0, 16)]
 
 
 def test_backend_accepts_empty_boxes(verified_model: VerifiedModel) -> None:

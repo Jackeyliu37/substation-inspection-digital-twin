@@ -164,7 +164,7 @@ class YoloBackend:
         model = self._model()
         try:
             results = model(  # type: ignore[operator]
-                image_rgb, verbose=False, device=0, half=True
+                image_rgb, verbose=False, device=0, quantize=16
             )
         except BackendError:
             raise
@@ -185,7 +185,7 @@ class FaultClassifierBackend(YoloBackend):
             raise BackendError("IMAGE_RGB_INVALID")
         try:
             results = self._model()(  # type: ignore[operator]
-                image_rgb, verbose=False, device=0, half=True
+                image_rgb, verbose=False, device=0, quantize=16
             )
             if not isinstance(results, Sequence) or len(results) != 1:
                 raise BackendError("YOLO_OUTPUT_INVALID")
