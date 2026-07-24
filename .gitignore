@@ -13,6 +13,7 @@ __pycache__/
 web/frontend/node_modules/
 web/frontend/.next/
 web/frontend/npm-debug.log*
+.worktrees/
 artifacts/environment/*.log
 artifacts/environment/*.json
 artifacts/environment/*.tmp
