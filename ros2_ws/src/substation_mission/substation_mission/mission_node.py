@@ -16,8 +16,18 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from substation_description.asset_registry import load_asset_registry
 from substation_interfaces.action import ExecuteInspection
 from substation_interfaces.msg import AssetRiskArray, InspectionTask as InspectionTaskMessage
-from substation_interfaces.msg import InspectionTaskArray, RunContext
-from substation_interfaces.srv import EmergencyStop, ManageMission, ResetEmergencyStop
+from substation_interfaces.msg import (
+    InspectionTaskArray,
+    ManualVelocityCommand,
+    ManualVelocityStatus,
+    RunContext,
+)
+from substation_interfaces.srv import (
+    EmergencyStop,
+    ManageMission,
+    ResetEmergencyStop,
+    SetRobotMode,
+)
 
 from .mission_engine import (
     InspectionTask,
@@ -28,6 +38,7 @@ from .mission_engine import (
     load_mission_policy,
 )
 from .mission_store import MissionSnapshotStore
+from .velocity_arbiter import SafeVelocityArbiter
 
 
 @dataclass(frozen=True)
@@ -473,6 +484,16 @@ class TaskManagerNode(Node):
         self._inspection_cancel_future = None
         self._dispatched_execution_signature: tuple[int, int] | None = None
         self._replacement_requested = False
+        self._velocity_arbiter = SafeVelocityArbiter()
+        self._velocity_arbiter.update_context(
+            run_id=self._runtime.engine.run_id,
+            context_revision=self._runtime.context_revision,
+            active=self._runtime.context_lifecycle == RunContext.LIFECYCLE_ACTIVE,
+        )
+        self._velocity_arbiter.update_mission(
+            robot_mode=int(self._runtime.engine.robot_mode),
+            emergency_stop_latched=self._runtime.engine.emergency_stop_latched,
+        )
         q_state = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -486,11 +507,61 @@ class TaskManagerNode(Node):
         self._context_pub = self.create_publisher(RunContext, "/system/run_context", q_state)
         self._tasks_pub = self.create_publisher(InspectionTaskArray, "/mission/inspection_tasks", q_state)
         self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", q_control)
+        self._manual_status_pub = self.create_publisher(
+            ManualVelocityStatus, "/mission/manual_velocity_status", q_control
+        )
         self.create_subscription(AssetRiskArray, "/risk/assets", self._on_risk, q_state)
+        self.create_subscription(Twist, "/cmd_vel_nav", self._on_nav_velocity, q_control)
+        self.create_subscription(
+            ManualVelocityCommand, "/cmd_vel_manual", self._on_manual_velocity, q_control
+        )
         self.create_service(ManageMission, "/mission/manage", self._manage_mission)
+        self.create_service(SetRobotMode, "/mission/set_robot_mode", self._set_robot_mode)
         self.create_service(EmergencyStop, "/mission/emergency_stop", self._emergency_stop)
         self.create_service(ResetEmergencyStop, "/mission/emergency_stop_reset", self._reset_stop)
         self.create_timer(0.5, self._publish)
+        self.create_timer(0.02, self._velocity_tick)
+
+    def _publish_velocity(self, values: tuple[float, float, float]) -> None:
+        message = Twist()
+        message.linear.x, message.linear.y, message.angular.z = values
+        self._cmd_vel_pub.publish(message)
+
+    def _publish_manual_status(self, command_id: str, status) -> None:
+        message = ManualVelocityStatus()
+        message.schema_version = 1
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = "base_link"
+        message.command_id = command_id
+        message.state = status.state
+        message.error_code = status.error_code
+        message.error_message = status.error_message
+        self._manual_status_pub.publish(message)
+
+    def _on_nav_velocity(self, message: Twist) -> None:
+        if self._runtime.mission_state != InspectionTaskArray.MISSION_RUNNING:
+            return
+        selected = self._velocity_arbiter.accept_nav(
+            (message.linear.x, message.linear.y, message.angular.z)
+        )
+        if selected is not None:
+            self._publish_velocity(selected)
+
+    def _on_manual_velocity(self, message: ManualVelocityCommand) -> None:
+        decision = self._velocity_arbiter.accept_manual(
+            message, monotonic_s=time.monotonic()
+        )
+        if decision.statuses:
+            self._publish_manual_status(message.command_id, decision.statuses[0])
+        if decision.output is not None:
+            self._publish_velocity(decision.output)
+        for status in decision.statuses[1:]:
+            self._publish_manual_status(message.command_id, status)
+
+    def _velocity_tick(self) -> None:
+        selected = self._velocity_arbiter.tick(monotonic_s=time.monotonic())
+        if selected is not None:
+            self._publish_velocity(selected)
 
     def _on_risk(self, message: AssetRiskArray) -> None:
         if self._runtime.apply_risks(message, monotonic_s=time.monotonic()):
@@ -530,6 +601,65 @@ class TaskManagerNode(Node):
         self._publish()
         return response
 
+    def _set_robot_mode(self, request, response):
+        response.schema_version = 1
+        response.robot_mode = int(self._runtime.engine.robot_mode)
+        response.state_revision = self._runtime.state_revision
+        response.latch_revision = self._runtime.engine.latch_revision
+        if request.schema_version != SetRobotMode.Request.SCHEMA_VERSION or not request.reason:
+            response.error_code = "VALIDATION_FAILED"
+            response.error_message = "schema_version and reason are required"
+            return response
+        if request.mission_id != self._runtime.engine.mission_id:
+            response.error_code = "MISSION_NOT_FOUND"
+            return response
+        if request.observed_state_revision != self._runtime.state_revision:
+            response.error_code = "STATE_REVISION_MISMATCH"
+            return response
+        if request.observed_latch_revision != self._runtime.engine.latch_revision:
+            response.error_code = "LATCH_REVISION_MISMATCH"
+            return response
+        if self._runtime.engine.emergency_stop_latched:
+            response.error_code = "EMERGENCY_STOP_LATCHED"
+            return response
+        targets = {
+            SetRobotMode.Request.MODE_AUTONOMOUS: RobotMode.AUTONOMOUS,
+            SetRobotMode.Request.MODE_MANUAL: RobotMode.MANUAL,
+        }
+        target = targets.get(request.target_mode)
+        if target is None:
+            response.error_code = "MODE_INVALID"
+            return response
+        if target == self._runtime.engine.robot_mode:
+            response.error_code = "INVALID_STATE_TRANSITION"
+            return response
+        if target == RobotMode.AUTONOMOUS and self._runtime.mission_state not in (
+            InspectionTaskArray.MISSION_READY,
+            InspectionTaskArray.MISSION_RUNNING,
+            InspectionTaskArray.MISSION_PAUSED,
+        ):
+            response.error_code = "INVALID_STATE_TRANSITION"
+            return response
+        if target == RobotMode.MANUAL:
+            self._replacement_requested = False
+            self._cancel_execution_goal()
+            self._publish_velocity((0.0, 0.0, 0.0))
+        else:
+            self._dispatched_execution_signature = None
+        self._runtime.engine.robot_mode = target
+        self._runtime.state_revision += 1
+        self._runtime.transition_command_id = request.command_id
+        self._runtime.transition_reason_code = (
+            "ROBOT_MODE_AUTONOMOUS" if target == RobotMode.AUTONOMOUS else "ROBOT_MODE_MANUAL"
+        )
+        self._runtime.transition_reason = request.reason
+        self._publish()
+        response.accepted = True
+        response.robot_mode = int(target)
+        response.state_revision = self._runtime.state_revision
+        response.latch_revision = self._runtime.engine.latch_revision
+        return response
+
     def _emergency_stop(self, request, response):
         result = self._runtime.engine.emergency_stop(request.reason)
         self._runtime.state_revision += 1
@@ -564,6 +694,17 @@ class TaskManagerNode(Node):
         return response
 
     def _publish(self, *, dispatch_execution: bool = True) -> None:
+        context_stop = self._velocity_arbiter.update_context(
+            run_id=self._runtime.engine.run_id,
+            context_revision=self._runtime.context_revision,
+            active=self._runtime.context_lifecycle == RunContext.LIFECYCLE_ACTIVE,
+        )
+        mission_stop = self._velocity_arbiter.update_mission(
+            robot_mode=int(self._runtime.engine.robot_mode),
+            emergency_stop_latched=self._runtime.engine.emergency_stop_latched,
+        )
+        if context_stop is not None or mission_stop is not None:
+            self._publish_velocity((0.0, 0.0, 0.0))
         self._store.save(self._runtime.persistence_record())
         stamp = self.get_clock().now().to_msg()
         context = RunContext()

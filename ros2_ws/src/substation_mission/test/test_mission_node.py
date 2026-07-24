@@ -1,11 +1,19 @@
-from substation_interfaces.msg import AssetRisk, AssetRiskArray, InspectionTaskArray
-from substation_interfaces.srv import ManageMission
+from geometry_msgs.msg import Twist
+from substation_interfaces.msg import (
+    AssetRisk,
+    AssetRiskArray,
+    InspectionTaskArray,
+    ManualVelocityCommand,
+    ManualVelocityStatus,
+)
+from substation_interfaces.srv import ManageMission, SetRobotMode
 from rclpy.executors import ExternalShutdownException
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+import time
 
 from substation_mission import mission_node
 from substation_mission.mission_engine import MissionPolicy
@@ -249,6 +257,133 @@ def test_task_manager_exposes_manage_service_and_publishes_pause_transition(tmp_
         assert response.state_revision == 2
         assert task_manager._runtime.snapshot().mission_state == InspectionTaskArray.MISSION_PAUSED
         assert task_manager._runtime.snapshot().transition_command_id == request.command_id
+    finally:
+        executor.remove_node(client_node)
+        executor.remove_node(task_manager)
+        client_node.destroy_node()
+        task_manager.destroy_node()
+        executor.shutdown()
+        context.shutdown()
+
+
+def test_task_manager_arbitrates_manual_velocity_and_stops_at_deadline(tmp_path) -> None:
+    context = Context()
+    rclpy.init(context=context)
+    task_manager = TaskManagerNode(
+        context=context,
+        parameter_overrides=[
+            Parameter("run_id", value="run-manual"),
+            Parameter("mission_id", value="mission-manual"),
+            Parameter("mission_db_path", value=str(tmp_path / "mission.sqlite3")),
+        ],
+    )
+    task_manager._runtime.engine.robot_mode = task_manager._runtime.engine.robot_mode.MANUAL
+    task_manager._runtime.state_revision += 1
+    task_manager._runtime.transition_reason_code = "ROBOT_MODE_MANUAL"
+    task_manager._publish()
+    client_node = Node("manual_velocity_test", context=context)
+    commands = client_node.create_publisher(
+        ManualVelocityCommand, "/cmd_vel_manual", 10
+    )
+    statuses = []
+    velocities = []
+    client_node.create_subscription(
+        ManualVelocityStatus,
+        "/mission/manual_velocity_status",
+        lambda message: statuses.append(message),
+        10,
+    )
+    client_node.create_subscription(
+        Twist, "/cmd_vel", lambda message: velocities.append(message), 10
+    )
+    executor = SingleThreadedExecutor(context=context)
+    executor.add_node(task_manager)
+    executor.add_node(client_node)
+    message = ManualVelocityCommand()
+    message.schema_version = 1
+    message.header.frame_id = "base_link"
+    message.command_id = "3b514885-bb10-448b-92fd-ef9ec7ce9c74"
+    message.run_id = "run-manual"
+    message.context_revision = 1
+    message.twist.linear.x = 0.2
+    message.duration_s = 0.05
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not any(
+            status.state == ManualVelocityStatus.STATE_APPLIED for status in statuses
+        ):
+            commands.publish(message)
+            executor.spin_once(timeout_sec=0.02)
+        assert [status.state for status in statuses[:2]] == [
+            ManualVelocityStatus.STATE_ACCEPTED,
+            ManualVelocityStatus.STATE_APPLIED,
+        ]
+        assert any(abs(item.linear.x - 0.2) < 1e-6 for item in velocities)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not any(
+            item.linear.x == 0.0 and item.angular.z == 0.0 for item in velocities[1:]
+        ):
+            executor.spin_once(timeout_sec=0.02)
+        assert any(
+            item.linear.x == 0.0 and item.angular.z == 0.0 for item in velocities[1:]
+        )
+    finally:
+        executor.remove_node(client_node)
+        executor.remove_node(task_manager)
+        client_node.destroy_node()
+        task_manager.destroy_node()
+        executor.shutdown()
+        context.shutdown()
+
+
+def test_task_manager_changes_robot_mode_with_revision_compare_and_set(tmp_path) -> None:
+    context = Context()
+    rclpy.init(context=context)
+    task_manager = TaskManagerNode(
+        context=context,
+        parameter_overrides=[
+            Parameter("run_id", value="run-mode"),
+            Parameter("mission_id", value="mission-mode"),
+            Parameter("mission_db_path", value=str(tmp_path / "mission.sqlite3")),
+        ],
+    )
+    client_node = Node("robot_mode_test", context=context)
+    client = client_node.create_client(SetRobotMode, "/mission/set_robot_mode")
+    executor = SingleThreadedExecutor(context=context)
+    executor.add_node(task_manager)
+    executor.add_node(client_node)
+    try:
+        assert client.wait_for_service(timeout_sec=2.0)
+        request = SetRobotMode.Request()
+        request.schema_version = 1
+        request.command_id = "a999dd00-5db0-487e-9078-9c11fb9cc51d"
+        request.mission_id = "mission-mode"
+        request.target_mode = SetRobotMode.Request.MODE_MANUAL
+        request.observed_state_revision = 1
+        request.observed_latch_revision = 0
+        request.reason = "operator handoff"
+        future = client.call_async(request)
+        executor.spin_until_future_complete(future, timeout_sec=2.0)
+        response = future.result()
+        assert response.accepted is True
+        assert response.robot_mode == InspectionTaskArray.MODE_MANUAL
+        assert response.state_revision == 2
+
+        stale = SetRobotMode.Request()
+        stale.schema_version = 1
+        stale.command_id = "cccb15dd-36ef-4bdf-be29-301053a2169b"
+        stale.mission_id = "mission-mode"
+        stale.target_mode = SetRobotMode.Request.MODE_AUTONOMOUS
+        stale.observed_state_revision = 1
+        stale.observed_latch_revision = 0
+        stale.reason = "stale page"
+        future = client.call_async(stale)
+        executor.spin_until_future_complete(future, timeout_sec=2.0)
+        response = future.result()
+        assert response.accepted is False
+        assert response.error_code == "STATE_REVISION_MISMATCH"
+        assert task_manager._runtime.engine.robot_mode == task_manager._runtime.engine.robot_mode.MANUAL
     finally:
         executor.remove_node(client_node)
         executor.remove_node(task_manager)
