@@ -8,8 +8,10 @@ wired to their authoritative topics and services.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -25,6 +27,7 @@ from fastapi.responses import JSONResponse, Response
 SCHEMA_VERSION = "1.0"
 MAX_REQUEST_BYTES = 64 * 1024
 _UUID_NIL = "00000000-0000-0000-0000-000000000000"
+_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
 def _utc_now() -> str:
@@ -75,9 +78,11 @@ class GatewayState:
     operational state. Callers can replace these fields from ROS callbacks.
     """
 
+    authoritative_required: bool = False
     run_id: str | None = None
     snapshot_revision: int = 1
     assets: list[dict[str, Any]] = field(default_factory=list)
+    robot: dict[str, Any] | None = None
     map_snapshot: dict[str, Any] | None = None
     reports: list[dict[str, Any]] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=lambda: {"items": []})
@@ -214,10 +219,26 @@ class CommandStore:
             return self._connection.execute("SELECT * FROM commands WHERE command_id=?", (command_id,)).fetchone()
 
 
-def create_app(*, state: GatewayState | None = None, db_path: str | Path = ":memory:") -> FastAPI:
+def create_app(
+    *,
+    state: GatewayState | None = None,
+    db_path: str | Path = ":memory:",
+    adapter: Any | None = None,
+) -> FastAPI:
     state = state or GatewayState()
     store = CommandStore(db_path)
-    app = FastAPI(title="Substation Web Gateway", version=SCHEMA_VERSION)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if adapter is not None:
+            adapter.start()
+        try:
+            yield
+        finally:
+            if adapter is not None:
+                adapter.stop()
+
+    app = FastAPI(title="Substation Web Gateway", version=SCHEMA_VERSION, lifespan=lifespan)
     app.state.gateway = state
     app.state.commands = store
 
@@ -227,6 +248,54 @@ def create_app(*, state: GatewayState | None = None, db_path: str | Path = ":mem
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
         return JSONResponse(envelope, headers={"ETag": etag})
+
+    async def query_evidence_record(evidence_id: str, request: Request):
+        if not _strict_uuid(evidence_id):
+            return None, _problem(
+                request, 422, "VALIDATION_FAILED", "evidence_id must be a canonical UUID."
+            )
+        if adapter is None or not hasattr(adapter, "query_evidence"):
+            return None, _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence storage is unavailable."
+            )
+        try:
+            record = await asyncio.to_thread(adapter.query_evidence, evidence_id)
+        except Exception:
+            return None, _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence query failed."
+            )
+        if not record.get("found", False):
+            if record.get("error_code"):
+                return None, _problem(
+                    request,
+                    503,
+                    "EVIDENCE_STORAGE_UNAVAILABLE",
+                    record.get("error_message") or "Evidence query failed.",
+                )
+            return None, _problem(request, 404, "EVIDENCE_NOT_FOUND", "Evidence was not found.")
+        return record, None
+
+    def parse_range(value: str | None, total: int) -> tuple[int, int] | str | None:
+        if value is None:
+            return None
+        match = _RANGE.fullmatch(value)
+        if match is None or "," in value:
+            return "invalid"
+        start_text, end_text = match.groups()
+        if not start_text and not end_text:
+            return "invalid"
+        if not start_text:
+            suffix = int(end_text)
+            if suffix == 0:
+                return "unsatisfiable"
+            return max(0, total - suffix), total - 1
+        start = int(start_text)
+        if start >= total:
+            return "unsatisfiable"
+        end = total - 1 if not end_text else int(end_text)
+        if end < start:
+            return "invalid"
+        return start, min(end, total - 1)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -251,22 +320,143 @@ def create_app(*, state: GatewayState | None = None, db_path: str | Path = ":mem
 
     @app.get("/api/v1/system/status")
     async def system_status(request: Request) -> Response:
+        if state.authoritative_required and not state.ready_dependencies["run_context"]:
+            return _problem(
+                request, 503, "DEPENDENCY_UNAVAILABLE", "RunContext is unavailable."
+            )
         return snapshot_response(state.system, request)
 
     @app.get("/api/v1/assets")
     async def assets(request: Request) -> Response:
+        if state.authoritative_required and not state.ready_dependencies["risk"]:
+            return _problem(
+                request, 503, "DEPENDENCY_UNAVAILABLE", "Authoritative asset state is unavailable."
+            )
         items = sorted(state.assets, key=lambda item: item.get("asset_id", ""))
         return snapshot_response({"items": items, "next_cursor": None}, request)
 
     @app.get("/api/v1/missions/current")
     async def current_mission(request: Request) -> Response:
+        if state.authoritative_required and not state.ready_dependencies["mission"]:
+            return _problem(
+                request, 503, "MISSION_STATE_UNAVAILABLE", "A consistent mission snapshot is unavailable."
+            )
         return snapshot_response(state.mission, request)
+
+    @app.get("/api/v1/robot/state")
+    async def robot_state(request: Request) -> Response:
+        if state.robot is None:
+            return _problem(
+                request, 503, "ROBOT_STATE_UNAVAILABLE", "A validated robot pose is unavailable."
+            )
+        return snapshot_response(state.robot, request)
 
     @app.get("/api/v1/map")
     async def map_snapshot(request: Request) -> Response:
         if state.map_snapshot is None:
             return _problem(request, 503, "MAP_UNAVAILABLE", "A validated map snapshot is not available.")
         return snapshot_response(state.map_snapshot, request)
+
+    @app.get("/api/v1/evidence/{evidence_id}")
+    async def evidence_metadata(evidence_id: str, request: Request) -> Response:
+        record, error = await query_evidence_record(evidence_id, request)
+        if error is not None:
+            return error
+        assert record is not None
+        try:
+            metadata = json.loads(record["metadata_canonical_json"])
+            if not isinstance(metadata, dict):
+                raise ValueError("metadata must be an object")
+        except (KeyError, ValueError, json.JSONDecodeError):
+            return _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence metadata is invalid."
+            )
+        return snapshot_response({
+            "evidence_id": evidence_id,
+            "run_id": record["run_id"],
+            "context_revision": str(record["context_revision"]),
+            "evidence_revision": str(record["evidence_revision"]),
+            "media_type": record["media_type"],
+            "size_bytes": str(record["size_bytes"]),
+            "content_sha256": record["content_sha256"],
+            "metadata": metadata,
+            "download_url": f"/api/v1/evidence/{evidence_id}/download",
+        }, request)
+
+    @app.get("/api/v1/evidence/{evidence_id}/download")
+    async def evidence_download(evidence_id: str, request: Request) -> Response:
+        record, error = await query_evidence_record(evidence_id, request)
+        if error is not None:
+            return error
+        assert record is not None
+        if adapter is None or not hasattr(adapter, "read_evidence_range"):
+            return _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence storage is unavailable."
+            )
+        digest = str(record["content_sha256"])
+        total = int(record["size_bytes"])
+        etag = f'"sha256:{digest}"'
+        requested_range = request.headers.get("range")
+        if requested_range is None and request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag, "Accept-Ranges": "bytes"})
+        if_range = request.headers.get("if-range")
+        selected = None if requested_range is not None and if_range not in (None, etag) else parse_range(
+            requested_range, total
+        )
+        if selected == "invalid":
+            response = _problem(request, 400, "INVALID_RANGE", "Only one valid byte range is supported.")
+            response.headers["Accept-Ranges"] = "bytes"
+            return response
+        if selected == "unsatisfiable" or total == 0:
+            response = _problem(
+                request, 416, "RANGE_NOT_SATISFIABLE", "The requested byte range is unavailable."
+            )
+            response.headers["Accept-Ranges"] = "bytes"
+            response.headers["Content-Range"] = f"bytes */{total}"
+            return response
+        start, end = (0, total - 1) if selected is None else selected
+        try:
+            content = await asyncio.to_thread(
+                adapter.read_evidence_range, evidence_id, start, end - start + 1
+            )
+        except Exception:
+            return _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence read failed."
+            )
+        if len(content) != end - start + 1:
+            return _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence read was incomplete."
+            )
+        if selected is None and hashlib.sha256(content).hexdigest() != digest:
+            return _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence digest verification failed."
+            )
+        extensions = {
+            "image/jpeg": "jpg",
+            "application/json": "json",
+            "application/pdf": "pdf",
+            "application/zip": "zip",
+        }
+        media_type = str(record["media_type"])
+        extension = extensions.get(media_type)
+        if extension is None:
+            return _problem(
+                request, 503, "EVIDENCE_STORAGE_UNAVAILABLE", "Evidence media type is unsupported."
+            )
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'attachment; filename="evidence-{evidence_id}.{extension}"',
+            "ETag": etag,
+            "X-Content-SHA256": digest,
+        }
+        if selected is not None:
+            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+        return Response(
+            content,
+            status_code=206 if selected is not None else 200,
+            media_type=media_type,
+            headers=headers,
+        )
 
     @app.get("/api/v1/reports")
     async def reports(request: Request) -> Response:
@@ -329,6 +519,42 @@ def create_app(*, state: GatewayState | None = None, db_path: str | Path = ":mem
         accepted_at = _utc_now()
         command_id = str(uuid.uuid4())
         kind = f"mission.{action.replace('-', '_')}" if action in {"start", "pause", "resume", "stop", "return-home"} else "unknown"
+        if kind == "unknown":
+            return _problem(request, 400, "INVALID_ACTION", "Mission action is not supported.")
+        if adapter is None or not hasattr(adapter, "dispatch_mission"):
+            return _problem(
+                request,
+                503,
+                "DEPENDENCY_UNAVAILABLE",
+                "The authoritative mission ROS Service is unavailable.",
+            )
+        try:
+            service_result = await asyncio.to_thread(
+                adapter.dispatch_mission,
+                command_id=command_id,
+                action=action,
+                payload=payload,
+            )
+        except Exception:
+            return _problem(
+                request,
+                503,
+                "DEPENDENCY_UNAVAILABLE",
+                "The authoritative mission ROS Service call failed.",
+            )
+        if not service_result.get("accepted", False):
+            error_code = service_result.get("error_code") or "DEPENDENCY_UNAVAILABLE"
+            status = 503 if error_code in {
+                "DEPENDENCY_UNAVAILABLE", "NAVIGATION_UNAVAILABLE", "AUDIT_STORAGE_UNAVAILABLE"
+            } else 404 if error_code in {"MISSION_NOT_FOUND", "ROUTE_NOT_FOUND"} else (
+                422 if error_code == "VALIDATION_FAILED" else 409
+            )
+            return _problem(
+                request,
+                status,
+                error_code,
+                service_result.get("error_message") or "The mission command was rejected.",
+            )
         response = {
             "schema_version": SCHEMA_VERSION,
             "command_id": command_id,
@@ -512,4 +738,15 @@ def main() -> None:
     """Run the loopback-only development server when invoked by ROS tooling."""
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    from .ros_adapter import RosGatewayAdapter
+
+    state = GatewayState()
+    uvicorn.run(
+        create_app(
+            state=state,
+            db_path="/var/lib/substation/sqlite/gateway.sqlite3",
+            adapter=RosGatewayAdapter(state),
+        ),
+        host="127.0.0.1",
+        port=8000,
+    )

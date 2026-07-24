@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /opt/substation/current
+set +u
+source /opt/ros/jazzy/setup.bash
+source /opt/substation/current/install/setup.bash
+set -u
+
+export ROS_LOCALHOST_ONLY=1
+exec /opt/substation/current/.venv-web/bin/python -m substation_web_gateway "$@"

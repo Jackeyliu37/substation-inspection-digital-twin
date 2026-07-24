@@ -11,9 +11,19 @@ def main() -> None:
 
     import uvicorn
 
-    from .app import create_app
+    from .app import GatewayState, create_app
+    from .ros_adapter import RosGatewayAdapter
 
-    uvicorn.run(create_app(), host=args.host, port=args.port)
+    state = GatewayState()
+    uvicorn.run(
+        create_app(
+            state=state,
+            db_path="/var/lib/substation/sqlite/gateway.sqlite3",
+            adapter=RosGatewayAdapter(state),
+        ),
+        host=args.host,
+        port=args.port,
+    )
 
 
 if __name__ == "__main__":

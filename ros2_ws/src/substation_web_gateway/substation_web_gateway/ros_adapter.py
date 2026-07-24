@@ -1,0 +1,821 @@
+"""ROS 2 to Web Gateway projection and runtime adapter.
+
+The projector is deliberately independent from the executor thread so its
+validation and JSON mapping can be tested without a live ROS graph.  The
+runtime adapter owns the rclpy node and is the only place where the Gateway
+touches ROS.
+"""
+
+from __future__ import annotations
+
+import base64
+from datetime import datetime, timedelta, timezone
+import math
+import threading
+from typing import Any
+
+from diagnostic_msgs.msg import DiagnosticArray
+from map_msgs.msg import OccupancyGridUpdate
+from nav_msgs.msg import OccupancyGrid
+import rclpy
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from substation_interfaces.msg import AssetRiskArray, InspectionTaskArray, RiskAlert, RunContext
+from substation_interfaces.srv import (
+    GetReportingReadiness,
+    ManageMission,
+    QueryEvidence,
+    QueryRunTimeMapping,
+    ReadEvidenceChunk,
+    RecordRunTimeMapping,
+)
+
+from .app import GatewayState, _utc_now
+
+
+_LIFECYCLES = ("idle", "starting", "active", "ending", "ended")
+_MISSION_STATES = (
+    "idle", "ready", "running", "paused", "stopping", "succeeded", "failed", "stopped"
+)
+_ROBOT_MODES = ("autonomous", "manual", "estop")
+_TASK_TYPES = ("inspect_asset", "navigation_goal", "return_home")
+_TASK_STATES = ("queued", "active", "succeeded", "skipped", "failed", "cancelled")
+_RISK_LEVELS = ("normal", "attention", "alert", "emergency")
+
+
+def _yaw(x: float, y: float, z: float, w: float) -> float:
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _optional_float(value: str) -> float | None:
+    if value == "":
+        return None
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite numeric field")
+    return result
+
+
+def _float32(value: float) -> float:
+    """Remove transport noise while retaining more precision than Web schemas require."""
+    return float(f"{float(value):.6g}")
+
+
+class RosStateProjector:
+    """Validate authoritative ROS snapshots before exposing Web state."""
+
+    def __init__(self, state: GatewayState) -> None:
+        self.state = state
+        self.state.authoritative_required = True
+        self._context: RunContext | None = None
+        self._twin_by_asset: dict[str, dict[str, Any]] = {}
+        self._risk_by_asset: dict[str, dict[str, Any]] = {}
+        self._risk_revision = 0
+        self._time_mapping: dict[str, Any] | None = None
+        self._map_bytes: bytearray | None = None
+        self._map_width = 0
+        self._map_height = 0
+
+    def _bump(self) -> None:
+        self.state.snapshot_revision += 1
+
+    def set_ros_graph_ready(self, *, ros: bool, gazebo: bool, nav2: bool) -> None:
+        changed = any(
+            self.state.ready_dependencies[key] != value
+            for key, value in (("ros", ros), ("gazebo", gazebo), ("nav2", nav2))
+        )
+        self.state.ready_dependencies.update(ros=ros, gazebo=gazebo, nav2=nav2)
+        self._refresh_overall()
+        if changed:
+            self._bump()
+
+    def set_reporting_readiness(
+        self,
+        *,
+        evidence_store_writable: bool,
+        report_generator_ready: bool,
+        time_mapping_ready: bool,
+    ) -> None:
+        mapping_matches = (
+            self.state.run_id is None
+            or (
+                self._time_mapping is not None
+                and self._time_mapping["run_id"] == self.state.run_id
+            )
+        )
+        values = {
+            "storage": evidence_store_writable,
+            "reporting": report_generator_ready,
+            "time_mapping": time_mapping_ready and mapping_matches,
+        }
+        changed = any(self.state.ready_dependencies[key] != value for key, value in values.items())
+        self.state.ready_dependencies.update(values)
+        self.state.system["storage"] = {
+            "status": "ok" if evidence_store_writable else "error",
+            "free_bytes": None,
+            "audit_writable": evidence_store_writable,
+        }
+        self._refresh_overall()
+        if changed:
+            self._bump()
+
+    def set_time_mapping(
+        self,
+        *,
+        run_id: str,
+        context_revision: int,
+        anchor_ros_sec: int,
+        anchor_ros_nanosec: int,
+        anchor_utc: str,
+    ) -> bool:
+        try:
+            anchor = datetime.fromisoformat(anchor_utc.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if anchor.tzinfo is None or run_id != self.state.run_id:
+            return False
+        self._time_mapping = {
+            "run_id": run_id,
+            "context_revision": int(context_revision),
+            "anchor_ros_ns": int(anchor_ros_sec) * 1_000_000_000 + int(anchor_ros_nanosec),
+            "anchor_utc": anchor.astimezone(timezone.utc),
+        }
+        self._render_context()
+        self._render_assets()
+        return True
+
+    def ros_time_to_utc(self, sec: int, nanosec: int) -> str | None:
+        mapping = self._time_mapping
+        if mapping is None or mapping["run_id"] != self.state.run_id:
+            return None
+        source_ns = int(sec) * 1_000_000_000 + int(nanosec)
+        delta = timedelta(microseconds=(source_ns - mapping["anchor_ros_ns"]) / 1_000)
+        return (mapping["anchor_utc"] + delta).isoformat(timespec="microseconds").replace(
+            "+00:00", "Z"
+        )
+
+    def on_run_context(self, message: RunContext) -> bool:
+        if message.schema_version != RunContext.SCHEMA_VERSION:
+            return False
+        if message.lifecycle >= len(_LIFECYCLES):
+            return False
+        active_run = message.run_id or None
+        if message.lifecycle in (RunContext.LIFECYCLE_STARTING, RunContext.LIFECYCLE_ACTIVE,
+                                 RunContext.LIFECYCLE_ENDING, RunContext.LIFECYCLE_ENDED):
+            if not active_run:
+                return False
+        if self._context is not None and active_run == self.state.run_id:
+            if int(message.context_revision) < int(self._context.context_revision):
+                return False
+            if message == self._context:
+                return True
+        if active_run != self.state.run_id:
+            self._twin_by_asset.clear()
+            self._risk_by_asset.clear()
+            self._risk_revision = 0
+            self._time_mapping = None
+            self.state.assets = []
+            self.state.ready_dependencies.update(mission=False, risk=False, time_mapping=False)
+        self._context = message
+        self.state.run_id = active_run
+        self.state.ready_dependencies["run_context"] = True
+        self._render_context()
+        self._refresh_overall()
+        self._bump()
+        return True
+
+    def _render_context(self) -> None:
+        message = self._context
+        if message is None:
+            return
+        self.state.system["run_context"] = {
+            "lifecycle": _LIFECYCLES[message.lifecycle],
+            "context_revision": str(message.context_revision),
+            "started_at": self.ros_time_to_utc(message.started_at.sec, message.started_at.nanosec)
+            if message.started_at.sec or message.started_at.nanosec
+            else None,
+            "ended_at": self.ros_time_to_utc(message.ended_at.sec, message.ended_at.nanosec)
+            if message.ended_at.sec or message.ended_at.nanosec
+            else None,
+            "transition_command_id": message.transition_command_id or None,
+            "reason_code": message.reason_code,
+            "reason": message.reason,
+        }
+
+    def on_mission(self, message: InspectionTaskArray) -> bool:
+        if message.schema_version != InspectionTaskArray.SCHEMA_VERSION:
+            return False
+        if message.run_id != (self.state.run_id or ""):
+            return False
+        if message.mission_state >= len(_MISSION_STATES) or message.robot_mode >= len(_ROBOT_MODES):
+            return False
+        tasks = []
+        for item in message.tasks:
+            if item.schema_version != item.SCHEMA_VERSION:
+                return False
+            if item.task_type >= len(_TASK_TYPES) or item.state >= len(_TASK_STATES):
+                return False
+            orientation = item.goal.pose.orientation
+            tasks.append({
+                "task_id": item.task_id,
+                "command_id": item.command_id or None,
+                "asset_id": item.asset_id or None,
+                "type": _TASK_TYPES[item.task_type],
+                "state": _TASK_STATES[item.state],
+                "computed_priority": _float32(item.computed_priority),
+                "risk_score_0_100": _float32(item.risk_score_0_100),
+                "goal": {
+                    "frame_id": item.goal.header.frame_id,
+                    "x_m": float(item.goal.pose.position.x),
+                    "y_m": float(item.goal.pose.position.y),
+                    "yaw_rad": _yaw(orientation.x, orientation.y, orientation.z, orientation.w),
+                },
+                "attempt": int(item.attempt),
+                "last_error_code": item.last_error_code or None,
+            })
+        mission = {
+            "mission_id": message.mission_id or None,
+            "route_id": message.route_id or None,
+            "state": _MISSION_STATES[message.mission_state],
+            "state_revision": str(message.state_revision),
+            "queue_revision": str(message.queue_revision),
+            "transition_command_id": message.transition_command_id or None,
+            "transition_reason_code": message.transition_reason_code,
+            "transition_reason": message.transition_reason,
+            "active_task_id": message.active_task_id or None,
+            "completed_tasks": int(message.completed_tasks),
+            "total_tasks": int(message.total_tasks),
+            "progress_0_1": _float32(message.progress_0_1),
+            "tasks": tasks,
+        }
+        if (
+            mission == self.state.mission
+            and self.state.system["emergency_stop_latched"]
+            == bool(message.emergency_stop_latched)
+            and self.state.ready_dependencies["mission"]
+        ):
+            return True
+        self.state.mission = mission
+        self.state.system["emergency_stop_latched"] = bool(message.emergency_stop_latched)
+        self.state.ready_dependencies["mission"] = True
+        self._refresh_overall()
+        self._bump()
+        return True
+
+    def on_twin(self, message: DiagnosticArray) -> bool:
+        accepted: dict[str, dict[str, Any]] = {}
+        for status in message.status:
+            values = {item.key: item.value for item in status.values}
+            if values.get("run_id") != self.state.run_id:
+                continue
+            try:
+                accepted[status.name] = {
+                    "asset_id": status.name,
+                    "category": values["category"],
+                    "state": values["state"],
+                    "pose": {
+                        "frame_id": "map",
+                        "x_m": _optional_float(values["pose_x_m"]),
+                        "y_m": _optional_float(values["pose_y_m"]),
+                        "z_m": _optional_float(values["pose_z_m"]),
+                        "qx": _optional_float(values["orientation_x"]),
+                        "qy": _optional_float(values["orientation_y"]),
+                        "qz": _optional_float(values["orientation_z"]),
+                        "qw": _optional_float(values["orientation_w"]),
+                    },
+                    "measurements": {
+                        "temperature_celsius": _optional_float(values["temperature_celsius"]),
+                        "smoke_0_1": _optional_float(values["smoke_0_1"]),
+                        "gas_ppm": _optional_float(values["gas_ppm"]),
+                        "meter_reading": _optional_float(values["meter_reading"]),
+                        "meter_unit": values["meter_unit"] or None,
+                    },
+                    "latest_evidence_id": values["latest_evidence_id"] or None,
+                    "observed_sec": int(values["last_observed_ros_sec"]),
+                    "observed_nanosec": int(values["last_observed_ros_nanosec"]),
+                }
+            except (KeyError, ValueError):
+                continue
+        if not accepted:
+            return False
+        if accepted == self._twin_by_asset:
+            return True
+        self._twin_by_asset = accepted
+        self._render_assets()
+        self._refresh_risk_ready()
+        self._bump()
+        return True
+
+    def on_risk(self, message: AssetRiskArray) -> bool:
+        if message.schema_version != AssetRiskArray.SCHEMA_VERSION or message.run_id != self.state.run_id:
+            return False
+        if int(message.risk_revision) < self._risk_revision:
+            return False
+        accepted: dict[str, dict[str, Any]] = {}
+        for item in message.assets:
+            if item.schema_version != item.SCHEMA_VERSION or item.level >= len(_RISK_LEVELS):
+                return False
+            accepted[item.asset_id] = {
+                "score_0_100": _float32(item.score_0_100),
+                "level": _RISK_LEVELS[item.level],
+                "visual_0_1": _float32(item.visual_0_1),
+                "temperature_0_1": _float32(item.temperature_0_1),
+                "smoke_0_1": _float32(item.smoke_0_1),
+                "gas_0_1": _float32(item.gas_0_1),
+                "context_0_1": _float32(item.context_0_1),
+            }
+        if int(message.risk_revision) == self._risk_revision and accepted == self._risk_by_asset:
+            return True
+        self._risk_by_asset = accepted
+        self._risk_revision = int(message.risk_revision)
+        self._render_assets()
+        self._refresh_risk_ready()
+        self._bump()
+        return True
+
+    def _refresh_risk_ready(self) -> None:
+        self.state.ready_dependencies["risk"] = bool(
+            self.state.run_id and self._twin_by_asset and self._risk_by_asset
+        )
+        self._refresh_overall()
+
+    def _render_assets(self) -> None:
+        items = []
+        for asset_id in sorted(self._twin_by_asset):
+            twin = self._twin_by_asset[asset_id]
+            risk = self._risk_by_asset.get(asset_id)
+            if risk is None:
+                continue
+            items.append({
+                "asset_id": asset_id,
+                "category": twin["category"],
+                "state": twin["state"],
+                "pose": twin["pose"],
+                "measurements": twin["measurements"],
+                "risk": risk,
+                "latest_evidence_id": twin["latest_evidence_id"],
+                "observed_at": self.ros_time_to_utc(
+                    twin["observed_sec"], twin["observed_nanosec"]
+                ),
+                "stale": False,
+            })
+        self.state.assets = items
+
+    def on_alert(self, message: RiskAlert) -> bool:
+        if message.schema_version != RiskAlert.SCHEMA_VERSION or message.run_id != self.state.run_id:
+            return False
+        if message.event_type >= 3 or message.previous_level >= 4 or message.current_level >= 4:
+            return False
+        self.state.events.append({
+            "type": "risk.alert",
+            "alert_id": message.alert_id,
+            "asset_id": message.asset_id,
+            "event": ("opened", "level_changed", "cleared")[message.event_type],
+            "previous_level": _RISK_LEVELS[message.previous_level],
+            "current_level": _RISK_LEVELS[message.current_level],
+            "score_0_100": _float32(message.score_0_100),
+            "evidence_ids": list(message.evidence_ids),
+        })
+        self._bump()
+        return True
+
+    def on_map(self, message: OccupancyGrid) -> bool:
+        width = int(message.info.width)
+        height = int(message.info.height)
+        values = list(message.data)
+        if (
+            message.header.frame_id != "map"
+            or width <= 0
+            or height <= 0
+            or len(values) != width * height
+            or any(value < -1 or value > 100 for value in values)
+        ):
+            self.state.map_snapshot = None
+            self._map_bytes = None
+            return False
+        orientation = message.info.origin.orientation
+        self._map_bytes = bytearray(value & 0xFF for value in values)
+        self._map_width = width
+        self._map_height = height
+        revision = int((self.state.map_snapshot or {}).get("map_revision", "0")) + 1
+        self.state.map_snapshot = {
+            "map_revision": str(revision),
+            "frame_id": "map",
+            "source_ros_time": {
+                "sec": int(message.header.stamp.sec),
+                "nanosec": int(message.header.stamp.nanosec),
+            },
+            "resolution_m": float(message.info.resolution),
+            "width_cells": width,
+            "height_cells": height,
+            "origin": {
+                "x_m": float(message.info.origin.position.x),
+                "y_m": float(message.info.origin.position.y),
+                "yaw_rad": _yaw(orientation.x, orientation.y, orientation.z, orientation.w),
+            },
+            "data_encoding": "base64-int8-row-major-v1",
+            "data": base64.b64encode(self._map_bytes).decode("ascii"),
+        }
+        self._bump()
+        return True
+
+    def on_map_update(self, message: OccupancyGridUpdate) -> bool:
+        if self._map_bytes is None or message.header.frame_id != "map":
+            return False
+        x, y = int(message.x), int(message.y)
+        width, height = int(message.width), int(message.height)
+        values = list(message.data)
+        if (
+            width <= 0 or height <= 0 or len(values) != width * height
+            or x + width > self._map_width or y + height > self._map_height
+            or any(value < -1 or value > 100 for value in values)
+        ):
+            self.state.map_snapshot = None
+            self._map_bytes = None
+            return False
+        for row in range(height):
+            source = row * width
+            target = (y + row) * self._map_width + x
+            self._map_bytes[target:target + width] = bytes(value & 0xFF for value in values[source:source + width])
+        snapshot = dict(self.state.map_snapshot or {})
+        snapshot["map_revision"] = str(int(snapshot["map_revision"]) + 1)
+        snapshot["source_ros_time"] = {
+            "sec": int(message.header.stamp.sec), "nanosec": int(message.header.stamp.nanosec)
+        }
+        snapshot["data"] = base64.b64encode(self._map_bytes).decode("ascii")
+        self.state.map_snapshot = snapshot
+        self._bump()
+        return True
+
+    def on_diagnostics(self, message: DiagnosticArray) -> None:
+        components = []
+        for status in sorted(message.status, key=lambda item: item.name):
+            components.append({
+                "name": status.name,
+                "kind": "ros_node",
+                "status": ("ok", "degraded", "error", "stale")[min(int(status.level), 3)],
+                "message": status.message,
+                "last_seen_at": self.ros_time_to_utc(
+                    message.header.stamp.sec, message.header.stamp.nanosec
+                ),
+            })
+        self.state.system["components"] = components
+        self._bump()
+
+    def _refresh_overall(self) -> None:
+        dependencies = self.state.ready_dependencies
+        self.state.system["overall"] = "ready" if all(dependencies.values()) else (
+            "degraded" if any(dependencies.values()) else "unavailable"
+        )
+
+
+class RosGatewayNode(Node):
+    """Live ROS subscriptions and reporting-readiness clients."""
+
+    def __init__(self, state: GatewayState, *, context=None) -> None:
+        super().__init__("web_gateway", context=context)
+        self.projector = RosStateProjector(state)
+        self._mapping_query_inflight = False
+        self._mapping_record_inflight = False
+        self._readiness_inflight = False
+        self._pending_mapping: dict[str, Any] | None = None
+        q_state = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        q_event = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.create_subscription(RunContext, "/system/run_context", self._on_context, q_state)
+        self.create_subscription(DiagnosticArray, "/digital_twin/assets", self.projector.on_twin, q_state)
+        self.create_subscription(AssetRiskArray, "/risk/assets", self.projector.on_risk, q_state)
+        self.create_subscription(RiskAlert, "/risk/alerts", self.projector.on_alert, q_event)
+        self.create_subscription(
+            InspectionTaskArray, "/mission/inspection_tasks", self.projector.on_mission, q_state
+        )
+        self.create_subscription(OccupancyGrid, "/map", self.projector.on_map, q_state)
+        self.create_subscription(
+            OccupancyGridUpdate, "/map_updates", self.projector.on_map_update, q_event
+        )
+        self.create_subscription(DiagnosticArray, "/diagnostics", self.projector.on_diagnostics, q_event)
+        self._query_mapping = self.create_client(
+            QueryRunTimeMapping, "/reporting/query_run_time_mapping"
+        )
+        self._record_mapping = self.create_client(
+            RecordRunTimeMapping, "/reporting/record_run_time_mapping"
+        )
+        self._reporting_readiness = self.create_client(
+            GetReportingReadiness, "/reporting/readiness"
+        )
+        self._manage_mission = self.create_client(ManageMission, "/mission/manage")
+        self._query_evidence = self.create_client(QueryEvidence, "/reporting/query_evidence")
+        self._read_evidence = self.create_client(
+            ReadEvidenceChunk, "/reporting/read_evidence_chunk"
+        )
+        self.create_timer(1.0, self._poll)
+
+    @staticmethod
+    def _wait_for_service_future(future, timeout_s: float) -> Any | None:
+        event = threading.Event()
+        future.add_done_callback(lambda _completed: event.set())
+        if not event.wait(timeout_s):
+            return None
+        try:
+            return future.result()
+        except Exception:
+            return None
+
+    def query_evidence(self, evidence_id: str) -> dict[str, Any]:
+        if not self._query_evidence.service_is_ready():
+            return {
+                "found": False,
+                "error_code": "EVIDENCE_STORAGE_UNAVAILABLE",
+                "error_message": "/reporting/query_evidence is unavailable.",
+            }
+        request = QueryEvidence.Request()
+        request.schema_version = 1
+        request.evidence_id = evidence_id
+        response = self._wait_for_service_future(self._query_evidence.call_async(request), 2.0)
+        if response is None:
+            return {
+                "found": False,
+                "error_code": "EVIDENCE_STORAGE_UNAVAILABLE",
+                "error_message": "/reporting/query_evidence timed out.",
+            }
+        return {
+            "found": bool(response.found),
+            "run_id": response.run_id,
+            "context_revision": int(response.context_revision),
+            "evidence_revision": int(response.evidence_revision),
+            "media_type": response.media_type,
+            "content_sha256": response.content_sha256,
+            "size_bytes": int(response.size_bytes),
+            "metadata_canonical_json": response.metadata_canonical_json,
+            "error_code": response.error_code,
+            "error_message": response.error_message,
+        }
+
+    def read_evidence_range(self, evidence_id: str, offset: int, length: int) -> bytes:
+        if not self._read_evidence.service_is_ready():
+            raise RuntimeError("/reporting/read_evidence_chunk is unavailable")
+        remaining = length
+        cursor = offset
+        chunks: list[bytes] = []
+        expected_digest: str | None = None
+        while remaining:
+            request = ReadEvidenceChunk.Request()
+            request.schema_version = 1
+            request.evidence_id = evidence_id
+            request.offset_bytes = cursor
+            request.max_bytes = min(remaining, 1024 * 1024)
+            response = self._wait_for_service_future(self._read_evidence.call_async(request), 2.0)
+            if response is None or not response.found or response.error_code:
+                raise RuntimeError("evidence chunk read failed")
+            if expected_digest is None:
+                expected_digest = response.content_sha256
+            elif response.content_sha256 != expected_digest:
+                raise RuntimeError("evidence digest changed between chunks")
+            chunk = bytes(response.content)
+            if not chunk or len(chunk) > remaining:
+                raise RuntimeError("invalid evidence chunk length")
+            chunks.append(chunk)
+            cursor += len(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def dispatch_mission(
+        self,
+        *,
+        command_id: str,
+        action: str,
+        payload: dict[str, Any],
+        timeout_s: float = 2.0,
+    ) -> dict[str, Any]:
+        if not self._manage_mission.service_is_ready():
+            return {
+                "accepted": False,
+                "error_code": "DEPENDENCY_UNAVAILABLE",
+                "error_message": "/mission/manage is unavailable.",
+            }
+        actions = {
+            "start": ManageMission.Request.ACTION_START,
+            "pause": ManageMission.Request.ACTION_PAUSE,
+            "resume": ManageMission.Request.ACTION_RESUME,
+            "stop": ManageMission.Request.ACTION_STOP,
+            "return-home": ManageMission.Request.ACTION_RETURN_HOME,
+        }
+        if action not in actions:
+            return {
+                "accepted": False,
+                "error_code": "VALIDATION_FAILED",
+                "error_message": "Unsupported mission action.",
+            }
+        request = ManageMission.Request()
+        request.schema_version = 1
+        request.command_id = command_id
+        request.mission_id = str(payload.get("mission_id") or "")
+        request.action = actions[action]
+        request.route_id = str(payload.get("route_id") or "")
+        request.reason = str(payload.get("reason") or "")
+        event = threading.Event()
+        result: dict[str, Any] = {}
+
+        def completed(future) -> None:
+            try:
+                response = future.result()
+                result.update(
+                    accepted=bool(response.accepted),
+                    run_id=response.run_id,
+                    mission_id=response.mission_id,
+                    run_context_revision=int(response.run_context_revision),
+                    state_revision=int(response.state_revision),
+                    queue_revision=int(response.queue_revision),
+                    error_code=response.error_code,
+                    error_message=response.error_message,
+                )
+            except Exception:
+                result.update(
+                    accepted=False,
+                    error_code="DEPENDENCY_UNAVAILABLE",
+                    error_message="/mission/manage call failed.",
+                )
+            finally:
+                event.set()
+
+        self._manage_mission.call_async(request).add_done_callback(completed)
+        if not event.wait(timeout_s):
+            return {
+                "accepted": False,
+                "error_code": "DEPENDENCY_UNAVAILABLE",
+                "error_message": "/mission/manage timed out.",
+            }
+        return result
+
+    def _on_context(self, message: RunContext) -> None:
+        if not self.projector.on_run_context(message):
+            return
+        if message.lifecycle == RunContext.LIFECYCLE_ACTIVE:
+            self._ensure_time_mapping(message)
+
+    def _ensure_time_mapping(self, message: RunContext) -> None:
+        if self._mapping_query_inflight or not self._query_mapping.service_is_ready():
+            return
+        request = QueryRunTimeMapping.Request()
+        request.schema_version = 1
+        request.run_id = message.run_id
+        self._mapping_query_inflight = True
+        future = self._query_mapping.call_async(request)
+        future.add_done_callback(lambda completed, context=message: self._mapping_query_done(completed, context))
+
+    def _mapping_query_done(self, future, context: RunContext) -> None:
+        self._mapping_query_inflight = False
+        try:
+            response = future.result()
+        except Exception:
+            return
+        if response.found:
+            self.projector.set_time_mapping(
+                run_id=context.run_id,
+                context_revision=response.context_revision,
+                anchor_ros_sec=response.anchor_ros_sec,
+                anchor_ros_nanosec=response.anchor_ros_nanosec,
+                anchor_utc=response.anchor_utc,
+            )
+            return
+        if response.error_code or self._mapping_record_inflight or not self._record_mapping.service_is_ready():
+            return
+        request = RecordRunTimeMapping.Request()
+        request.schema_version = 1
+        request.run_id = context.run_id
+        request.context_revision = context.context_revision
+        request.anchor_ros_sec = context.header.stamp.sec
+        request.anchor_ros_nanosec = context.header.stamp.nanosec
+        request.anchor_utc = _utc_now()
+        self._pending_mapping = {
+            "run_id": request.run_id,
+            "context_revision": request.context_revision,
+            "anchor_ros_sec": request.anchor_ros_sec,
+            "anchor_ros_nanosec": request.anchor_ros_nanosec,
+            "anchor_utc": request.anchor_utc,
+        }
+        self._mapping_record_inflight = True
+        future = self._record_mapping.call_async(request)
+        future.add_done_callback(self._mapping_record_done)
+
+    def _mapping_record_done(self, future) -> None:
+        self._mapping_record_inflight = False
+        pending, self._pending_mapping = self._pending_mapping, None
+        try:
+            response = future.result()
+        except Exception:
+            return
+        if response.accepted and pending is not None:
+            self.projector.set_time_mapping(**pending)
+
+    def _poll(self) -> None:
+        topics = {name for name, _types in self.get_topic_names_and_types()}
+        nodes = set(self.get_node_names())
+        self.projector.set_ros_graph_ready(
+            ros=True,
+            gazebo="/camera/image_raw" in topics or "/scan" in topics,
+            nav2=bool(nodes & {"bt_navigator", "controller_server", "planner_server"})
+            or "/navigate_to_pose/_action/status" in topics,
+        )
+        context = self.projector._context
+        if context is not None and context.lifecycle == RunContext.LIFECYCLE_ACTIVE:
+            self._ensure_time_mapping(context)
+        if self._readiness_inflight or not self._reporting_readiness.service_is_ready():
+            self.projector.set_reporting_readiness(
+                evidence_store_writable=False,
+                report_generator_ready=False,
+                time_mapping_ready=False,
+            )
+            return
+        request = GetReportingReadiness.Request()
+        request.schema_version = 1
+        self._readiness_inflight = True
+        future = self._reporting_readiness.call_async(request)
+        future.add_done_callback(self._readiness_done)
+
+    def _readiness_done(self, future) -> None:
+        self._readiness_inflight = False
+        try:
+            response = future.result()
+        except Exception:
+            self.projector.set_reporting_readiness(
+                evidence_store_writable=False,
+                report_generator_ready=False,
+                time_mapping_ready=False,
+            )
+            return
+        self.projector.set_reporting_readiness(
+            evidence_store_writable=response.evidence_store_writable,
+            report_generator_ready=response.report_generator_ready,
+            time_mapping_ready=response.time_mapping_ready,
+        )
+
+
+class RosGatewayAdapter:
+    """Own an rclpy executor thread for the FastAPI process lifespan."""
+
+    def __init__(self, state: GatewayState) -> None:
+        self._state = state
+        self._context = rclpy.context.Context()
+        self._node: RosGatewayNode | None = None
+        self._executor: MultiThreadedExecutor | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        rclpy.init(context=self._context)
+        self._node = RosGatewayNode(self._state, context=self._context)
+        self._executor = MultiThreadedExecutor(num_threads=2, context=self._context)
+        self._executor.add_node(self._node)
+        self._thread = threading.Thread(target=self._executor.spin, name="gateway-rclpy", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        assert self._executor is not None and self._node is not None
+        self._executor.shutdown(timeout_sec=5.0)
+        self._node.destroy_node()
+        self._context.shutdown()
+        self._thread.join(timeout=5.0)
+        self._thread = None
+        self._executor = None
+        self._node = None
+
+    def dispatch_mission(
+        self, *, command_id: str, action: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "accepted": False,
+                "error_code": "DEPENDENCY_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.dispatch_mission(
+            command_id=command_id,
+            action=action,
+            payload=payload,
+        )
+
+    def query_evidence(self, evidence_id: str) -> dict[str, Any]:
+        if self._node is None:
+            return {
+                "found": False,
+                "error_code": "EVIDENCE_STORAGE_UNAVAILABLE",
+                "error_message": "Gateway ROS adapter is not running.",
+            }
+        return self._node.query_evidence(evidence_id)
+
+    def read_evidence_range(self, evidence_id: str, offset: int, length: int) -> bytes:
+        if self._node is None:
+            raise RuntimeError("Gateway ROS adapter is not running")
+        return self._node.read_evidence_range(evidence_id, offset, length)

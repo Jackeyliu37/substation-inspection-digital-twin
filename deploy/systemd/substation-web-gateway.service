@@ -10,7 +10,7 @@ Group=substation
 WorkingDirectory=/opt/substation/current
 Environment=ROS_LOCALHOST_ONLY=1
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/substation/current/.venv-web/bin/python -m substation_web_gateway --host 127.0.0.1 --port 8000
+ExecStart=/opt/substation/current/scripts/deployment/substation-web-gateway --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
