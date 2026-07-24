@@ -17,7 +17,7 @@
 | 1 环境基线 | Ubuntu/ROS/Gazebo/GPU/Python/Node 锁定并可验证 | 主机审计、GPU/EGL、依赖和 immutable environment evidence 已通过 | 已完成 |
 | 2 变电站世界 | 设备、语义 ID、通道、传感器和无头 Gazebo topic | Phase 2 live acceptance 通过；合成仪表数据生成已完成 | 已完成 |
 | 3 SLAM 与导航 | 地图、定位、固定巡检点、动态避障和闭环 | Phase 3 live acceptance 通过，静态/动态目标和局部代价地图已验证 | 已完成 |
-| 4 数据与 YOLO | 四模块模型、指标、推理模块和验收报告 | ZIP 已上传；四权重、类别、指标、训练摘要和 SHA-256 已导入。安全模型 `0.69297 < 0.75`，采用 operator waiver | 部分完成 |
+| 4 数据与 YOLO | 四模块模型、指标、推理模块和验收报告 | ZIP 已上传；四权重、类别、指标、训练摘要和 SHA-256 已导入。操作员已接受安全模型 `0.69297 < 0.75` 的 waiver，不重新训练 | 部分完成 |
 | 5 数字孪生与风险 | 设备状态、时间序列、多模态融合、告警和证据 | 风险评分、确认/滞回、孪生、reporting/evidence Service 和索引已有实现与测试 | 部分完成：缺正式 rosbag2、告警/轨迹/模型完整快照报告验收 |
 | 6 风险驱动任务 | 队列、优先级、Nav2 重规划、失败恢复、急停 | 风险重排、SQLite 恢复、任务终态、Nav2 Action、速度仲裁和 live risk mission 已验证 | 部分完成：冷启动 IDLE→START、急停复位 0.5 秒 barrier 和正式全链路验收仍待补证据 |
 | 7 Web Gateway | ROS 聚合、REST、WebSocket、图像流、SQLite、命令确认 | 权威状态、命令终态、report/diagnostic 索引下载、边界和契约已验证 | 部分完成：真实相机帧接入/验收仍缺 |
@@ -41,10 +41,10 @@
 
 1. **人工 Web 验收**：从 Windows 访问 `http://ros-server/`，确认八个工作区、启动/暂停/继续/停止、地图设点、场景触发、急停/复位、报告下载和断线恢复。记录浏览器截图或验收结论即可；本项目不再要求 Playwright。
 2. **真实集成服务**：按 `docs/DEPLOYMENT.md` 构建 `/opt/substation/current` release，启动 Gazebo → core → Gateway → frontend → Nginx，验证 loopback/LAN 边界和 readiness。
-3. **Phase 4 生产验收**：确认是否接受 safety waiver；若不接受，需要重新训练达到 `mAP50 ≥ 0.75`。无论选择哪一项，都要补完整四模块 ROS 管线 15 FPS/300 秒和仪表 OpenCV 读数证据。
+3. **Phase 4 生产验收**：safety waiver 已接受且不重新训练；仍需补完整四模块 ROS 管线 15 FPS/300 秒和仪表 OpenCV 读数证据。
 4. **证据与报告**：补 rosbag2、告警/轨迹/模型快照、HTML/PDF/evidence ZIP 的一次完整闭环。
 5. **安全与任务边界**：补冷启动 IDLE→START、急停复位 barrier、真实相机帧和不可达任务的现场证据。
-6. **交付材料**：按计划决定是否需要截图、人工验收记录、3～5 分钟演示视频；这些文件当前没有上传到仓库。
+6. **交付材料**：操作员亲自进行人工浏览器验收；不要求 Playwright、截图包或 3～5 分钟演示视频。
 
 ## 不应误判为缺陷的项目选择
 

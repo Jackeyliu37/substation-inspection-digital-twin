@@ -4,7 +4,7 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 9 集成前收口。Phase 4 四个用户训练 artifact 已导入；上传 ZIP、模型哈希、训练 metrics 和 waiver 记录在 `artifacts/phase4/` 与 `models/manifest.yaml`。Phase 8/9 的受限构建、契约和部署静态检查已完成；严格生产验收仍未完成。
+- 当前阶段：Phase 9 集成收口。Phase 4 四个用户训练 artifact 已导入；上传 ZIP、模型哈希、训练 metrics 和已接受的 safety waiver 记录在 `artifacts/phase4/` 与 `models/manifest.yaml`。操作员决定不重新训练，生产感知、仪表、release、报告和安全边界验收正在落实。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接权威 RunContext、数字孪生、风险、任务、地图/增量、diagnostics 和 reporting readiness；严格同 run/revision gate、时间映射、幂等 Web revision、mission Service 受理 gate 及 evidence metadata/Range 下载已通过真实 rclpy 与 ASGI 测试。安装后进程 smoke 为 `/healthz=200`、缺 ROS 图 `/readyz=503`，SIGINT 正常退出且无残留。
 - Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。本轮 `npm test` 与 `npm run build` 均退出码 0；按操作员决定改用 Windows 浏览器人工验收，不把 Playwright 作为交付前置条件。

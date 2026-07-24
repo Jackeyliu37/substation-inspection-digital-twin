@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 四个训练 artifact 已按用户授权导入并建立 production 映射，但 safety 的 `mAP50=0.69297` 低于文档硬门槛 `0.75`，本轮以显式 operator waiver 记录；Phase 5～9 的受限实现、契约和构建验证已完成，但尚不是严格生产交付。
+- 当前阶段：Phase 9 集成收口。Phase 1～3 已有 immutable live evidence；Phase 4 四个训练 artifact 已导入并建立 production 映射，操作员已接受 safety `mAP50=0.69297` 的显式 waiver 且不重新训练。完整生产感知、仪表、release、报告和安全边界验收正在落实。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。它在真实 Gazebo 场景中触发 `combined-risk-obstacle`，确认 transformer-01 风险为 68 分 / ALERT，任务队列重排到 transformer-01 首位，证据 SHA-256 全部通过且无残留进程。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接入权威 RunContext、数字孪生、风险、任务、地图/增量和 diagnostics；同 run/revision 校验、ROS-time→UTC、float32 Web 规范化、Web snapshot revision 幂等及 reporting readiness 均 fail-closed。mission POST 只有 `/mission/manage` 实际接受后才写 accepted；evidence metadata 与 200/206/304/400/416 Range 下载只经 reporting Service。生产入口会加载 ROS/colcon 环境，安装后进程 smoke 为 `/healthz=200`、缺权威 ROS 图时 `/readyz=503`。
 - Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。八工作区和 REST/WebSocket-only 边界已实现；本轮重新执行 `npm test`（`frontend contract: PASS (8 views, REST/WS boundary locked)`）和 `npm run build`（Next.js 16.2.11，退出码 0）。按操作员决定，本项目采用 Windows 浏览器人工验收，不把 Playwright 作为交付前置条件。

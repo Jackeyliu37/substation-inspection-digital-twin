@@ -2,39 +2,20 @@
 
 基于 ROS 2、Gazebo 和多模态风险感知的变电站智能巡检系统。项目在 Ubuntu 24.04 服务器上运行无头 Gazebo 仿真，使用 TurtleBot3 Waffle Pi 执行巡检，通过设备语义状态、视觉检测、仪表读数和温度/烟雾/气体等传感信息计算风险，并由 Nav2 和任务管理器调整巡检顺序。Windows 端只需要浏览器访问统一 Web 入口。
 
-> 当前仓库是“可验证开发检查点”，不是已经启动的生产服务。Phase 8/9 的构建、契约和静态部署检查已完成；真实服务启动、Windows 局域网和完整演示由操作员人工验收。
+## 核心能力
 
-## 项目状态
-
-| 范围 | 当前状态 |
-|---|---|
-| Phase 0～3 | 环境、Gazebo 世界、合成仪表数据和导航已有 immutable evidence |
-| Phase 4 | 四个用户训练结果已上传并导入；安全模型 `mAP50=0.69297` 低于 `0.75` 门槛，按明确 operator waiver 记录 |
-| Phase 5～6 | 风险重排、任务持久化、Nav2 执行、速度仲裁和报告/证据服务已有测试与 live 检查点 |
-| Phase 7 | ROS Gateway、状态聚合、控制命令、命令终态、报告索引和下载契约已验证；真实相机帧仍待接入验收 |
-| Phase 8 | 八个前端工作区、REST/WebSocket 边界、`npm test` 和生产构建已通过 |
-| Phase 9 | systemd/Nginx/Foxglove/safe-stop 静态契约已通过；未启动生产服务，待人工集成验收 |
-
-完整差异清单见 [`docs/PLAN_GAP_ANALYSIS.md`](docs/PLAN_GAP_ANALYSIS.md)，当前事实以 [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) 为准。
-
-## 模型训练结果是否已上传
-
-已上传。Git 中的交付包为 [`artifacts/phase4/substation_yolo_runs.zip`](artifacts/phase4/substation_yolo_runs.zip)，SHA-256 为 `fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce`，大小 `83,036,921` 字节。导入和校验记录位于 [`models/manifest.yaml`](models/manifest.yaml) 与 [`artifacts/phase4/model-import-report.json`](artifacts/phase4/model-import-report.json)。四个逻辑模型均已建立 production artifact 映射：
-
-| 逻辑模型 | 任务 | 结果 | 备注 |
-|---|---|---:|---|
-| `yolo11n_safety` | 安全检测 | mAP50 `0.69297` | 低于 `0.75`，仅按 operator waiver 纳入，不是严格达标 |
-| `yolo11n_equipment` | 15 类设备检测 | mAP50 `0.84187` | 达到文档门槛 |
-| `yolo11n_fault` | 缺陷分类 | accuracy top-1 `0.99673` | 计划未规定数值下限，保留训练摘要 |
-| `meter_locator` | 仪表定位 | mAP50 `0.99500` | OpenCV 读数下游仍需完整运行验收 |
-
-权重本体在服务器 `/var/lib/substation/models/production/<sha256>/` 保存；仓库提交 ZIP、manifest、指标和训练配置摘要，不把训练目录拆成散落文件。四个模型的完整 ROS 15 FPS/300 秒、仪表 OpenCV 读数和严格安全指标复验尚未完成。
+- OGRE2/EGL 无头 Gazebo 变电站世界、TurtleBot3 Waffle Pi、RGB/LiDAR 和环境传感器；
+- 安全、设备、缺陷和仪表四条独立感知链，OpenCV 完成仪表读数后处理；
+- 以设备 ID 为中心的语义数字孪生和 0～100 多模态风险评分；
+- 风险驱动的任务重排、Nav2 目标替换、失败恢复、手动/自动速度仲裁和锁存急停；
+- 内容寻址 evidence、rosbag2、告警/轨迹/任务记录以及 HTML/PDF 巡检报告；
+- FastAPI ROS Gateway、Next.js 综合控制中心、Nginx 单一 LAN 入口和只读 Foxglove 诊断。
 
 ## 文档入口
 
 - [项目计划](基于数字孪生与多模态风险感知的变电站智能巡检系统_项目计划.md)：范围、阶段、技术栈、验收指标和完成定义的上游事实来源。
 - [项目结构](docs/PROJECT_STRUCTURE.md)：源码、配置、模型、数据、部署和测试目录的职责说明。
-- [计划差异清单](docs/PLAN_GAP_ANALYSIS.md)：按 Phase 0～9 标记已完成、部分完成、待人工验收和明确缺口。
+- [计划差异清单](docs/PLAN_GAP_ANALYSIS.md)：项目计划与当前实现的核对记录。
 - [架构](docs/ARCHITECTURE.md)：组件边界、数据流和 ROS/Web 分层。
 - [接口契约](docs/INTERFACES.md)：ROS、REST、WebSocket、命令终态和错误语义。
 - [部署手册](docs/DEPLOYMENT.md)：release、systemd、Nginx、网络边界、安全停止和回滚。
