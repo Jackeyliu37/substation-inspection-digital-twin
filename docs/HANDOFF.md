@@ -10,9 +10,10 @@
 - Phase 8 前端开发检查点：`df30574`，`npm test` 与 `npm run build` 已通过；没有 Chrome，因此没有 Playwright 浏览器证据。
 - Phase 6 任务持久化检查点：`e73f60a`。`mission.sqlite3` 由任务管理器单写，保存任务队列、机器人模式、state/queue/latch revisions 和紧急停止锁存；同 run 恢复快照，新 run 不会隐式解除锁存。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器是 `/mission/execute_inspection` 客户端，巡检执行器是其 Action server 和标准 `/navigate_to_pose` 唯一项目客户端；真实 rclpy 集成测试覆盖完整队列、风险重排目标替换、不可达策略和紧停取消。
-- Phase 6 mission 生命周期检查点：`19a983d`。`/mission/manage` pause/resume/stop 与 stop 后 start 已接通；Action feedback/result 回写 task/mission terminal、RunContext 和 SQLite，风险重排不会重跑 terminal task。Gateway 只有在 matching transition_command_id 权威快照后才把 command 标为 succeeded。冷启动 IDLE→START 与手动/自动速度仲裁仍待实现。
+- Phase 6 mission 生命周期检查点：`19a983d`。`/mission/manage` pause/resume/stop 与 stop 后 start 已接通；Action feedback/result 回写 task/mission terminal、RunContext 和 SQLite，风险重排不会重跑 terminal task。Gateway 只有在 matching transition_command_id 权威快照后才把 command 标为 succeeded。
+- Phase 6 速度仲裁检查点：`4268803`。任务模块单写最终 `/cmd_vel`，在 autonomous/manual 间严格选择 Nav2 或带 RunContext 的手动命令；monotonic deadline、限速、锁存、frame、去重、ACCEPTED→APPLIED 和到期归零已验证。`/mission/set_robot_mode` 使用 state/latch revision CAS，manual barrier 会取消 Nav2 并发零速度。冷启动 IDLE→START 与紧停复位的 0.5 s/无活动 goal 完整 barrier 仍待实现。
 - reporting ROS 检查点：`2f8847a`。9 个 Service 类型及 evidence_store/report_generator 节点已接入；时间映射、证据写入/冻结/查询/Range、readiness、HTML/PDF/evidence ZIP/diagnostic ZIP 经真实 rclpy 服务链通过。report generator 不写 `evidence.sqlite3` 或最终目录，缺 implementation commit 时保持 Service 不可用；report/diagnostic 独立索引与 Gateway 下载映射尚未接入。
-- 当前软件验证：ROS workspace `169 tests, 0 errors, 0 failures, 0 skipped`；Gateway、部署及 Phase 5～6 顶层 contract `28 passed`；documentation gate、world/navigation/perception/synthetic 的既有检查点均已通过。
+- 当前软件验证：ROS workspace `174 tests, 0 errors, 0 failures, 0 skipped`；Gateway、部署及 Phase 5～6 顶层 contract `28 passed`；documentation gate、world/navigation/perception/synthetic 的既有检查点均已通过。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -63,4 +64,4 @@
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
 - 占位结果只发布到 `/perception/development/detections` 和 `/perception/development/annotated_image`；正式聚合、数字孪生、风险、Gateway、报告和证据链不得消费它们。
-- 下一实现动作：补冷启动 IDLE→START 和手动/自动安全速度仲裁；随后补 Gateway 机器人 pose/电池、其余控制 endpoint、report/diagnostic 索引、相机帧与 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。
+- 下一实现动作：补 Gateway robot mode/manual velocity/紧停控制 endpoint 与机器人 pose/电池；随后补 report/diagnostic 索引、相机帧、冷启动 IDLE→START 和 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。
