@@ -2,6 +2,16 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { newCommandId } from "../app/command-id.mjs";
 import { decodeOccupancyData, worldToMapPixel } from "../app/map-utils.mjs";
+import {
+  assetLabel,
+  categoryLabel,
+  commandErrorLabel,
+  missionStateLabel,
+  modelLabel,
+  riskLabel,
+  robotModeLabel,
+  scenarioLabel,
+} from "../app/ui-labels.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const page = await readFile(resolve(root, "app/page.js"), "utf8");
@@ -23,8 +33,14 @@ for (const socket of ["/ws/telemetry", "/ws/events", "/ws/camera"]) {
 for (const cameraContractTerm of ["metadataLength", "jpegLength", "64 + metadataLength + jpegLength", "binaryType = \"arraybuffer\""]) {
   if (!page.includes(cameraContractTerm)) throw new Error(`missing camera framing validation: ${cameraContractTerm}`);
 }
-if (!page.includes("Gateway 不可用") || !page.includes("生产权重已接入")) {
+if (!page.includes("数据服务不可用") || !page.includes("生产权重已接入")) {
   throw new Error("missing explicit degraded/production model state");
+}
+for (const labelHelper of ["assetLabel(", "categoryLabel(", "riskLabel(", "missionStateLabel(", "robotModeLabel(", "modelLabel("]) {
+  if (!page.includes(labelHelper)) throw new Error(`page does not use Chinese label helper: ${labelHelper}`);
+}
+for (const engineeringHeading of ["OPERATIONS /", "GAZEBO SCENARIO", "revision ${", "Gateway 不可用"]) {
+  if (page.includes(engineeringHeading)) throw new Error(`engineering copy remains visible: ${engineeringHeading}`);
 }
 if (page.includes("rosbridge") || page.includes("rclpy") || page.includes("/perception/detections")) {
   throw new Error("frontend must not connect to ROS DDS or production perception topic");
@@ -77,4 +93,24 @@ const pixel = worldToMapPixel({ x_m: 1, y_m: 2 }, {
   origin: { x_m: -1, y_m: -2 }, resolution_m: 0.5, width_cells: 10, height_cells: 12,
 });
 if (pixel.x !== 4 || pixel.y !== 4) throw new Error(`world/map transform failed: ${JSON.stringify(pixel)}`);
+
+const expectedLabels = [
+  [assetLabel("transformer-01"), "主变压器"],
+  [assetLabel("meter-pressure-01"), "压力表"],
+  [categoryLabel("lightning_arrester"), "避雷器"],
+  [categoryLabel("closed_blade_disconnect_switch"), "闭合刀闸隔离开关"],
+  [riskLabel("unknown"), "待评估"],
+  [riskLabel("emergency"), "紧急"],
+  [missionStateLabel("running"), "巡检中"],
+  [robotModeLabel("autonomous"), "自动巡检"],
+  [scenarioLabel("gas-high"), "气体浓度超限"],
+  [modelLabel("yolo11n_equipment"), "电力设备检测模型"],
+];
+for (const [actual, expected] of expectedLabels) {
+  if (actual !== expected) throw new Error(`Chinese UI label mismatch: ${actual} !== ${expected}`);
+}
+if (categoryLabel("future_device") !== "future_device") throw new Error("unknown category fallback changed");
+if (!commandErrorLabel("wait for no active goal and 0.5 seconds of zero velocity").includes("停止当前任务")) {
+  throw new Error("motion-safety error is not localized");
+}
 console.log(`frontend contract: PASS (${requiredViews.length} views, REST/WS boundary locked)`);
