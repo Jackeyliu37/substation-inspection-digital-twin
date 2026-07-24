@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { newCommandId } from "../app/command-id.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const page = await readFile(resolve(root, "app/page.js"), "utf8");
@@ -29,5 +30,25 @@ if (page.includes("rosbridge") || page.includes("rclpy") || page.includes("/perc
 }
 if (!css.includes("--accent") || !css.includes("grid-template-columns")) {
   throw new Error("missing control-center visual system");
+}
+
+const nativeId = "123e4567-e89b-42d3-a456-426614174000";
+if (newCommandId({ randomUUID: () => nativeId }) !== nativeId) {
+  throw new Error("native randomUUID path is not used when available");
+}
+const fallbackId = newCommandId({
+  getRandomValues(bytes) {
+    bytes.fill(0xab);
+    return bytes;
+  },
+});
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(fallbackId)) {
+  throw new Error(`HTTP-safe UUIDv4 fallback is invalid: ${fallbackId}`);
+}
+if (page.includes("crypto.randomUUID()") || !page.includes("newCommandId(globalThis.crypto)")) {
+  throw new Error("commands must use the HTTP-safe UUIDv4 helper");
+}
+if (!page.includes('reason: "operator web emergency stop"')) {
+  throw new Error("emergency stop must include its required audit reason");
 }
 console.log(`frontend contract: PASS (${requiredViews.length} views, REST/WS boundary locked)`);
