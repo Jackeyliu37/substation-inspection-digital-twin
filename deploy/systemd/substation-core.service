@@ -1,0 +1,24 @@
+[Unit]
+Description=Substation production ROS core
+After=substation-gazebo.service
+Requires=substation-gazebo.service
+
+[Service]
+Type=simple
+User=substation
+Group=substation
+WorkingDirectory=/opt/substation/current
+EnvironmentFile=/opt/substation/config/runtime.env
+Environment=ROS_LOCALHOST_ONLY=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/substation/current/scripts/deployment/substation-core
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/substation /var/log/substation
+
+[Install]
+WantedBy=multi-user.target

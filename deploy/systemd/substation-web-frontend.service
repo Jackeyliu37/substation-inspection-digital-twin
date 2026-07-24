@@ -8,6 +8,7 @@ Type=simple
 User=substation
 Group=substation
 WorkingDirectory=/opt/substation/current/web/frontend
+EnvironmentFile=/opt/substation/config/runtime.env
 Environment=NODE_ENV=production
 Environment=HOSTNAME=127.0.0.1
 Environment=ROS_LOCALHOST_ONLY=1

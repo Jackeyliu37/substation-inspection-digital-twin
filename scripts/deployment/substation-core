@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /opt/substation/current
+set +u
+source /opt/ros/jazzy/setup.bash
+source /opt/substation/current/install/setup.bash
+set -u
+unset DISPLAY
+export ROS_LOCALHOST_ONLY=1
+: "${SUBSTATION_RUN_ID:?SUBSTATION_RUN_ID is required}"
+
+deadline=$((SECONDS + 60))
+while ((SECONDS < deadline)); do
+  clock_type="$(ros2 topic type /clock 2>/dev/null || true)"
+  camera_type="$(ros2 topic type /camera/image_raw 2>/dev/null || true)"
+  if [[ "$clock_type" = "rosgraph_msgs/msg/Clock" \
+    && "$camera_type" = "sensor_msgs/msg/Image" ]]; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$(ros2 topic type /clock 2>/dev/null || true)" != "rosgraph_msgs/msg/Clock" \
+  || "$(ros2 topic type /camera/image_raw 2>/dev/null || true)" != "sensor_msgs/msg/Image" ]]; then
+  echo "substation-core: Gazebo readiness timeout" >&2
+  exit 1
+fi
+
+exec ros2 launch substation_mission production_core.launch.py \
+  run_id:="$SUBSTATION_RUN_ID"

@@ -68,3 +68,77 @@ def test_safe_stop_entrypoint_has_required_barriers() -> None:
     assert "nav2_active_goals" in script
     assert "cmd_vel_zero" in script
     assert "SHA256SUMS" in script
+
+
+def test_release_builder_requires_clean_commit_and_writes_sha_inventory() -> None:
+    script = read("scripts/deployment/build_release.sh")
+
+    assert "git status --porcelain" in script
+    assert "git archive" in script
+    assert "release-manifest.json" in script
+    assert "release-SHA256SUMS" in script
+    assert "colcon --log-base" in script
+    assert " build " in script
+    assert "run build" in script
+    assert ".venv" in script
+    assert ".venv-web" in script
+
+
+def test_root_installer_verifies_then_atomically_switches_current() -> None:
+    script = read("scripts/deployment/install_release.sh")
+
+    assert "EUID" in script
+    assert "sha256sum -c release-SHA256SUMS" in script
+    assert "/opt/substation/releases" in script
+    assert "useradd" in script
+    assert "systemctl daemon-reload" in script
+    assert "nginx -t" in script
+    assert "mv -T" in script
+    assert "/opt/substation/current" in script
+
+
+def test_five_service_units_form_a_loopback_only_dependency_chain() -> None:
+    units = {
+        name: read(f"deploy/systemd/{name}.service")
+        for name in (
+            "substation-gazebo",
+            "substation-core",
+            "substation-web-gateway",
+            "substation-web-frontend",
+            "substation-foxglove-bridge",
+        )
+    }
+
+    for source in units.values():
+        assert "ROS_LOCALHOST_ONLY=1" in source
+        assert "User=substation" in source
+    assert "DISPLAY" not in units["substation-gazebo"]
+    assert "substation-gazebo.service" in units["substation-core"]
+    assert "substation-core.service" in units["substation-web-gateway"]
+    assert "substation-web-gateway.service" in units["substation-web-frontend"]
+
+
+def test_service_wrappers_launch_production_graph_from_current_release() -> None:
+    gazebo = read("scripts/deployment/substation-gazebo")
+    core = read("scripts/deployment/substation-core")
+
+    for source in (gazebo, core):
+        assert "source /opt/ros/jazzy/setup.bash" in source
+        assert "source /opt/substation/current/install/setup.bash" in source
+        assert "ROS_LOCALHOST_ONLY=1" in source
+    assert "substation_navigation.launch.py" in gazebo
+    assert "production_core.launch.py" in core
+    assert "ros2 topic type /clock" in core
+    assert "ros2 topic type /camera/image_raw" in core
+    production_launch = read(
+        "ros2_ws/src/substation_mission/launch/production_core.launch.py"
+    )
+    for launch_name in (
+        "reporting.launch.py",
+        "substation_core.launch.py",
+        "inspection_executor.launch.py",
+        "production_perception.launch.py",
+    ):
+        assert launch_name in production_launch
+    setup = read("ros2_ws/src/substation_mission/setup.py")
+    assert '"launch/production_core.launch.py"' in setup

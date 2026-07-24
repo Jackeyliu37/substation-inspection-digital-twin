@@ -1,12 +1,13 @@
 [Unit]
 Description=Substation read-only Foxglove diagnostics bridge
-After=ros2.service
+After=substation-core.service
 
 [Service]
 Type=simple
 User=substation
 Group=substation
 WorkingDirectory=/opt/substation/current
+EnvironmentFile=/opt/substation/config/runtime.env
 Environment=ROS_LOCALHOST_ONLY=1
 ExecStart=/opt/ros/jazzy/bin/ros2 run foxglove_bridge foxglove_bridge --address 127.0.0.1 --port 8765
 Restart=on-failure

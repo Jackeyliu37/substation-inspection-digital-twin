@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /opt/substation/current
+set +u
+source /opt/ros/jazzy/setup.bash
+source /opt/substation/current/install/setup.bash
+set -u
+unset DISPLAY
+export ROS_LOCALHOST_ONLY=1
+: "${SUBSTATION_RUN_ID:?SUBSTATION_RUN_ID is required}"
+
+exec ros2 launch substation_gazebo substation_navigation.launch.py \
+  run_id:="$SUBSTATION_RUN_ID" \
+  gz_partition:="substation-production-$SUBSTATION_RUN_ID"

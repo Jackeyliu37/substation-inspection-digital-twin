@@ -13,6 +13,7 @@ setup(
         (f"share/{PACKAGE}/launch", [
             "launch/substation_core.launch.py",
             "launch/inspection_executor.launch.py",
+            "launch/production_core.launch.py",
         ]),
     ],
     install_requires=["setuptools"],

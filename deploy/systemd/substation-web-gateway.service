@@ -2,12 +2,14 @@
 Description=Substation FastAPI ROS Web Gateway
 After=network-online.target substation-core.service
 Wants=network-online.target
+Requires=substation-core.service
 
 [Service]
 Type=simple
 User=substation
 Group=substation
 WorkingDirectory=/opt/substation/current
+EnvironmentFile=/opt/substation/config/runtime.env
 Environment=ROS_LOCALHOST_ONLY=1
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/substation/current/scripts/deployment/substation-web-gateway --host 127.0.0.1 --port 8000
