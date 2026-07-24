@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { newCommandId } from "./command-id.mjs";
 import { decodeOccupancyData, worldToMapPixel } from "./map-utils.mjs";
 import {
@@ -12,6 +12,14 @@ import {
   zoomViewport,
 } from "./map-viewport.mjs";
 import { recoverySteps } from "./command-flow.mjs";
+import {
+  DEFAULT_TWIN_CAMERA,
+  normalizeTwinCamera,
+  orbitTwinCamera,
+  panTwinCamera,
+  twinCameraPosition,
+  zoomTwinCamera,
+} from "./twin-camera.mjs";
 import {
   assetLabel,
   categoryLabel,
@@ -33,6 +41,33 @@ const VIEWS = [
   ["scenario", "仿真场景", "场景"],
   ["reports", "巡检报告", "报告"],
   ["system", "系统状态", "系统"],
+];
+
+const MODEL_SHOWCASES = [
+  {
+    model: "yolo11n_safety",
+    name: "人员与安全风险检测",
+    purpose: "识别人员、安全帽、未佩戴安全帽、火焰和烟雾",
+    images: ["/model-showcase/safety-1.jpg", "/model-showcase/safety-2.jpg", "/model-showcase/safety-3.jpg"],
+  },
+  {
+    model: "yolo11n_equipment",
+    name: "电力设备检测",
+    purpose: "识别变压器、断路器、隔离开关、绝缘子等设备",
+    images: ["/model-showcase/equipment-1.jpg", "/model-showcase/equipment-2.jpg", "/model-showcase/equipment-3.jpg"],
+  },
+  {
+    model: "yolo11n_fault",
+    name: "设备缺陷分类",
+    purpose: "区分正常、锈蚀、部件破损和鸟巢异物",
+    images: ["/model-showcase/fault-1.jpg", "/model-showcase/fault-2.jpg", "/model-showcase/fault-3.jpg"],
+  },
+  {
+    model: "meter_locator",
+    name: "仪表定位检测",
+    purpose: "定位模拟仪表区域，为后续读数解析提供裁剪目标",
+    images: ["/model-showcase/meter-1.jpg", "/model-showcase/meter-2.jpg", "/model-showcase/meter-3.jpg"],
+  },
 ];
 
 const SNAPSHOT_ENDPOINTS = [
@@ -340,7 +375,7 @@ export default function HomePage() {
 
   const renderView = useMemo(() => ({
     dashboard: <Dashboard robot={robot} mission={mission} assets={assetItems} alerts={alertItems} events={events} onCommand={sendCommand} onRecover={recoverAutonomousInspection} disabled={controlsDisabled} />,
-    twin: <TwinView assets={assetItems} robot={robot} routeGoals={routeGoals} trail={trail} />,
+    twin: <TwinView assets={assetItems} robot={robot} routeGoals={routeGoals} trail={trail} scenario={scenario} />,
     map: <MapView robot={robot} map={map} assets={assetItems} mission={mission} />,
     risk: <RiskView assets={assetItems} alerts={alertItems} />,
     perception: <PerceptionView cameraUrl={cameraUrl} cameraMeta={cameraMeta} cameraFps={cameraFps} models={modelItems} />,
@@ -372,8 +407,90 @@ function Dashboard({ robot, mission, assets, alerts, events, onCommand, onRecove
   return <><div className="metric-grid"><Metric label="机器人模式" value={robotModeLabel(robot?.mode)} detail={robot?.current_task_id ? `任务 ${robot.current_task_id.slice(0, 8)}` : "机器人在线"} /><Metric label="电量" value={robot?.battery_percent != null ? `${robot.battery_percent.toFixed(0)}%` : "--"} detail={robot?.stale ? "位姿已过期" : "实时仿真电量"} /><Metric label="高风险资产" value={highRisk} detail={`${assets.length} 个孪生资产`} tone="warning" /><Metric label="风险事件" value={alerts.length} detail="当前运行事件流" tone="danger" /></div><div className="dashboard-grid"><section className="panel mission-panel"><PanelTitle title="巡检任务" action={mission?.route_id ? "默认巡检路线" : "等待路线"} /><div className="progress"><i style={{ width: `${Math.round((mission?.progress_0_1 ?? 0) * 100)}%` }} /></div><div className="mission-stats"><strong>{missionStateLabel(mission?.state ?? "idle")}</strong><span>{Math.round((mission?.progress_0_1 ?? 0) * 100)}% 完成</span></div><div className="operator-guide"><strong>人工验收</strong><span>点击主按钮后，机器人会解除安全锁定并沿十个设备目标自动巡检。请在地图或三维数字孪生中观察位置和轨迹变化。</span></div><div className="button-row"><button className="primary-action" onClick={onRecover} disabled={disabled || autonomousRunning}>{autonomousRunning ? "自动巡检运行中" : "恢复并开始自动巡检"}</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/pause", missionBody)} disabled={disabled || mission?.state !== "running"}>暂停</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/resume", missionBody)} disabled={disabled || mission?.state !== "paused"}>继续</button><button className="secondary" onClick={() => onCommand("/api/v1/missions/stop", missionBody)} disabled={disabled || !["ready", "running", "paused", "stopping"].includes(mission?.state)}>停止</button></div></section><section className="panel"><PanelTitle title="资产状态" action={`${assets.length} 个设备`} />{assets.length ? <AssetRows assets={assets.slice(0, 5)} /> : <EmptyState title="等待资产数据">数字孪生状态尚未到达。</EmptyState>}</section><section className="panel event-panel"><PanelTitle title="事件流" action="最近 50 条" />{events.length ? events.slice(0, 7).map((event, index) => <div className="event" key={`${event.type}-${index}`}><span className="event-dot" /><div><strong>{event.payload?.asset_id ? assetLabel(event.payload.asset_id) : eventLabel(event.type)}</strong><small>{event.timestamp ?? "实时事件"}</small></div></div>) : <EmptyState title="运行平稳">尚无新的风险或命令事件。</EmptyState>}</section></div></>;
 }
 
-function TwinView({ assets, robot, routeGoals, trail }) {
-  return <section className="panel twin-panel"><PanelTitle title="三维数字孪生" action={`${assets.length} 个设备 · 机器人${robot?.stale ? "位姿过期" : "在线"}`} /><div className="twin-stage"><Canvas camera={{ position: [12, 10, 14], fov: 48 }} dpr={[1, 1.5]}><color attach="background" args={["#071016"]} /><ambientLight intensity={1.35} /><directionalLight position={[6, 12, 4]} intensity={3.2} /><YardModel />{assets.map((asset) => <AssetModel key={asset.asset_id} asset={asset} />)}{routeGoals.map((goal, index) => <RouteMarker key={`${goal.x_m}-${goal.y_m}-${index}`} goal={goal} index={index} />)}{trail.filter((_, index) => index % 4 === 0).map((point, index) => <mesh key={`${point.x_m}-${point.y_m}-${index}`} position={[point.x_m, 0.08, -point.y_m]}><sphereGeometry args={[0.055, 8, 8]} /><meshStandardMaterial color="#5ad7bd" emissive="#174e43" /></mesh>)}{robot?.pose && <RobotModel robot={robot} />}</Canvas><div className="twin-legend"><strong>实时机器人坐标</strong><span><i className="legend-robot" />巡检机器人</span><span><i className="legend-route" />任务目标</span><span><i className="legend-risk" />高风险设备</span></div></div><div className="twin-summary">{assets.map((asset) => <span key={asset.asset_id}><b>{assetLabel(asset.asset_id)}</b>{asset.pose ? `${asset.pose.x_m.toFixed(1)}, ${asset.pose.y_m.toFixed(1)}` : "--"}</span>)}</div></section>;
+function TwinView({ assets, robot, routeGoals, trail, scenario }) {
+  const controlsRef = useRef(null);
+  const activeScenario = scenario?.active ? scenarioLabel(scenario.scenario_id) : "无异常场景";
+  return <section className="panel twin-panel"><PanelTitle title="三维数字孪生" action={`${assets.length} 个设备 · 机器人${robot?.stale ? "位姿过期" : "在线"}`} /><div className="twin-stage"><Canvas camera={{ position: [12, 10, 14], fov: 48 }} dpr={[1, 1.5]}><color attach="background" args={["#071016"]} /><ambientLight intensity={1.35} /><directionalLight position={[6, 12, 4]} intensity={3.2} /><TwinCameraControls controlsRef={controlsRef} /><YardModel />{assets.map((asset) => <AssetModel key={asset.asset_id} asset={asset} />)}{routeGoals.map((goal, index) => <RouteMarker key={`${goal.x_m}-${goal.y_m}-${index}`} goal={goal} index={index} />)}{trail.filter((_, index) => index % 4 === 0).map((point, index) => <mesh key={`${point.x_m}-${point.y_m}-${index}`} position={[point.x_m, 0.08, -point.y_m]}><sphereGeometry args={[0.055, 8, 8]} /><meshStandardMaterial color="#5ad7bd" emissive="#174e43" /></mesh>)}{robot?.pose && <RobotModel robot={robot} />}<ScenarioEffect scenario={scenario} /></Canvas><div className="twin-toolbar"><button onClick={() => controlsRef.current?.orbit(-0.28, 0)}>向左旋转</button><button onClick={() => controlsRef.current?.orbit(0.28, 0)}>向右旋转</button><button onClick={() => controlsRef.current?.zoom(0.82)}>放大</button><button onClick={() => controlsRef.current?.zoom(1.22)}>缩小</button><button onClick={() => controlsRef.current?.reset()}>复位视角</button></div><div className={`twin-scenario ${scenario?.active ? "active" : ""}`}><strong>当前仿真场景</strong><span>{activeScenario}</span></div><div className="twin-legend"><strong>三维操作</strong><span>左键拖动旋转</span><span>右键或 Shift+拖动平移</span><span>滚轮缩放 · 双击复位</span></div></div><div className="twin-summary">{assets.map((asset) => <span key={asset.asset_id}><b>{assetLabel(asset.asset_id)}</b>{asset.pose ? `${asset.pose.x_m.toFixed(1)}, ${asset.pose.y_m.toFixed(1)}` : "--"}</span>)}</div></section>;
+}
+
+function TwinCameraControls({ controlsRef }) {
+  const { camera, gl } = useThree();
+  const stateRef = useRef({ ...DEFAULT_TWIN_CAMERA });
+  const dragRef = useRef(null);
+  useEffect(() => {
+    const element = gl.domElement;
+    const apply = (next) => {
+      stateRef.current = normalizeTwinCamera(next);
+      const position = twinCameraPosition(stateRef.current);
+      camera.position.set(position.x, position.y, position.z);
+      camera.lookAt(stateRef.current.targetX, stateRef.current.targetY, stateRef.current.targetZ);
+      camera.updateProjectionMatrix();
+    };
+    const api = {
+      orbit: (yaw, pitch) => apply(orbitTwinCamera(stateRef.current, yaw, pitch)),
+      pan: (x, y) => apply(panTwinCamera(stateRef.current, x, y)),
+      zoom: (factor) => apply(zoomTwinCamera(stateRef.current, factor)),
+      reset: () => apply(DEFAULT_TWIN_CAMERA),
+    };
+    controlsRef.current = api;
+    const pointerDown = (event) => {
+      element.setPointerCapture(event.pointerId);
+      dragRef.current = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        mode: event.button === 2 || event.shiftKey ? "pan" : "orbit",
+      };
+    };
+    const pointerMove = (event) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      if (drag.mode === "pan") api.pan(-dx * 0.012, dy * 0.012);
+      else api.orbit(-dx * 0.006, -dy * 0.006);
+      dragRef.current = { ...drag, x: event.clientX, y: event.clientY };
+    };
+    const pointerUp = (event) => {
+      if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+      if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId);
+    };
+    const wheel = (event) => {
+      event.preventDefault();
+      api.zoom(Math.exp(event.deltaY * 0.001));
+    };
+    const contextMenu = (event) => event.preventDefault();
+    const reset = () => api.reset();
+    element.addEventListener("pointerdown", pointerDown);
+    element.addEventListener("pointermove", pointerMove);
+    element.addEventListener("pointerup", pointerUp);
+    element.addEventListener("pointercancel", pointerUp);
+    element.addEventListener("wheel", wheel, { passive: false });
+    element.addEventListener("contextmenu", contextMenu);
+    element.addEventListener("dblclick", reset);
+    apply(DEFAULT_TWIN_CAMERA);
+    return () => {
+      controlsRef.current = null;
+      element.removeEventListener("pointerdown", pointerDown);
+      element.removeEventListener("pointermove", pointerMove);
+      element.removeEventListener("pointerup", pointerUp);
+      element.removeEventListener("pointercancel", pointerUp);
+      element.removeEventListener("wheel", wheel);
+      element.removeEventListener("contextmenu", contextMenu);
+      element.removeEventListener("dblclick", reset);
+    };
+  }, [camera, controlsRef, gl]);
+  return null;
+}
+
+function ScenarioEffect({ scenario }) {
+  if (!scenario?.active) return null;
+  const id = scenario.scenario_id;
+  if (id === "ppe") return <group position={[0.4, 0, -0.4]}><mesh position={[0, .8, 0]}><capsuleGeometry args={[.18, .9, 6, 12]} /><meshStandardMaterial color="#f0a650" /></mesh><mesh position={[0, 1.55, 0]}><sphereGeometry args={[.22, 16, 12]} /><meshStandardMaterial color="#d9a075" /></mesh><pointLight position={[0, 1.4, 0]} color="#ffb04d" intensity={3} distance={3} /></group>;
+  if (id === "gas-high") return <group position={[5, 1.1, -3]}>{[[0, 0, 0], [.6, .25, .15], [-.55, .35, -.2], [.2, .75, -.25]].map((position, index) => <mesh key={index} position={position}><sphereGeometry args={[.75 - index * .07, 16, 12]} /><meshStandardMaterial color="#9be46f" emissive="#315e28" transparent opacity={.26} /></mesh>)}</group>;
+  if (id === "meter-limit") return <group position={[4, 1.2, -3]}><mesh><torusGeometry args={[.42, .08, 12, 32]} /><meshStandardMaterial color="#ffbc4d" emissive="#9c5e00" /></mesh><pointLight color="#ff9e32" intensity={5} distance={3} /></group>;
+  const fire = id === "fire-smoke" || id === "temperature-high" || id === "combined-risk-obstacle";
+  return <group>{fire && <group position={[4.5, .45, -3]}><mesh><coneGeometry args={[.35, 1.2, 14]} /><meshStandardMaterial color="#ff6b32" emissive="#a32d0a" /></mesh><pointLight position={[0, .8, 0]} color="#ff5c2d" intensity={6} distance={4} />{[[0, 1.1, 0], [.3, 1.6, -.1], [-.25, 2.05, .15]].map((position, index) => <mesh key={index} position={position}><sphereGeometry args={[.45 + index * .12, 14, 10]} /><meshStandardMaterial color="#7b8790" transparent opacity={.36 - index * .06} /></mesh>)}</group>}{id === "combined-risk-obstacle" && <mesh position={[1.5, .55, 0]}><boxGeometry args={[1.2, 1.1, 1.2]} /><meshStandardMaterial color="#d54c45" emissive="#66211d" /></mesh>}</group>;
 }
 
 function YardModel() {
@@ -414,7 +531,8 @@ function RouteMarker({ goal, index }) {
 }
 
 function MapView({ robot, map, assets, mission }) {
-  return <div className="map-layout"><section className="panel map-canvas"><PanelTitle title="占据地图与任务路线" action={map ? `地图版本 ${map.map_revision}` : "等待地图"} />{map ? <OccupancyMap map={map} robot={robot} assets={assets} mission={mission} /> : <EmptyState title="地图尚未到达">正在等待二维地图数据。</EmptyState>}</section><section className="panel navigation-panel"><PanelTitle title="导航状态" action={robot?.stale ? "位姿过期" : "实时位姿"} /><p>当前坐标：{robot?.pose ? `${robot.pose.x_m.toFixed(2)}, ${robot.pose.y_m.toFixed(2)} 米` : "--"}</p><p>线速度：{robot?.twist ? `${robot.twist.linear_x_m_s.toFixed(2)} 米/秒` : "--"}</p><p>机器人模式：{robotModeLabel(robot?.mode)}</p><p>当前任务：{robot?.current_task_id?.slice(0, 8) ?? "无"}</p><div className="map-key"><span><i className="key-free" />可通行</span><span><i className="key-wall" />障碍/围栏</span><span><i className="key-asset" />设备</span><span><i className="key-route" />巡检路线</span></div></section></div>;
+  const activeTask = Array.isArray(mission?.tasks) ? mission.tasks.find((task) => task.task_id === mission.active_task_id) : null;
+  return <div className="map-layout"><section className="panel map-canvas"><PanelTitle title="占据地图与任务路线" action={map ? `地图版本 ${map.map_revision}` : "等待地图"} />{map ? <OccupancyMap map={map} robot={robot} assets={assets} mission={mission} /> : <EmptyState title="地图尚未到达">正在等待二维地图数据。</EmptyState>}</section><section className="panel navigation-panel"><PanelTitle title="导航状态" action={robot?.stale ? "位姿过期" : "实时位姿"} /><p>当前坐标：{robot?.pose ? `${robot.pose.x_m.toFixed(2)}, ${robot.pose.y_m.toFixed(2)} 米` : "--"}</p><p>线速度：{robot?.twist ? `${robot.twist.linear_x_m_s.toFixed(2)} 米/秒` : "--"}</p><p>机器人模式：{robotModeLabel(robot?.mode)}</p><p>当前目标：{activeTask ? assetLabel(activeTask.asset_id) : "等待任务"}</p><div className="map-key"><span><i className="key-free" />可通行</span><span><i className="key-wall" />障碍/围栏</span><span><i className="key-asset" />设备编号</span><span><i className="key-route" />巡检路线</span></div><div className="map-device-index">{assets.map((asset, index) => <span key={asset.asset_id} className={asset.asset_id === activeTask?.asset_id ? "active" : ""}><b>{index + 1}</b>{assetLabel(asset.asset_id)}</span>)}</div></section></div>;
 }
 
 function OccupancyMap({ map, robot, assets, mission }) {
@@ -443,6 +561,8 @@ function OccupancyMap({ map, robot, assets, mission }) {
   const robotPixel = robot?.pose ? worldToMapPixel(robot.pose, map) : null;
   const goals = Array.isArray(mission?.tasks) ? mission.tasks.map((task) => worldToMapPixel(task.goal, map)).filter(Boolean) : [];
   const route = [robotPixel, ...goals].filter(Boolean).map((point) => `${point.x},${point.y}`).join(" ");
+  const activeTask = Array.isArray(mission?.tasks) ? mission.tasks.find((task) => task.task_id === mission.active_task_id) : null;
+  const activeGoal = activeTask?.goal ? worldToMapPixel(activeTask.goal, map) : null;
   const handleWheel = (event) => {
     event.preventDefault();
     setViewport((current) => zoomViewport(current, event.deltaY < 0 ? 1.2 : 1 / 1.2));
@@ -462,7 +582,7 @@ function OccupancyMap({ map, robot, assets, mission }) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const stopToolbarPointer = (event) => event.stopPropagation();
-  return <div className="occupancy-wrap" onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onDoubleClick={() => setViewport(DEFAULT_VIEWPORT)}><div className="map-transform-layer" style={{ transform: viewportTransform(viewport) }}><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="机器人、设备和任务路线叠加层">{route && <polyline points={route} className="route-line" />}{assets.map((asset) => { const point = asset.pose ? worldToMapPixel(asset.pose, map) : null; return point ? <g key={asset.asset_id}><circle cx={point.x} cy={point.y} r="3" className={`asset-point ${asset.risk?.level ?? "unknown"}`} /><text x={point.x + 4} y={point.y - 3}>{assetLabel(asset.asset_id)}</text></g> : null; })}{goals.map((point, index) => <g key={index}><circle cx={point.x} cy={point.y} r="4" className="goal-point" /><text x={point.x + 5} y={point.y - 4}>{index + 1}</text></g>)}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg></div><div className="map-toolbar" onPointerDown={stopToolbarPointer}><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 1.25))}>放大</button><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 0.8))}>缩小</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, -15))}>向左旋转</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, 15))}>向右旋转</button><button type="button" onClick={() => setViewport(DEFAULT_VIEWPORT)}>复位地图</button></div><span className="map-origin">每格 {map.resolution_m.toFixed(2)} 米 · {width}×{height} · {viewport.scale.toFixed(2)} 倍 · {viewport.rotation}°</span><span className="map-help">滚轮缩放 · 拖拽移动 · 双击复位</span></div>;
+  return <div className="occupancy-wrap" style={{ aspectRatio: `${width}/${height}` }} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onDoubleClick={() => setViewport(DEFAULT_VIEWPORT)}><div className="map-transform-layer" style={{ transform: viewportTransform(viewport) }}><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-label="机器人、设备和任务路线叠加层">{route && <polyline points={route} className="route-line" />}{assets.map((asset, index) => { const point = asset.pose ? worldToMapPixel(asset.pose, map) : null; return point ? <g key={asset.asset_id} className="asset-map-marker"><title>{`${index + 1}. ${assetLabel(asset.asset_id)}`}</title><circle cx={point.x} cy={point.y} r="5" className={`asset-point ${asset.risk?.level ?? "unknown"}`} /><text x={point.x} y={point.y + 2.3} textAnchor="middle">{index + 1}</text></g> : null; })}{activeGoal && <g className="active-goal-marker"><circle cx={activeGoal.x} cy={activeGoal.y} r="7" className="goal-point" /><circle cx={activeGoal.x} cy={activeGoal.y} r="10" className="goal-pulse" /></g>}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg></div><div className="map-toolbar" onPointerDown={stopToolbarPointer}><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 1.25))}>放大</button><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 0.8))}>缩小</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, -15))}>向左旋转</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, 15))}>向右旋转</button><button type="button" onClick={() => setViewport(DEFAULT_VIEWPORT)}>复位地图</button></div><span className="map-origin">每格 {map.resolution_m.toFixed(2)} 米 · {width}×{height} · {viewport.scale.toFixed(2)} 倍 · {viewport.rotation}°</span><span className="map-help">滚轮缩放 · 拖拽移动 · 双击复位</span></div>;
 }
 
 function RiskView({ assets, alerts }) {
@@ -470,7 +590,20 @@ function RiskView({ assets, alerts }) {
 }
 
 function PerceptionView({ cameraUrl, cameraMeta, cameraFps, models }) {
-  return <div className="perception-layout"><section className="panel camera-panel"><PanelTitle title="实时感知画面" action={cameraUrl ? `${cameraFps.toFixed(1)} 帧/秒 · 机器人相机` : "等待相机"} />{cameraUrl ? <><img className="camera-frame" src={cameraUrl} alt="机器人实时标注相机画面" /><div className="camera-meta"><span>{cameraMeta?.captured_at ?? "实时机器人相机帧"}</span><span>{cameraMeta?.annotated ? "已叠加检测结果" : "原始画面"}</span></div></> : <EmptyState title="等待第一帧">数据服务已连接，正在等待机器人相机画面。</EmptyState>}</section><section className="panel model-panel"><PanelTitle title="模型状态" action="生产权重已接入" />{models.length ? <div className="model-list">{models.map((model) => <div className={`model-card ${model.installed ? "installed" : "missing"}`} key={model.logical_model}><div><strong>{modelLabel(model.logical_model)}</strong><span>{model.installed ? "运行权重已安装" : "权重缺失"}</span></div><small>{model.logical_model}</small><small>验证指标：{model.best_metric != null ? Number(model.best_metric).toFixed(3) : "--"}</small><small>{model.classes?.length ?? 0} 个识别类别 · 校验码 {model.sha256?.slice(0, 10)}…</small>{model.threshold_waived && <em>已按项目决策接受阈值豁免</em>}</div>)}</div> : <EmptyState title="模型清单不可用">正在读取生产模型清单。</EmptyState>}</section></div>;
+  return <div className="perception-layout"><section className="panel camera-panel"><PanelTitle title="实时感知画面" action={cameraUrl ? `${cameraFps.toFixed(1)} 帧/秒 · 机器人相机` : "等待相机"} />{cameraUrl ? <><div className="camera-portrait"><img className="camera-frame camera-frame-rotated" src={cameraUrl} alt="左转九十度后的机器人实时标注相机画面" /></div><div className="camera-meta"><span>{cameraMeta?.captured_at ?? "实时机器人相机帧"}</span><span>{cameraMeta?.annotated ? "已叠加检测结果" : "原始画面"}</span></div></> : <EmptyState title="等待第一帧">数据服务已连接，正在等待机器人相机画面。</EmptyState>}</section><section className="panel model-panel"><PanelTitle title="模型状态" action="生产权重已接入" />{models.length ? <div className="model-list">{models.map((model) => <div className={`model-card ${model.installed ? "installed" : "missing"}`} key={model.logical_model}><div><strong>{modelLabel(model.logical_model)}</strong><span>{model.installed ? "运行权重已安装" : "权重缺失"}</span></div><small>{model.logical_model}</small><small>验证指标：{model.best_metric != null ? Number(model.best_metric).toFixed(3) : "--"}</small><small>{model.classes?.length ?? 0} 个识别类别 · 校验码 {model.sha256?.slice(0, 10)}…</small></div>)}</div> : <EmptyState title="模型清单不可用">正在读取生产模型清单。</EmptyState>}</section><ModelShowcase /></div>;
+}
+
+function ModelShowcase() {
+  return <section className="panel model-showcase-panel"><PanelTitle title="模型检测效果" action="训练测试集预测结果" /><div className="model-showcase-grid">{MODEL_SHOWCASES.map((showcase, index) => <ModelShowcaseCard key={showcase.model} showcase={showcase} delayOffset={index * 700} />)}</div></section>;
+}
+
+function ModelShowcaseCard({ showcase, delayOffset }) {
+  const [imageIndex, setImageIndex] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setImageIndex((current) => (current + 1) % showcase.images.length), 3600 + delayOffset);
+    return () => window.clearInterval(timer);
+  }, [delayOffset, showcase.images.length]);
+  return <article className="showcase-card"><header><div><strong>{showcase.name}</strong><span>{showcase.purpose}</span></div><small>{imageIndex + 1} / {showcase.images.length}</small></header><img src={showcase.images[imageIndex]} alt={`${showcase.name}测试集预测结果 ${imageIndex + 1}`} /><footer>{showcase.images.map((image, index) => <button key={image} className={index === imageIndex ? "active" : ""} onClick={() => setImageIndex(index)} aria-label={`查看第 ${index + 1} 张预测结果`} />)}</footer></article>;
 }
 
 function ScenarioView({ scenario, system, onCommand, disabled }) {

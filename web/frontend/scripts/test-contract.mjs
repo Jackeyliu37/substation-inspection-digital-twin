@@ -10,6 +10,13 @@ import {
   zoomViewport,
 } from "../app/map-viewport.mjs";
 import {
+  DEFAULT_TWIN_CAMERA,
+  orbitTwinCamera,
+  panTwinCamera,
+  twinCameraPosition,
+  zoomTwinCamera,
+} from "../app/twin-camera.mjs";
+import {
   needsAutonomousMode,
   needsMissionStart,
   needsMissionStop,
@@ -109,6 +116,30 @@ for (const implementationTerm of [
 for (const placeholder of ["production model unavailable", "地图数据将由 Gateway", "生产集成待定"]) {
   if (page.includes(placeholder)) throw new Error(`placeholder UI remains: ${placeholder}`);
 }
+for (const acceptanceFeature of [
+  "TwinCameraControls",
+  "ScenarioEffect",
+  "当前仿真场景",
+  "左键拖动旋转",
+  "右键或 Shift+拖动平移",
+  "ModelShowcase",
+  "模型检测效果",
+  "/model-showcase/safety-1.jpg",
+  "/model-showcase/equipment-1.jpg",
+  "/model-showcase/fault-1.jpg",
+  "/model-showcase/meter-1.jpg",
+]) {
+  if (!page.includes(acceptanceFeature)) throw new Error(`missing acceptance feature: ${acceptanceFeature}`);
+}
+if (page.includes("已按项目决策接受阈值豁免")) {
+  throw new Error("threshold waiver wording must not be shown in the product UI");
+}
+if (page.includes('<text x={point.x + 4}')) {
+  throw new Error("full asset labels must not clutter the occupancy map");
+}
+for (const visualStyle of ["aspect-ratio:", "rotate(-90deg)", ".model-showcase-grid", ".twin-toolbar"]) {
+  if (!css.includes(visualStyle)) throw new Error(`missing acceptance visual style: ${visualStyle}`);
+}
 
 const decoded = decodeOccupancyData("/wAyZA==", 4, 1);
 if (decoded.length !== 4 || decoded[0] !== -1 || decoded[1] !== 0 || decoded[2] !== 50 || decoded[3] !== 100) {
@@ -117,7 +148,7 @@ if (decoded.length !== 4 || decoded[0] !== -1 || decoded[1] !== 0 || decoded[2] 
 const pixel = worldToMapPixel({ x_m: 1, y_m: 2 }, {
   origin: { x_m: -1, y_m: -2 }, resolution_m: 0.5, width_cells: 10, height_cells: 12,
 });
-if (pixel.x !== 4 || pixel.y !== 4) throw new Error(`world/map transform failed: ${JSON.stringify(pixel)}`);
+if (pixel.x !== 4 || pixel.y !== 3) throw new Error(`world/map transform failed: ${JSON.stringify(pixel)}`);
 
 const expectedLabels = [
   [assetLabel("transformer-01"), "主变压器"],
@@ -148,6 +179,18 @@ const rotated = rotateViewport(DEFAULT_VIEWPORT, 15);
 if (rotated.rotation !== 15) throw new Error(`map rotation failed: ${rotated.rotation}`);
 if (viewportTransform({ scale: 2, x: 18, y: -7, rotation: 15 }) !== "translate(18px, -7px) rotate(15deg) scale(2)") {
   throw new Error("map CSS transform is not deterministic");
+}
+const twinRotated = orbitTwinCamera(DEFAULT_TWIN_CAMERA, 0.25, -0.1);
+if (twinRotated.yaw !== DEFAULT_TWIN_CAMERA.yaw + 0.25 || twinRotated.pitch !== DEFAULT_TWIN_CAMERA.pitch - 0.1) {
+  throw new Error(`twin orbit transform failed: ${JSON.stringify(twinRotated)}`);
+}
+const twinZoomed = zoomTwinCamera(DEFAULT_TWIN_CAMERA, 0.01);
+if (twinZoomed.distance !== 5) throw new Error(`twin zoom clamp failed: ${twinZoomed.distance}`);
+const twinPanned = panTwinCamera(DEFAULT_TWIN_CAMERA, 1, 0.5);
+if (twinPanned.targetY !== 0.5 || twinPanned.targetX === 0) throw new Error(`twin pan failed: ${JSON.stringify(twinPanned)}`);
+const twinPosition = twinCameraPosition(DEFAULT_TWIN_CAMERA);
+if (![twinPosition.x, twinPosition.y, twinPosition.z].every(Number.isFinite)) {
+  throw new Error(`twin camera position is invalid: ${JSON.stringify(twinPosition)}`);
 }
 const latched = { mode: "estop", emergency_stop: { latched: true } };
 const manual = { mode: "manual", emergency_stop: { latched: false } };

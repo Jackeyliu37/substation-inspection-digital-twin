@@ -23,6 +23,6 @@ export function worldToMapPixel(point, map) {
   }
   return {
     x: (Number(point.x_m) - originX) / resolution,
-    y: height - (Number(point.y_m) - originY) / resolution,
+    y: height - 1 - (Number(point.y_m) - originY) / resolution,
   };
 }
