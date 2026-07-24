@@ -16,11 +16,15 @@ from typing import Any
 
 from diagnostic_msgs.msg import DiagnosticArray
 from map_msgs.msg import OccupancyGridUpdate
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
+from sensor_msgs.msg import BatteryState
 from substation_interfaces.msg import (
     AssetRiskArray,
     InspectionTaskArray,
@@ -39,6 +43,7 @@ from substation_interfaces.srv import (
     ResetEmergencyStop,
     SetRobotMode,
 )
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from .app import GatewayState, _utc_now
 
@@ -55,6 +60,51 @@ _RISK_LEVELS = ("normal", "attention", "alert", "emergency")
 
 def _yaw(x: float, y: float, z: float, w: float) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _normalized_quaternion(
+    x: float, y: float, z: float, w: float
+) -> tuple[float, float, float, float] | None:
+    values = tuple(float(value) for value in (x, y, z, w))
+    if not all(math.isfinite(value) for value in values):
+        return None
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm <= 1e-12:
+        return None
+    return tuple(value / norm for value in values)
+
+
+def _quaternion_multiply(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    lx, ly, lz, lw = left
+    rx, ry, rz, rw = right
+    return (
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+        lw * rw - lx * rx - ly * ry - lz * rz,
+    )
+
+
+def _rotate_vector(
+    rotation: tuple[float, float, float, float],
+    vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    x, y, z, w = rotation
+    vx, vy, vz = vector
+    dot_uv = x * vx + y * vy + z * vz
+    dot_uu = x * x + y * y + z * z
+    cross_x = y * vz - z * vy
+    cross_y = z * vx - x * vz
+    cross_z = x * vy - y * vx
+    scale = w * w - dot_uu
+    return (
+        2.0 * dot_uv * x + scale * vx + 2.0 * w * cross_x,
+        2.0 * dot_uv * y + scale * vy + 2.0 * w * cross_y,
+        2.0 * dot_uv * z + scale * vz + 2.0 * w * cross_z,
+    )
 
 
 def _optional_float(value: str) -> float | None:
@@ -84,10 +134,12 @@ class RosStateProjector:
         self._risk_revision = 0
         self._robot_mode = InspectionTaskArray.MODE_AUTONOMOUS
         self._emergency_stop_latched = False
+        self._latch_revision = 0
         self._time_mapping: dict[str, Any] | None = None
         self._map_bytes: bytearray | None = None
         self._map_width = 0
         self._map_height = 0
+        self._battery_percent: float | None = None
 
     def _bump(self) -> None:
         self.state.snapshot_revision += 1
@@ -272,11 +324,138 @@ class RosStateProjector:
         self.state.system["emergency_stop_latched"] = bool(message.emergency_stop_latched)
         self._robot_mode = int(message.robot_mode)
         self._emergency_stop_latched = bool(message.emergency_stop_latched)
+        self._latch_revision = int(message.emergency_stop_latch_revision)
+        self._sync_robot_mission_fields(self._latch_revision)
         self.state.ready_dependencies["mission"] = True
         if self._command_observer is not None and message.transition_command_id:
             self._command_observer(message.transition_command_id, mission, self.state.run_id)
         self._refresh_overall()
         self._bump()
+        return True
+
+    def _sync_robot_mission_fields(self, latch_revision: int) -> None:
+        if self.state.robot is None:
+            return
+        self.state.robot["mode"] = _ROBOT_MODES[self._robot_mode]
+        self.state.robot["emergency_stop"] = {
+            "latched": self._emergency_stop_latched,
+            "latch_revision": str(latch_revision),
+        }
+        self.state.robot["current_mission_id"] = self.state.mission["mission_id"]
+        self.state.robot["current_task_id"] = self.state.mission["active_task_id"]
+
+    def on_odom(self, message: Odometry, map_from_odom: Any) -> bool:
+        if message.header.frame_id != "odom" or message.child_frame_id != "base_footprint":
+            return False
+        pose = message.pose.pose
+        twist = message.twist.twist
+        translation = map_from_odom.transform.translation
+        transform_rotation = map_from_odom.transform.rotation
+        numeric_values = (
+            pose.position.x,
+            pose.position.y,
+            pose.position.z,
+            translation.x,
+            translation.y,
+            translation.z,
+            twist.linear.x,
+            twist.linear.y,
+            twist.angular.z,
+        )
+        if not all(math.isfinite(float(value)) for value in numeric_values):
+            return False
+        map_rotation = _normalized_quaternion(
+            transform_rotation.x,
+            transform_rotation.y,
+            transform_rotation.z,
+            transform_rotation.w,
+        )
+        odom_rotation = _normalized_quaternion(
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+        if map_rotation is None or odom_rotation is None:
+            return False
+        rotated = _rotate_vector(
+            map_rotation,
+            (float(pose.position.x), float(pose.position.y), float(pose.position.z)),
+        )
+        orientation = _normalized_quaternion(
+            *_quaternion_multiply(map_rotation, odom_rotation)
+        )
+        if orientation is None:
+            return False
+        qx, qy, qz, qw = orientation
+        robot = {
+            "frame_id": "map",
+            "pose": {
+                "x_m": rotated[0] + float(translation.x),
+                "y_m": rotated[1] + float(translation.y),
+                "z_m": rotated[2] + float(translation.z),
+                "qx": qx,
+                "qy": qy,
+                "qz": qz,
+                "qw": qw,
+            },
+            "twist": {
+                "linear_x_m_s": float(twist.linear.x),
+                "linear_y_m_s": float(twist.linear.y),
+                "angular_z_rad_s": float(twist.angular.z),
+            },
+            "battery_percent": self._battery_percent,
+            "mode": _ROBOT_MODES[self._robot_mode],
+            "stale": False,
+            "emergency_stop": {
+                "latched": self._emergency_stop_latched,
+                "latch_revision": str(self._latch_revision),
+            },
+            "current_mission_id": self.state.mission["mission_id"],
+            "current_task_id": self.state.mission["active_task_id"],
+            "source_ros_time": {
+                "sec": int(message.header.stamp.sec),
+                "nanosec": int(message.header.stamp.nanosec),
+            },
+        }
+        if robot == self.state.robot:
+            return True
+        self.state.robot = robot
+        self._bump()
+        return True
+
+    def update_robot_staleness(self, now_sec: int, now_nanosec: int) -> bool:
+        if self.state.robot is None:
+            return False
+        source = self.state.robot["source_ros_time"]
+        age_ns = (
+            (int(now_sec) - int(source["sec"])) * 1_000_000_000
+            + int(now_nanosec)
+            - int(source["nanosec"])
+        )
+        stale = age_ns > 500_000_000 or age_ns < -20_000_000
+        if bool(self.state.robot["stale"]) == stale:
+            return True
+        self.state.robot["stale"] = stale
+        self._bump()
+        return True
+
+    def on_battery(self, message: BatteryState) -> bool:
+        percentage = float(message.percentage)
+        if (
+            message.header.frame_id != "base_link"
+            or not math.isfinite(percentage)
+            or percentage < 0.0
+            or percentage > 1.0
+        ):
+            return False
+        battery_percent = _float32(percentage * 100.0)
+        if battery_percent == self._battery_percent:
+            return True
+        self._battery_percent = battery_percent
+        if self.state.robot is not None:
+            self.state.robot["battery_percent"] = battery_percent
+            self._bump()
         return True
 
     def on_twin(self, message: DiagnosticArray) -> bool:
@@ -490,7 +669,11 @@ class RosGatewayNode(Node):
     """Live ROS subscriptions and reporting-readiness clients."""
 
     def __init__(self, state: GatewayState, *, context=None, command_observer=None) -> None:
-        super().__init__("web_gateway", context=context)
+        super().__init__(
+            "web_gateway",
+            context=context,
+            parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+        )
         self.projector = RosStateProjector(state, command_observer=command_observer)
         self._mapping_query_inflight = False
         self._mapping_record_inflight = False
@@ -511,6 +694,34 @@ class RosGatewayNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        q_sensor = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=5,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        q_stream = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        q_tf = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        q_tf_static = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._tf_buffer = Buffer(node=self)
+        self._tf_listener = TransformListener(
+            self._tf_buffer,
+            self,
+            spin_thread=False,
+            qos=q_tf,
+            static_qos=q_tf_static,
+        )
         self.create_subscription(RunContext, "/system/run_context", self._on_context, q_state)
         self.create_subscription(DiagnosticArray, "/digital_twin/assets", self.projector.on_twin, q_state)
         self.create_subscription(AssetRiskArray, "/risk/assets", self.projector.on_risk, q_state)
@@ -523,6 +734,8 @@ class RosGatewayNode(Node):
             OccupancyGridUpdate, "/map_updates", self.projector.on_map_update, q_event
         )
         self.create_subscription(DiagnosticArray, "/diagnostics", self.projector.on_diagnostics, q_event)
+        self.create_subscription(Odometry, "/odom", self._on_odom, q_sensor)
+        self.create_subscription(BatteryState, "/battery_state", self.projector.on_battery, q_stream)
         self._query_mapping = self.create_client(
             QueryRunTimeMapping, "/reporting/query_run_time_mapping"
         )
@@ -549,7 +762,9 @@ class RosGatewayNode(Node):
         self._read_evidence = self.create_client(
             ReadEvidenceChunk, "/reporting/read_evidence_chunk"
         )
-        self.create_timer(1.0, self._poll)
+        # Readiness and dependency polling must continue while simulation time is
+        # paused or before /clock starts; only pose freshness uses ROS time.
+        self.create_timer(1.0, self._poll, clock=Clock(clock_type=ClockType.STEADY_TIME))
 
     @staticmethod
     def _wait_for_service_future(future, timeout_s: float) -> Any | None:
@@ -698,6 +913,13 @@ class RosGatewayNode(Node):
     def dispatch_manual_velocity(
         self, *, command_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
+        robot = self.projector.state.robot
+        if robot is None or bool(robot.get("stale", True)):
+            return {
+                "accepted": False,
+                "error_code": "ROBOT_STATE_UNAVAILABLE",
+                "error_message": "A fresh validated robot pose is required.",
+            }
         context = self.projector._context
         if (
             context is None
@@ -836,6 +1058,17 @@ class RosGatewayNode(Node):
         if message.lifecycle == RunContext.LIFECYCLE_ACTIVE:
             self._ensure_time_mapping(message)
 
+    def _on_odom(self, message: Odometry) -> None:
+        if message.header.frame_id != "odom" or message.child_frame_id != "base_footprint":
+            return
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                "map", "odom", Time.from_msg(message.header.stamp)
+            )
+        except TransformException:
+            return
+        self.projector.on_odom(message, transform)
+
     def _ensure_time_mapping(self, message: RunContext) -> None:
         if self._mapping_query_inflight or not self._query_mapping.service_is_ready():
             return
@@ -900,6 +1133,8 @@ class RosGatewayNode(Node):
             nav2=bool(nodes & {"bt_navigator", "controller_server", "planner_server"})
             or "/navigate_to_pose/_action/status" in topics,
         )
+        now = self.get_clock().now().to_msg()
+        self.projector.update_robot_staleness(now.sec, now.nanosec)
         context = self.projector._context
         if context is not None and context.lifecycle == RunContext.LIFECYCLE_ACTIVE:
             self._ensure_time_mapping(context)

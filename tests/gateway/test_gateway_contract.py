@@ -610,7 +610,7 @@ def test_manual_velocity_dispatches_bounded_request_to_ros_adapter() -> None:
             calls.append((command_id, payload))
             return {"accepted": True, "error_code": "", "error_message": ""}
 
-    app = create_app(adapter=Adapter())
+    app = create_app(state=GatewayState(robot={"stale": False}), adapter=Adapter())
     status, _, accepted = _http(
         app,
         "POST",
@@ -641,6 +641,34 @@ def test_manual_velocity_dispatches_bounded_request_to_ros_adapter() -> None:
     )
     assert status == 422
     assert problem["code"] == "VELOCITY_LIMIT_EXCEEDED"
+
+
+def test_manual_velocity_rejects_missing_or_stale_robot_pose_before_ros_dispatch() -> None:
+    calls = []
+
+    class Adapter:
+        def dispatch_manual_velocity(self, *, command_id, payload):
+            calls.append((command_id, payload))
+            return {"accepted": True, "error_code": "", "error_message": ""}
+
+    payload = json.dumps({
+        "linear_x_m_s": 0.1,
+        "angular_z_rad_s": 0.0,
+        "deadman": True,
+        "duration_s": 0.15,
+    }).encode()
+    for robot in (None, {"stale": True}):
+        app = create_app(state=GatewayState(robot=robot), adapter=Adapter())
+        status, _, problem = _http(
+            app,
+            "POST",
+            "/api/v1/robot/manual-velocity",
+            headers=(("Content-Type", "application/json"), ("Idempotency-Key", str(uuid.uuid4()))),
+            body=payload,
+        )
+        assert status == 503
+        assert problem["code"] == "ROBOT_STATE_UNAVAILABLE"
+    assert calls == []
 
 
 def test_telemetry_requires_substation_v1_and_emits_open_envelope():

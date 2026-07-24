@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sys
 import threading
@@ -11,13 +13,17 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_g
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import String
+import pytest
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
 from substation_interfaces.msg import (
     AssetRisk,
     AssetRiskArray,
@@ -27,12 +33,42 @@ from substation_interfaces.msg import (
 )
 from substation_interfaces.srv import GetReportingReadiness, ManageMission, QueryRunTimeMapping
 
-from substation_web_gateway.app import GatewayState
+from substation_web_gateway.app import GatewayState, create_app
 from substation_web_gateway.ros_adapter import RosGatewayAdapter, RosGatewayNode, RosStateProjector
 
 
 RUN_ID = "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f"
 MISSION_ID = "0c5efce1-655b-413d-9847-da203fb5ca5e"
+
+
+def _http_get(app, path: str):
+    async def invoke():
+        sent = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("test", 1234),
+            "server": ("test", 80),
+            "scheme": "http",
+        }
+        await app(scope, receive, send)
+        start = next(item for item in sent if item["type"] == "http.response.start")
+        body = b"".join(item.get("body", b"") for item in sent if item["type"] == "http.response.body")
+        return start["status"], json.loads(body)
+
+    return asyncio.run(invoke())
 
 
 def _run_context(run_id: str = RUN_ID) -> RunContext:
@@ -190,6 +226,103 @@ def test_matching_mission_transition_notifies_command_terminal_observer() -> Non
     assert observed == [(mission.transition_command_id, "paused", RUN_ID)]
 
 
+def test_odom_requires_map_transform_and_battery_is_exposed_as_percent() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    odom = Odometry()
+    odom.header.frame_id = "odom"
+    odom.child_frame_id = "base_footprint"
+    odom.header.stamp.sec = 123
+    odom.pose.pose.position.x = 1.0
+    odom.pose.pose.position.y = 2.0
+    odom.pose.pose.orientation.w = 1.0
+    transform = type("Transform", (), {})()
+    transform.transform = type("Stamped", (), {})()
+    transform.transform.translation = type("Translation", (), {"x": 10.0, "y": -1.0, "z": 0.0})()
+    transform.transform.rotation = type("Rotation", (), {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0})()
+
+    assert projection.on_odom(odom, transform) is True
+    battery = BatteryState()
+    battery.header.frame_id = "base_link"
+    battery.percentage = 0.87
+    assert projection.on_battery(battery) is True
+    assert state.robot["frame_id"] == "map"
+    assert state.robot["pose"]["x_m"] == 11.0
+    assert state.robot["pose"]["y_m"] == 1.0
+    assert state.robot["battery_percent"] == 87.0
+
+    invalid = Odometry()
+    invalid.header.frame_id = "base_link"
+    invalid.child_frame_id = "base_footprint"
+    assert projection.on_odom(invalid, transform) is False
+
+    invalid_battery = BatteryState()
+    invalid_battery.header.frame_id = "odom"
+    invalid_battery.percentage = 0.5
+    assert projection.on_battery(invalid_battery) is False
+
+
+def test_odom_pose_is_rotated_and_composed_with_exact_map_transform() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    odom = Odometry()
+    odom.header.frame_id = "odom"
+    odom.child_frame_id = "base_footprint"
+    odom.header.stamp.sec = 123
+    odom.header.stamp.nanosec = 450_000_000
+    odom.pose.pose.position.x = 1.0
+    odom.pose.pose.orientation.w = 1.0
+    transform = type("Transform", (), {})()
+    transform.transform = type("Stamped", (), {})()
+    transform.transform.translation = type(
+        "Translation", (), {"x": 10.0, "y": -1.0, "z": 0.0}
+    )()
+    transform.transform.rotation = type(
+        "Rotation", (), {"x": 0.0, "y": 0.0, "z": 2**-0.5, "w": 2**-0.5}
+    )()
+
+    assert projection.on_odom(odom, transform) is True
+    assert state.robot is not None
+    assert state.robot["pose"]["x_m"] == pytest.approx(10.0)
+    assert state.robot["pose"]["y_m"] == pytest.approx(0.0)
+    assert state.robot["pose"]["qz"] == pytest.approx(2**-0.5)
+    assert state.robot["pose"]["qw"] == pytest.approx(2**-0.5)
+    assert state.robot["source_ros_time"] == {"sec": 123, "nanosec": 450_000_000}
+
+    revision = state.snapshot_revision
+    assert projection.update_robot_staleness(123, 950_000_001) is True
+    assert state.robot["stale"] is True
+    assert state.snapshot_revision == revision + 1
+    assert projection.update_robot_staleness(123, 960_000_000) is True
+    assert state.snapshot_revision == revision + 1
+
+
+def test_mission_snapshot_updates_robot_mode_latch_and_active_task_atomically() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    odom = Odometry()
+    odom.header.frame_id = "odom"
+    odom.child_frame_id = "base_footprint"
+    odom.pose.pose.orientation.w = 1.0
+    transform = type("Transform", (), {})()
+    transform.transform = type("Stamped", (), {})()
+    transform.transform.translation = type("Translation", (), {"x": 0.0, "y": 0.0, "z": 0.0})()
+    transform.transform.rotation = type("Rotation", (), {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0})()
+    assert projection.on_odom(odom, transform) is True
+    projection.on_run_context(_run_context())
+    mission = _mission()
+    mission.robot_mode = InspectionTaskArray.MODE_ESTOP
+    mission.emergency_stop_latched = True
+    mission.emergency_stop_latch_revision = 19
+
+    assert projection.on_mission(mission) is True
+    assert state.robot is not None
+    assert state.robot["mode"] == "estop"
+    assert state.robot["emergency_stop"] == {"latched": True, "latch_revision": "19"}
+    assert state.robot["current_mission_id"] == MISSION_ID
+    assert state.robot["current_task_id"] == mission.active_task_id
+
+
 def test_projection_builds_web_snapshots_without_inventing_domain_state() -> None:
     state = GatewayState()
     projection = RosStateProjector(state)
@@ -297,6 +430,27 @@ def test_runtime_adapter_starts_and_stops_its_private_ros_context() -> None:
     assert adapter._thread is None
 
 
+def test_ros_manual_velocity_rechecks_fresh_pose_at_publish_boundary() -> None:
+    context = Context()
+    rclpy.init(context=context)
+    state = GatewayState(robot={"stale": True})
+    gateway = RosGatewayNode(state, context=context)
+    gateway.projector.on_run_context(_run_context())
+    mission = _mission()
+    mission.robot_mode = InspectionTaskArray.MODE_MANUAL
+    gateway.projector.on_mission(mission)
+    try:
+        result = gateway.dispatch_manual_velocity(
+            command_id="8d0fa612-997d-430e-8dd0-9f35fc1e129b",
+            payload={"linear_x_m_s": 0.1, "angular_z_rad_s": 0.0, "duration_s": 0.15},
+        )
+        assert result["accepted"] is False
+        assert result["error_code"] == "ROBOT_STATE_UNAVAILABLE"
+    finally:
+        gateway.destroy_node()
+        context.shutdown()
+
+
 def test_live_ros_node_reaches_ready_only_from_real_topics_and_services() -> None:
     context = Context()
     rclpy.init(context=context)
@@ -382,6 +536,75 @@ def test_live_ros_node_reaches_ready_only_from_real_topics_and_services() -> Non
         worker.join(timeout=0.1)
         assert result["accepted"] is True
         assert result["state_revision"] == 64
+    finally:
+        executor.remove_node(gateway)
+        executor.remove_node(source)
+        gateway.destroy_node()
+        source.destroy_node()
+        executor.shutdown()
+        context.shutdown()
+
+
+def test_live_odom_tf_and_battery_are_exposed_by_robot_state_endpoint() -> None:
+    context = Context()
+    rclpy.init(context=context)
+    source = Node("robot_state_test_source", context=context)
+    state = GatewayState()
+    gateway = RosGatewayNode(state, context=context)
+    executor = SingleThreadedExecutor(context=context)
+    executor.add_node(source)
+    executor.add_node(gateway)
+    sensor_qos = QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=5,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+    stream_qos = QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+    odom_pub = source.create_publisher(Odometry, "/odom", sensor_qos)
+    battery_pub = source.create_publisher(BatteryState, "/battery_state", stream_qos)
+    tf_broadcaster = TransformBroadcaster(source)
+    stamp = rclpy.time.Time(seconds=123, nanoseconds=450_000_000).to_msg()
+    transform = TransformStamped()
+    transform.header.stamp = stamp
+    transform.header.frame_id = "map"
+    transform.child_frame_id = "odom"
+    transform.transform.translation.x = 5.0
+    transform.transform.translation.y = 6.0
+    transform.transform.rotation.w = 1.0
+    odom = Odometry()
+    odom.header.stamp = stamp
+    odom.header.frame_id = "odom"
+    odom.child_frame_id = "base_footprint"
+    odom.pose.pose.position.x = 1.0
+    odom.pose.pose.position.y = 2.0
+    odom.pose.pose.orientation.w = 1.0
+    battery = BatteryState()
+    battery.header.frame_id = "base_link"
+    battery.percentage = 0.87
+
+    try:
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline and (
+            state.robot is None or state.robot.get("battery_percent") is None
+        ):
+            tf_broadcaster.sendTransform(transform)
+            odom_pub.publish(odom)
+            battery_pub.publish(battery)
+            executor.spin_once(timeout_sec=0.05)
+        assert state.robot is not None
+        assert state.robot["pose"]["x_m"] == pytest.approx(6.0)
+        assert state.robot["pose"]["y_m"] == pytest.approx(8.0)
+        assert state.robot["battery_percent"] == 87.0
+        status, body = _http_get(create_app(state=state), "/api/v1/robot/state")
+        assert status == 200
+        assert body["data"]["frame_id"] == "map"
+        assert body["data"]["battery_percent"] == 87.0
     finally:
         executor.remove_node(gateway)
         executor.remove_node(source)

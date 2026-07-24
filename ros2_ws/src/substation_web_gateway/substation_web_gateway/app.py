@@ -362,6 +362,7 @@ def create_app(
         adapter_method: str,
         unavailable_code: str,
         allowed_fields: set[str],
+        require_fresh_robot: bool = False,
     ) -> Response:
         if not request.headers.get("content-type", "").lower().startswith("application/json"):
             return _problem(request, 415, "UNSUPPORTED_MEDIA_TYPE", "Requests must use application/json.")
@@ -389,6 +390,15 @@ def create_app(
                 json.loads(existing["response_json"]),
                 status_code=existing["response_status"],
                 headers={"Idempotent-Replayed": "true", "Cache-Control": "no-store"},
+            )
+        if require_fresh_robot and (
+            state.robot is None or bool(state.robot.get("stale", True))
+        ):
+            return _problem(
+                request,
+                503,
+                "ROBOT_STATE_UNAVAILABLE",
+                "A fresh validated robot pose is required.",
             )
         if adapter is None or not hasattr(adapter, adapter_method):
             return _problem(request, 503, unavailable_code, "The required ROS Service is unavailable.")
@@ -856,6 +866,7 @@ def create_app(
             adapter_method="dispatch_manual_velocity",
             unavailable_code="ROBOT_STATE_UNAVAILABLE",
             allowed_fields={"linear_x_m_s", "angular_z_rad_s", "deadman", "duration_s"},
+            require_fresh_robot=True,
         )
 
     @app.websocket("/ws/telemetry")
