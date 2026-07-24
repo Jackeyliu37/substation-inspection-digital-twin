@@ -34,3 +34,24 @@ def test_twin_merges_environment_measurements_into_asset_snapshot() -> None:
     assert values["smoke_0_1"] == "0.7"
     assert values["gas_ppm"] == "180.0"
     assert values["run_id"] == "run-1"
+
+
+def test_active_snapshot_contains_registered_assets_without_measurements() -> None:
+    twin = TwinTelemetry({
+        "transformer-01": ("power_transformer", (4.0, 3.0, 0.0)),
+        "breaker-01": ("breaker", (0.5, 3.5, 0.0)),
+    })
+    twin.apply(
+        measurement("value_celsius", "25.0"),
+        "temperature_celsius",
+        "value_celsius",
+        "run-1",
+    )
+
+    snapshot = twin.snapshot("run-1")
+
+    assert [status.name for status in snapshot.status] == ["breaker-01", "transformer-01"]
+    breaker = {item.key: item.value for item in snapshot.status[0].values}
+    assert breaker["category"] == "breaker"
+    assert breaker["temperature_celsius"] == ""
+    assert breaker["run_id"] == "run-1"

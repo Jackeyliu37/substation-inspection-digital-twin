@@ -54,11 +54,7 @@ class TwinTelemetry:
         output.header.frame_id = "map"
         for asset_id in sorted(self._assets):
             telemetry = self._telemetry[asset_id]
-            if not run_id or not any((
-                telemetry.temperature_celsius is not None,
-                telemetry.smoke_0_1 is not None,
-                telemetry.gas_ppm is not None,
-            )):
+            if not run_id:
                 continue
             category, pose = self._assets[asset_id]
             values = {

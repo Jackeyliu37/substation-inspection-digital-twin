@@ -1,6 +1,21 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+
+
+def build_runtime_state(
+    manifest_path: str | Path = "/opt/substation/current/models/manifest.yaml",
+    production_root: str | Path = "/var/lib/substation/models/production",
+):
+    from .app import GatewayState, load_production_models
+
+    manifest = Path(manifest_path)
+    return GatewayState(
+        models=load_production_models(manifest, production_root)
+        if manifest.is_file()
+        else []
+    )
 
 
 def main() -> None:
@@ -11,10 +26,10 @@ def main() -> None:
 
     import uvicorn
 
-    from .app import GatewayState, create_app
+    from .app import create_app
     from .ros_adapter import RosGatewayAdapter
 
-    state = GatewayState()
+    state = build_runtime_state()
     uvicorn.run(
         create_app(
             state=state,

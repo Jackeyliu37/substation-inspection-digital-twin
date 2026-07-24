@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_gateway"))
 from substation_interfaces.msg import ManualVelocityStatus
 import substation_web_gateway.app as gateway_app
+import substation_web_gateway.__main__ as gateway_main
 from substation_web_gateway.app import CommandStore, GatewayState, create_app
 
 
@@ -476,6 +477,37 @@ deployment_filenames:
         "installed": True,
         "size_bytes": 7,
     }]
+
+
+def test_production_startup_populates_model_state(tmp_path):
+    manifest = tmp_path / "manifest.yaml"
+    production = tmp_path / "production"
+    digest = "b" * 64
+    target = production / digest / "yolo11n_equipment.pt"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"production-weights")
+    manifest.write_text(
+        """schema_version: 1
+artifacts:
+  - logical_model: yolo11n_equipment
+    module: equipment
+    filename: source.pt
+    sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    class_names: [breaker]
+    metric_name: metrics/mAP50(B)
+    best_metric: 0.84
+    acceptance_status: passed
+    threshold_waived: false
+deployment_filenames:
+  yolo11n_equipment: yolo11n_equipment.pt
+""",
+        encoding="utf-8",
+    )
+
+    state = gateway_main.build_runtime_state(manifest, production)
+
+    assert [model["logical_model"] for model in state.models] == ["yolo11n_equipment"]
+    assert state.models[0]["installed"] is True
 
 
 def test_models_and_scenario_are_real_gateway_snapshots_and_commands():
