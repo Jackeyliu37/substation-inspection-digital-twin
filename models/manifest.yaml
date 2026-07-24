@@ -1,0 +1,85 @@
+schema_version: 1
+generated_at: '2026-07-24T04:10:00Z'
+generator_git_commit: 32109df3e0087aebd5c8e8daf76acdbfe3512c03
+source_bundle:
+  type: local-user-handoff
+  path: artifacts/phase4/substation_yolo_runs.zip
+  sha256: fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce
+  size_bytes: 83036921
+  acceptance_note: operator-approved Phase 4 time-box waiver; safety mAP50 is below the documented 0.75 threshold.
+required_logical_models:
+  - yolo11n_safety
+  - yolo11n_equipment
+  - yolo11n_fault
+  - meter_locator
+artifacts:
+  - logical_model: yolo11n_safety
+    module: safety
+    filename: yolo11n_safety--local-handoff--sha256-ed80f2e846e75a24.pt
+    sha256: ed80f2e846e75a24725695a084154543876e597c8b7669a19bb5aec4eb108b6f
+    size_bytes: 5478440
+    task: detect
+    class_names: [person, no_hardhat, hardhat, fire, smoke]
+    metric_name: metrics/mAP50(B)
+    best_metric: 0.69297
+    threshold: 0.75
+    acceptance_status: passed
+    threshold_waived: true
+    metrics_sha256: 925510302752551544764106ac845b9c9013b85f6f98a0cfc656dfa4ff499d3b
+    training_config_sha256: 581d70d51b59f05f4eb3330fd1bfb595247b3219bec46f39bb68c5f6c1244576
+  - logical_model: yolo11n_equipment
+    module: equipment
+    filename: yolo11n_equipment--local-handoff--sha256-63d059bfad718c18.pt
+    sha256: 63d059bfad718c18db1377a054cb07802ff44408f440481ef49962adf97fc092
+    size_bytes: 5469416
+    task: detect
+    class_names: [open_blade_disconnect_switch, closed_blade_disconnect_switch, open_tandem_disconnect_switch, closed_tandem_disconnect_switch, breaker, fuse_disconnect_switch, glass_disc_insulator, porcelain_pin_insulator, muffle, lightning_arrester, recloser, power_transformer, current_transformer, potential_transformer, tripolar_disconnect_switch]
+    metric_name: metrics/mAP50(B)
+    best_metric: 0.84187
+    threshold: 0.75
+    acceptance_status: passed
+    threshold_waived: false
+    metrics_sha256: d8ffae0316e2c1339b408a815889302cfa1db31abd73e63ec64699a61fbdb67f
+    training_config_sha256: 1edb25d97e395dbf2c7a988722643fd0e76d160e8d7eafed25bba6e28518cf76
+  - logical_model: yolo11n_fault
+    module: fault
+    filename: yolo11n_fault--local-handoff--sha256-d65c0b4143148122.pt
+    sha256: d65c0b41431481226437e682c28905f039bce43ee821064a32150aa26e823a2a
+    size_bytes: 3191760
+    task: classify
+    class_names: [0_normal, 1_corrosion, 2_broken_component, 3_bird_nest]
+    metric_name: metrics/accuracy_top1
+    best_metric: 0.99673
+    threshold: null
+    acceptance_status: passed
+    threshold_waived: false
+    metrics_sha256: da2c2766f516938aa0661077f4d49ffb4f36d82c6ad829a389f7c75bb678f512
+    training_config_sha256: 8f2a3005631b366ba7152901629ccce2b66c87cb5fa8b363e1088f19fa3841d9
+  - logical_model: meter_locator
+    module: meter
+    filename: yolo11n_meter--local-handoff--sha256-c2f39d975f678f7a.pt
+    sha256: c2f39d975f678f7a5d9997d271061957636174f681fb08d091ccfbe70d475fb8
+    size_bytes: 5462888
+    task: detect
+    class_names: [meter]
+    metric_name: metrics/mAP50(B)
+    best_metric: 0.995
+    threshold: null
+    acceptance_status: passed
+    threshold_waived: false
+    metrics_sha256: 1aff728829ece754765aad5704ee10acac27feb5c2f2f23e7629197e0a1f92e2
+    training_config_sha256: 30fce8e7439e9be6f2908906fce59db2d196fc4b57fb8099c2f7ed8ebe4d8acb
+production_artifact_sha256:
+  yolo11n_safety: ed80f2e846e75a24725695a084154543876e597c8b7669a19bb5aec4eb108b6f
+  yolo11n_equipment: 63d059bfad718c18db1377a054cb07802ff44408f440481ef49962adf97fc092
+  yolo11n_fault: d65c0b41431481226437e682c28905f039bce43ee821064a32150aa26e823a2a
+  meter_locator: c2f39d975f678f7a5d9997d271061957636174f681fb08d091ccfbe70d475fb8
+deployment_filenames:
+  yolo11n_safety: yolo11n_safety.pt
+  yolo11n_equipment: yolo11n_equipment.pt
+  yolo11n_fault: yolo11n_fault.pt
+  meter_locator: yolo11n_meter.pt
+meter_reader:
+  locator_logical_model: meter_locator
+  opencv_config_file: configs/meter_reader.yaml
+  opencv_config_sha256: c2694c7f40464a29e68000813ff8d6b24b5d97963e3bd5115ca8dbb7a1afba73

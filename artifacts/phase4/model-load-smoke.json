@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "device": "cuda:0",
+  "input_shape": [640, 640, 3],
+  "models": {
+    "yolo11n_safety": {"task": "detect", "class_count": 5, "inference_result_count": 1},
+    "yolo11n_equipment": {"task": "detect", "class_count": 15, "inference_result_count": 1},
+    "yolo11n_fault": {"task": "classify", "class_count": 4, "inference_result_count": 1},
+    "meter_locator": {"task": "detect", "class_count": 1, "inference_result_count": 1}
+  },
+  "note": "Weight load and one CUDA inference were verified; this is not the 300-second complete ROS pipeline acceptance."
+}

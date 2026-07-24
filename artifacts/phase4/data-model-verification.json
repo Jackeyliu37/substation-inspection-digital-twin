@@ -1,0 +1,5 @@
+{
+  "status": "passed",
+  "model_manifest": "models/manifest.yaml",
+  "dataset_manifest": "datasets/manifest.yaml"
+}

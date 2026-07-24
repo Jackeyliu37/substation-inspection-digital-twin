@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-- 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 仍为 `in_progress / production model artifacts blocked`；Phase 5～8 已完成受限开发实现与契约验证，但尚不是生产交付。
+- 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 四个训练 artifact 已按用户授权导入并建立 production 映射，但 safety 的 `mAP50=0.69297` 低于文档硬门槛 `0.75`，本轮以显式 operator waiver 记录；Phase 5～8 已完成受限开发实现与契约验证，但尚不是严格生产交付。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。它在真实 Gazebo 场景中触发 `combined-risk-obstacle`，确认 transformer-01 风险为 68 分 / ALERT，任务队列重排到 transformer-01 首位，证据 SHA-256 全部通过且无残留进程。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接入权威 RunContext、数字孪生、风险、任务、地图/增量和 diagnostics；同 run/revision 校验、ROS-time→UTC、float32 Web 规范化、Web snapshot revision 幂等及 reporting readiness 均 fail-closed。mission POST 只有 `/mission/manage` 实际接受后才写 accepted；evidence metadata 与 200/206/304/400/416 Range 下载只经 reporting Service。生产入口会加载 ROS/colcon 环境，安装后进程 smoke 为 `/healthz=200`、缺权威 ROS 图时 `/readyz=503`。
 - Phase 8 前端开发检查点：`df30574`。八工作区和 REST/WebSocket-only 边界已实现；`npm test` 和 `npm run build` 已通过。主机没有可用 Chrome，尚未进行 Playwright 截图或浏览器端到端验收。
@@ -25,7 +25,7 @@
 - 全量数据生成结果：`passed`；run ID `8d51ced9-df63-430b-b7e4-0944fc2f0e96`，generation ID `a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2`，完成时间 `2026-07-23T15:05:27Z`。
 - Phase 3 live acceptance 结果：`passed`；run ID `6e4c7d62-4e9c-4698-b789-d7fa40f32d82`，完成时间 `2026-07-23T17:21:23Z`；immutable evidence 为 `/var/lib/substation/evidence/acceptance/6e4c7d62-4e9c-4698-b789-d7fa40f32d82/03-navigation`。
 - Phase 4 占位运行时已验证实现提交：`ff87d7d43a712e2549e4d36571fad01e6d8cf1eb`；live smoke `passed`，run ID `e2e3c709-63ee-4c7d-a41e-f099547acced`，完成时间 `2026-07-23T19:02:45Z`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/e2e3c709-63ee-4c7d-a41e-f099547acced/04-perception-placeholder`。
-- 当前阻塞项：Phase 4 正式 safety、equipment、fault 和 meter 模块的生产映射与最终验收等待用户发布四个不可变训练 artifact；该阻塞不否定已通过的开发占位链路。
+- Phase 4 模型 handoff：用户上传的 `artifacts/phase4/substation_yolo_runs.zip` SHA-256 为 `fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce`、大小 `83,036,921` 字节；四个 `best.pt` 的 task、类别顺序、训练配置和 metrics 已校验，导入报告为 `artifacts/phase4/model-import-report.json`，生产副本位于 `/var/lib/substation/models/production/<sha256>/`。安全模型最佳 mAP50 为 `0.69297`，按用户明确要求以 waiver 计入；严格验收仍需重新训练或撤销 waiver。
 - 正在运行的项目服务：无。Gazebo、ROS 项目节点、Gateway、前端、Foxglove Bridge 和 Nginx 均未作为产品服务运行。
 
 ## Phase 1 验证记录
@@ -73,7 +73,7 @@
 
 | 计划项 | 当前事实 | 后续条件 |
 |---|---|---|
-| Phase 4 四模型、15 FPS、指标报告 | 官方 `yolo11n.pt` 占位 smoke 已通过；生产模型未导入 | 用户交付四个不可变训练 ZIP/Release，随后校验 SHA-256、类别、训练摘要与指标 |
+| Phase 4 四模型、15 FPS、指标报告 | 四模型已导入，task/类别/训练摘要/指标可追溯；安全 mAP50 低于 0.75，按用户授权 waiver 记录 | 仍需真实四模块 ROS 管线 15 FPS/300 s、meter OpenCV 读数和严格安全指标复验 |
 | Phase 5 证据与报告 ROS 服务 | reporting Service、RunContext 时间映射、内容寻址证据、Range、HTML/PDF/evidence/diagnostic 生成、artifact 索引与 Gateway 下载已验证 | 补 rosbag2、告警/轨迹/模型完整快照与正式报告验收 |
 | Phase 6 Nav2 巡检执行 | 风险重排、SQLite 恢复、mission/task terminal、Nav2 执行及手动/自动速度仲裁已验证 | 补冷启动 IDLE→START、紧停复位完整 barrier 和正式 live acceptance |
 | Phase 7 Gateway 真实控制面 | 权威状态、mission/evidence/reporting、mode/manual/e-stop、精确 TF/odom pose、电量、命令终态、report/diagnostic 索引下载已接入 | 补真实相机帧 |

@@ -4,7 +4,7 @@
 
 - Repository：`/home/jackeyliu37/substation-inspection-digital-twin`。
 - Branch：`main`。
-- 当前阶段：Phase 9 集成前收口。Phase 4 官方 `yolo11n.pt` 开发占位运行时已通过 live smoke；生产集成仍等待用户在 AutoDL 训练的 safety、equipment、fault 和 meter 四个独立 artifact。
+- 当前阶段：Phase 9 集成前收口。Phase 4 四个用户训练 artifact 已导入；上传 ZIP、模型哈希、训练 metrics 和 waiver 记录在 `artifacts/phase4/` 与 `models/manifest.yaml`。严格生产验收仍未完成。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接权威 RunContext、数字孪生、风险、任务、地图/增量、diagnostics 和 reporting readiness；严格同 run/revision gate、时间映射、幂等 Web revision、mission Service 受理 gate 及 evidence metadata/Range 下载已通过真实 rclpy 与 ASGI 测试。安装后进程 smoke 为 `/healthz=200`、缺 ROS 图 `/readyz=503`，SIGINT 正常退出且无残留。
 - Phase 8 前端开发检查点：`df30574`，`npm test` 与 `npm run build` 已通过；没有 Chrome，因此没有 Playwright 浏览器证据。
@@ -27,6 +27,7 @@
 - 全量数据已通过：run ID `8d51ced9-df63-430b-b7e4-0944fc2f0e96`，generation ID `a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2`，ZIP 路径 `/var/lib/substation/datasets/synthetic/gazebo-meter/a1532e097446a27c63654fb8159f7835955a41c1dc47008e04ace43eac1a82d2/gazebo-meter-locator-v1.zip`，SHA-256 `0f22438f4fa1baacdb06c7f64be65b08f78fd1b83f0891ac14f2c28c6ca0af4f`，大小 100,338,006 字节。
 - Phase 3 验收结果：`passed`；run ID `6e4c7d62-4e9c-4698-b789-d7fa40f32d82`，immutable evidence `/var/lib/substation/evidence/acceptance/6e4c7d62-4e9c-4698-b789-d7fa40f32d82/03-navigation`。`result.json` 记录静态/动态目标成功、`dynamic_obstacle_costmap_seen=true`；静态地图 SHA-256 `28d2643b517bfb3a691e74bec19889247815454baaeaa908256135765e639dc7`。
 - Phase 4 占位运行时实现提交：`ff87d7d43a712e2549e4d36571fad01e6d8cf1eb`；run ID `e2e3c709-63ee-4c7d-a41e-f099547acced`，结果 `passed`，immutable evidence `/var/lib/substation/evidence/acceptance/e2e3c709-63ee-4c7d-a41e-f099547acced/04-perception-placeholder`。该结果明确为 `development_placeholder`、`production_ready=false`，不是 Phase 4 生产验收。
+- Phase 4 导入摘要：archive SHA-256 `fae3721cbe65b9fa09f24972ab36a5c45df54d0a9f97fa7e9d5cb87e619235ce`；safety/equipment/fault/meter 最佳指标分别为 `0.69297/0.84187/0.99673/0.99500`。安全指标低于文档阈值，按用户明确要求记录 operator-approved waiver，不应在后续报告中隐去。
 - 当前运行的项目服务：无。
 
 ## 验证与恢复命令
@@ -67,4 +68,4 @@
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
 - 占位结果只发布到 `/perception/development/detections` 和 `/perception/development/annotated_image`；正式聚合、数字孪生、风险、Gateway、报告和证据链不得消费它们。
-- 下一实现动作：复跑完整 workspace/部署/接口/documentation gate 并提交 reporting checkpoint；随后补真实相机帧、冷启动 IDLE→START 和 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。
+- 下一实现动作：完成 Phase 4 四模块 production ROS 管线、meter OpenCV 读数和 300 秒/15 FPS 验收；随后再进入真实相机帧、冷启动 IDLE→START 和 Playwright/Windows/Nginx/Foxglove 集成证据。当前本地 handoff 可回滚到旧 manifest 映射，严格 release 仍建议改用不可变 GitHub release 或固定 commit。

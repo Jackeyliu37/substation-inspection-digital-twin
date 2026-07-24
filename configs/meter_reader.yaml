@@ -1,0 +1,16 @@
+schema_version: 1
+locator_class: meter
+assets:
+  meter-oil-01:
+    sensor_id: meter-oil-sensor-01
+    minimum: 0.0
+    maximum: 100.0
+    unit: percent
+  meter-pressure-01:
+    sensor_id: meter-pressure-sensor-01
+    minimum: 0.0
+    maximum: 2.0
+    unit: MPa
+opencv:
+  method: project-owned-placeholder
+  note: Calibration and pointer geometry must be validated on the Gazebo meter test split before strict production acceptance.
