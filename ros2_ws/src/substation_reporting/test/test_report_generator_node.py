@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import importlib
 import io
+import json
 from pathlib import Path
 import threading
 import time
@@ -15,8 +16,10 @@ from substation_interfaces.msg import (
     AssetRiskArray,
     InspectionTask,
     InspectionTaskArray,
+    RiskAlert,
     RunContext,
 )
+from nav_msgs.msg import Odometry
 from substation_interfaces.srv import GenerateDiagnosticBundle, GenerateReport
 from substation_interfaces.srv import (
     GetReportingReadiness,
@@ -52,6 +55,10 @@ def test_runtime_generates_selected_report_artifacts_and_diagnostic_bundle() -> 
         submit_artifact=lambda artifact_id, format_name, _run, _mission, _revision, payload, _media: (
             submitted.append((artifact_id, format_name, payload)) or True
         ),
+        load_bundle_sources=lambda: (
+            "schema_version: 1\nrequired_logical_models: [safety]\n",
+            "rosbag2_bagfile_information:\n  version: 9\n",
+        ),
         utc_now=lambda: datetime(2026, 7, 24, 3, 4, 5, tzinfo=timezone.utc),
     )
     context = RunContext(
@@ -78,6 +85,21 @@ def test_runtime_generates_selected_report_artifacts_and_diagnostic_bundle() -> 
             computed_priority=77.0,
         )],
     ))
+    runtime.observe_alert(RiskAlert(
+        schema_version=1,
+        run_id=run_id,
+        alert_id=str(uuid4()),
+        asset_id="transformer-01",
+        event_type=RiskAlert.EVENT_OPENED,
+        current_level=3,
+        score_0_100=91.0,
+        summary="high temperature",
+    ))
+    odometry = Odometry()
+    odometry.header.stamp.sec = 12
+    odometry.pose.pose.position.x = 1.25
+    odometry.pose.pose.position.y = -0.5
+    runtime.observe_odometry(odometry)
 
     report = runtime.generate_report(GenerateReport.Request(
         schema_version=1,
@@ -92,6 +114,15 @@ def test_runtime_generates_selected_report_artifacts_and_diagnostic_bundle() -> 
     assert [item[1] for item in submitted] == ["evidence", "html", "pdf"]
     assert submitted[1][2].startswith(b"<!doctype html>")
     assert submitted[2][2].startswith(b"%PDF-1.4")
+    with zipfile.ZipFile(io.BytesIO(submitted[0][2])) as archive:
+        alerts = json.loads(archive.read("snapshots/alerts.json"))
+        trajectory = json.loads(
+            archive.read("snapshots/trajectory.json")
+        )
+        mission = json.loads(archive.read("snapshots/mission.json"))
+    assert alerts[0]["asset_id"] == "transformer-01"
+    assert trajectory[0]["x_m"] == 1.25
+    assert mission["mission_id"] == mission_id
 
     submitted.clear()
     diagnostic = runtime.generate_diagnostic_bundle(
@@ -144,12 +175,20 @@ def test_ros_report_generator_submits_artifacts_through_evidence_service(tmp_pat
     database = tmp_path / "sqlite/evidence.sqlite3"
     object_root = tmp_path / "evidence"
     work_root = tmp_path / "report-work"
+    model_manifest = tmp_path / "models.yaml"
+    rosbag_metadata = tmp_path / "metadata.yaml"
+    model_manifest.write_text("schema_version: 1\n", encoding="utf-8")
+    rosbag_metadata.write_text(
+        "rosbag2_bagfile_information:\n  version: 9\n", encoding="utf-8"
+    )
     rclpy.init(args=[
         "--ros-args",
         "-p", f"evidence_database_path:={database}",
         "-p", f"evidence_object_root:={object_root}",
         "-p", f"report_work_directory:={work_root}",
         "-p", f"implementation_commit:={'a' * 40}",
+        "-p", f"model_manifest_path:={model_manifest}",
+        "-p", f"rosbag_metadata_path:={rosbag_metadata}",
     ])
     evidence_node = EvidenceStoreNode()
     report_node = module.ReportGeneratorNode()
@@ -258,8 +297,12 @@ def test_report_generator_is_packaged_in_reporting_launch() -> None:
     assert 'executable="report_generator"' in source
     assert '"report_work_directory"' in source
     assert '"implementation_commit"' in source
+    assert '"model_manifest_path"' in source
+    assert '"rosbag_metadata_path"' in source
     setup = (PACKAGE / "setup.py").read_text(encoding="utf-8")
     assert "report_generator = substation_reporting.report_generator_node:main" in setup
+    manifest = (PACKAGE / "package.xml").read_text(encoding="utf-8")
+    assert "<exec_depend>nav_msgs</exec_depend>" in manifest
 
 
 def test_ros_report_generator_does_not_advertise_service_without_commit(tmp_path) -> None:

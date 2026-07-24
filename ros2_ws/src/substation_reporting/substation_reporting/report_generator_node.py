@@ -10,11 +10,17 @@ from typing import Callable
 import uuid
 import zipfile
 
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from substation_interfaces.msg import AssetRiskArray, InspectionTaskArray, RunContext
+from substation_interfaces.msg import (
+    AssetRiskArray,
+    InspectionTaskArray,
+    RiskAlert,
+    RunContext,
+)
 from substation_interfaces.srv import (
     GenerateDiagnosticBundle,
     GenerateReport,
@@ -42,6 +48,7 @@ class ReportServiceRuntime:
         model_versions: dict[str, str],
         dataset_versions: dict[str, str],
         submit_artifact: Callable[[str, str, str, str | None, int, bytes, str], bool],
+        load_bundle_sources: Callable[[], tuple[str, str]] | None = None,
         utc_now: Callable[[], datetime] | None = None,
     ) -> None:
         self._generator = generator
@@ -49,10 +56,13 @@ class ReportServiceRuntime:
         self._model_versions = dict(model_versions)
         self._dataset_versions = dict(dataset_versions)
         self._submit_artifact = submit_artifact
+        self._load_bundle_sources = load_bundle_sources or (lambda: ("", ""))
         self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
         self._context: RunContext | None = None
         self._risks: AssetRiskArray | None = None
         self._tasks: InspectionTaskArray | None = None
+        self._alerts: list[dict[str, object]] = []
+        self._trajectory: list[dict[str, object]] = []
 
     def observe_run_context(self, message: RunContext) -> None:
         if message.schema_version == SCHEMA_VERSION and message.run_id:
@@ -61,6 +71,9 @@ class ReportServiceRuntime:
                 or message.run_id != self._context.run_id
                 or message.context_revision >= self._context.context_revision
             ):
+                if self._context is None or message.run_id != self._context.run_id:
+                    self._alerts = []
+                    self._trajectory = []
                 self._context = message
 
     def observe_risks(self, message: AssetRiskArray) -> None:
@@ -70,6 +83,37 @@ class ReportServiceRuntime:
     def observe_tasks(self, message: InspectionTaskArray) -> None:
         if message.schema_version == SCHEMA_VERSION and message.run_id:
             self._tasks = message
+
+    def observe_alert(self, message: RiskAlert) -> None:
+        if (
+            message.schema_version == SCHEMA_VERSION
+            and self._context is not None
+            and message.run_id == self._context.run_id
+        ):
+            self._alerts.append({
+                "alert_id": message.alert_id,
+                "asset_id": message.asset_id,
+                "event_type": int(message.event_type),
+                "level": int(message.current_level),
+                "score_0_100": float(message.score_0_100),
+                "summary": message.summary,
+                "evidence_ids": list(message.evidence_ids),
+            })
+
+    def observe_odometry(self, message: Odometry) -> None:
+        if (
+            self._context is None
+            or self._context.lifecycle != RunContext.LIFECYCLE_ACTIVE
+        ):
+            return
+        self._trajectory.append({
+            "ros_sec": int(message.header.stamp.sec),
+            "ros_nanosec": int(message.header.stamp.nanosec),
+            "x_m": float(message.pose.pose.position.x),
+            "y_m": float(message.pose.pose.position.y),
+        })
+        if len(self._trajectory) > 10000:
+            del self._trajectory[:-10000]
 
     @staticmethod
     def _prepare(response):
@@ -131,6 +175,11 @@ class ReportServiceRuntime:
             .isoformat(timespec="microseconds")
             .replace("+00:00", "Z")
         )
+        try:
+            model_manifest_yaml, rosbag_metadata_yaml = self._load_bundle_sources()
+        except (OSError, ValueError):
+            return self._reject(response, "REPORTING_UNAVAILABLE")
+        assert self._tasks is not None
         snapshot = {
             "run_id": request.run_id,
             "generated_at": generated_at,
@@ -145,7 +194,7 @@ class ReportServiceRuntime:
                 }
                 for item in self._risks.assets
             ],
-            "alerts": [],
+            "alerts": list(self._alerts),
             "tasks": [
                 {
                     "asset_id": item.asset_id,
@@ -154,8 +203,38 @@ class ReportServiceRuntime:
                 }
                 for item in self._tasks.tasks
             ],
-            "trajectory": [],
-            "evidence_ids": [],
+            "trajectory": list(self._trajectory),
+            "mission": {
+                "run_id": self._tasks.run_id,
+                "mission_id": self._tasks.mission_id,
+                "route_id": self._tasks.route_id,
+                "state_revision": int(self._tasks.state_revision),
+                "queue_revision": int(self._tasks.queue_revision),
+                "mission_state": int(self._tasks.mission_state),
+                "robot_mode": int(self._tasks.robot_mode),
+                "emergency_stop_latched": bool(
+                    self._tasks.emergency_stop_latched
+                ),
+                "completed_tasks": int(self._tasks.completed_tasks),
+                "total_tasks": int(self._tasks.total_tasks),
+                "tasks": [
+                    {
+                        "task_id": item.task_id,
+                        "asset_id": item.asset_id,
+                        "state": int(item.state),
+                        "computed_priority": float(item.computed_priority),
+                        "last_error_code": item.last_error_code,
+                    }
+                    for item in self._tasks.tasks
+                ],
+            },
+            "model_manifest_yaml": model_manifest_yaml,
+            "rosbag_metadata_yaml": rosbag_metadata_yaml,
+            "evidence_ids": sorted({
+                evidence_id
+                for alert in self._alerts
+                for evidence_id in alert["evidence_ids"]
+            }),
         }
         try:
             artifacts = self._generator.generate(snapshot)
@@ -246,6 +325,14 @@ class ReportGeneratorNode(Node):
             "dataset_versions_json",
             "{}",
         ).value))
+        self._model_manifest_path = Path(str(self.declare_parameter(
+            "model_manifest_path",
+            "/opt/substation/current/models/manifest.yaml",
+        ).value)).resolve()
+        self._rosbag_metadata_path = Path(str(self.declare_parameter(
+            "rosbag_metadata_path",
+            "",
+        ).value)).resolve()
         self._store_client = self.create_client(
             StoreEvidence,
             "/reporting/store_evidence",
@@ -257,6 +344,7 @@ class ReportGeneratorNode(Node):
             model_versions=model_versions,
             dataset_versions=dataset_versions,
             submit_artifact=self._submit_artifact,
+            load_bundle_sources=self._load_bundle_sources,
         )
         state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -281,6 +369,24 @@ class ReportGeneratorNode(Node):
             "/mission/inspection_tasks",
             self._runtime.observe_tasks,
             state_qos,
+        )
+        event_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.create_subscription(
+            RiskAlert,
+            "/risk/alerts",
+            self._runtime.observe_alert,
+            event_qos,
+        )
+        self.create_subscription(
+            Odometry,
+            "/odom",
+            self._runtime.observe_odometry,
+            50,
         )
         if COMMIT_PATTERN.fullmatch(implementation_commit):
             self.create_service(
@@ -310,6 +416,14 @@ class ReportGeneratorNode(Node):
         ):
             return {}
         return parsed
+
+    def _load_bundle_sources(self) -> tuple[str, str]:
+        payloads = []
+        for path in (self._model_manifest_path, self._rosbag_metadata_path):
+            if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+                raise ValueError("REPORT_BUNDLE_SOURCE_INVALID")
+            payloads.append(path.read_text(encoding="utf-8"))
+        return payloads[0], payloads[1]
 
     def _submit_artifact(
         self,

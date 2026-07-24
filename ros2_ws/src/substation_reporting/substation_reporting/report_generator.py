@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import html
 import io
 import json
@@ -19,17 +20,35 @@ class ReportGenerator:
     REQUIRED_FIELDS = (
         "run_id", "generated_at", "git_commit", "model_versions",
         "dataset_versions", "assets", "alerts", "tasks", "trajectory",
+        "mission", "model_manifest_yaml", "rosbag_metadata_yaml",
         "evidence_ids",
     )
 
     def generate(self, snapshot: dict[str, Any]) -> ReportArtifacts:
         if any(field not in snapshot for field in self.REQUIRED_FIELDS):
             raise ValueError("REPORT_INPUT_INVALID")
-        if not isinstance(snapshot["run_id"], str) or len(snapshot["git_commit"]) != 40:
+        if (
+            not isinstance(snapshot["run_id"], str)
+            or len(snapshot["git_commit"]) != 40
+            or not isinstance(snapshot["mission"], dict)
+            or not isinstance(snapshot["model_manifest_yaml"], str)
+            or "schema_version:" not in snapshot["model_manifest_yaml"]
+            or not isinstance(snapshot["rosbag_metadata_yaml"], str)
+            or "rosbag2_bagfile_information:" not in snapshot["rosbag_metadata_yaml"]
+        ):
             raise ValueError("REPORT_INPUT_INVALID")
         document = self._render_html(snapshot)
         html_bytes = document.encode("utf-8")
         pdf_bytes = self._render_pdf(snapshot)
+        bundle_entries = [
+            "report.html",
+            "report.pdf",
+            "rosbag2/metadata.yaml",
+            "snapshots/alerts.json",
+            "snapshots/mission.json",
+            "snapshots/model-manifest.yaml",
+            "snapshots/trajectory.json",
+        ]
         manifest = {
             "schema_version": "1.0",
             "run_id": snapshot["run_id"],
@@ -37,13 +56,33 @@ class ReportGenerator:
             "model_versions": snapshot["model_versions"],
             "dataset_versions": snapshot["dataset_versions"],
             "evidence_ids": snapshot["evidence_ids"],
+            "bundle_entries": bundle_entries,
         }
-        evidence_zip = self._zip({
+        files = {
             "manifest.json": json.dumps(manifest, ensure_ascii=True, indent=2).encode(),
             "report.html": html_bytes,
             "report.pdf": pdf_bytes,
-        })
+            "rosbag2/metadata.yaml": snapshot["rosbag_metadata_yaml"].encode("utf-8"),
+            "snapshots/alerts.json": self._json_bytes(snapshot["alerts"]),
+            "snapshots/mission.json": self._json_bytes(snapshot["mission"]),
+            "snapshots/model-manifest.yaml": snapshot["model_manifest_yaml"].encode("utf-8"),
+            "snapshots/trajectory.json": self._json_bytes(snapshot["trajectory"]),
+        }
+        files["SHA256SUMS"] = "".join(
+            f"{hashlib.sha256(files[name]).hexdigest()}  {name}\n"
+            for name in sorted(files)
+        ).encode("ascii")
+        evidence_zip = self._zip(files)
         return ReportArtifacts(html_bytes, pdf_bytes, evidence_zip)
+
+    @staticmethod
+    def _json_bytes(value: Any) -> bytes:
+        return json.dumps(
+            value,
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
 
     @staticmethod
     def _render_html(snapshot: dict[str, Any]) -> str:

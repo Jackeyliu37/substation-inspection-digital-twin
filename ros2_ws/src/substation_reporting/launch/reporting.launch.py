@@ -25,6 +25,17 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="",
             ),
         ),
+        DeclareLaunchArgument(
+            "model_manifest_path",
+            default_value="/opt/substation/current/models/manifest.yaml",
+        ),
+        DeclareLaunchArgument(
+            "rosbag_metadata_path",
+            default_value=EnvironmentVariable(
+                "SUBSTATION_ROSBAG_METADATA_PATH",
+                default_value="",
+            ),
+        ),
         SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
         Node(
             package="substation_reporting",
@@ -48,6 +59,12 @@ def generate_launch_description() -> LaunchDescription:
                 ),
                 "implementation_commit": LaunchConfiguration(
                     "implementation_commit"
+                ),
+                "model_manifest_path": LaunchConfiguration(
+                    "model_manifest_path"
+                ),
+                "rosbag_metadata_path": LaunchConfiguration(
+                    "rosbag_metadata_path"
                 ),
             }],
             output="screen",
