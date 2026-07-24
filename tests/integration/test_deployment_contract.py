@@ -126,6 +126,35 @@ def test_root_installer_prepares_service_home_and_runtime_caches() -> None:
         assert path in script
 
 
+def test_release_activator_performs_safe_ordered_health_checked_deployment() -> None:
+    script = read("scripts/deployment/activate_release.sh")
+
+    assert "EUID" in script
+    assert "--candidate" in script
+    assert "--run-id" in script
+    assert "/api/v1/robot/emergency-stop" in script
+    assert "scripts/deployment/install_release.sh" in script
+    assert "substation-web-frontend.service" in script
+    assert "substation-core.service" in script
+    assert "substation-gazebo.service" in script
+    assert "substation-web-gateway.service" in script
+    assert script.index("stop substation-web-frontend.service") < script.index(
+        "stop substation-core.service substation-gazebo.service"
+    )
+    assert script.index("stop substation-core.service substation-gazebo.service") < script.index(
+        "stop substation-web-gateway.service"
+    )
+    assert script.index("start substation-gazebo.service") < script.index(
+        "start substation-core.service substation-web-gateway.service substation-web-frontend.service"
+    )
+    assert "systemctl reload nginx.service" in script
+    assert "http://127.0.0.1:8000/healthz" in script
+    assert "http://127.0.0.1:8000/readyz" in script
+    assert "health_timeout_s=120" in script
+    assert "/opt/substation/current" in script
+    assert "journalctl" in script
+
+
 def test_five_service_units_form_a_loopback_only_dependency_chain() -> None:
     units = {
         name: read(f"deploy/systemd/{name}.service")
