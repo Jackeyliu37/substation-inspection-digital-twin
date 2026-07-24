@@ -177,6 +177,18 @@ def test_release_activation_repairs_the_controlled_start_time_mapping_race() -> 
     assert "self.context:" not in helper
 
 
+def test_latest_release_entrypoint_selects_candidate_and_generates_run_id() -> None:
+    script = read("scripts/deployment/activate_latest_release.sh")
+
+    assert "EUID" in script
+    assert "/var/lib/substation/releases-staging" in script
+    assert "release-manifest.json" in script
+    assert "/proc/sys/kernel/random/uuid" in script
+    assert "activate_release.sh" in script
+    assert "--candidate" in script
+    assert "--run-id" in script
+
+
 def test_five_service_units_form_a_loopback_only_dependency_chain() -> None:
     units = {
         name: read(f"deploy/systemd/{name}.service")
