@@ -8,7 +8,8 @@
 - Phase 8 前端开发检查点：`df30574`。八工作区和 REST/WebSocket-only 边界已实现；`npm test` 和 `npm run build` 已通过。主机没有可用 Chrome，尚未进行 Playwright 截图或浏览器端到端验收。
 - Phase 6 任务持久化检查点：`e73f60a`。`substation_mission` 现在以单写者方式把任务队列、机器人模式、全局 state revision 和紧急停止锁存写入 `/var/lib/substation/sqlite/mission.sqlite3`；同 run 恢复完整快照，新 run 保留锁存并推进 revision。包级重建与测试为 `11 tests, 0 errors, 0 failures, 0 skipped`；直接对安装后的 `task_manager` 发送 SIGTERM 的 smoke 得到 SQLite `state_revision=1`、`emergency_stop_latched=0`，日志无 `Traceback/ERROR/FATAL/RCLError` 且无残留节点进程。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器把同 revision 完整队列发到 `/mission/execute_inspection`，执行器顺序调用标准 `/navigate_to_pose`；风险重排会取消当前普通目标并提交新队首，紧停会取消活动 Nav2 goal，不可达任务按 `continue_on_unreachable` 跳过或失败。显式 launch 与无 Nav2 fail-closed smoke 已验证；`ExecuteInspection` goal 缺失的 `schema_version` 契约字段已补齐。pause/resume/stop 全生命周期、任务 terminal 状态和速度仲裁仍待实现。
-- 本轮全量软件验证：`colcon build --symlink-install && colcon test && colcon test-result --all --verbose` 为 `153 tests, 0 errors, 0 failures, 0 skipped`；顶层 Phase 5～6 interface contract 另为 `2 passed`，world/navigation/perception/synthetic/Gateway/deployment 和 documentation gate 的既有检查点仍有效。
+- reporting ROS 检查点：`2f8847a`。新增 9 个 schema 1 Service、`evidence_store` 与 `report_generator` 节点；`evidence.sqlite3` 和内容寻址对象由 evidence store 单写，RunContext/revision、canonical metadata、SHA-256、JPEG freeze、Range、ROS-time→UTC 映射及 readiness fail-closed 已验证。报告节点只写 `/var/lib/substation/reports/.work` 并经 `/reporting/store_evidence` 提交 HTML/PDF/evidence ZIP/诊断 ZIP；缺 implementation commit 时不发布生成 Service。为消除 HTML 无法经 evidence store 提交的契约冲突，`text/html` 已仅对 report generator 加入 allowlist。独立 report/diagnostic 索引和 Gateway 下载映射仍待实现。
+- 本轮全量软件验证：`colcon build --symlink-install && colcon test && colcon test-result --all --verbose` 为 `164 tests, 0 errors, 0 failures, 0 skipped`；顶层 Phase 5～6 interface contract 另为 `2 passed`，documentation gate 通过，world/navigation/perception/synthetic/Gateway/deployment 的既有检查点仍有效。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`（包含 `b25c99b` 地面支撑修复、`445539c` 本地代价地图窗口修复和 `5044ce5` 动态障碍探针修复）。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -68,7 +69,7 @@
 | 计划项 | 当前事实 | 后续条件 |
 |---|---|---|
 | Phase 4 四模型、15 FPS、指标报告 | 官方 `yolo11n.pt` 占位 smoke 已通过；生产模型未导入 | 用户交付四个不可变训练 ZIP/Release，随后校验 SHA-256、类别、训练摘要与指标 |
-| Phase 5 证据与报告 ROS 服务 | `EvidenceStore`、HTML/PDF/evidence ZIP 库和单元测试已存在；实时 risk pipeline 已通过 | 补全 reporting ROS Service、RunContext 持久化、rosbag2/报告索引与正式报告验收 |
+| Phase 5 证据与报告 ROS 服务 | reporting Service、RunContext 时间映射、内容寻址证据、Range、HTML/PDF/evidence/diagnostic 生成与 evidence store 提交已验证 | 补 rosbag2、report/diagnostic 索引、告警/轨迹/模型完整快照与正式报告验收 |
 | Phase 6 Nav2 巡检执行 | 风险确认、队列重排、SQLite 恢复及 `ExecuteInspection`→Nav2 目标替换/紧停取消已验证 | 补 pause/resume/stop terminal 状态、任务状态持久化、手动速度仲裁和正式 live acceptance |
 | Phase 7 Gateway 真实控制面 | REST/WS/SQLite 命令契约已实现 | 用 rclpy 接权威 Topic/Service/Action，完成报告 Range 下载、命令终态与真实相机帧 |
 | Phase 8 浏览器验收 | 八个工作区、契约测试和生产构建通过 | 安装/提供 Chromium 后执行 Playwright；真实 Gateway/ROS/Nginx 联调 |
