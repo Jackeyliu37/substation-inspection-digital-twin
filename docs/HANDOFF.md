@@ -7,7 +7,7 @@
 - 当前阶段：Phase 9 集成前收口。Phase 4 四个用户训练 artifact 已导入；上传 ZIP、模型哈希、训练 metrics 和 waiver 记录在 `artifacts/phase4/` 与 `models/manifest.yaml`。Phase 8/9 的受限构建、契约和部署静态检查已完成；严格生产验收仍未完成。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接权威 RunContext、数字孪生、风险、任务、地图/增量、diagnostics 和 reporting readiness；严格同 run/revision gate、时间映射、幂等 Web revision、mission Service 受理 gate 及 evidence metadata/Range 下载已通过真实 rclpy 与 ASGI 测试。安装后进程 smoke 为 `/healthz=200`、缺 ROS 图 `/readyz=503`，SIGINT 正常退出且无残留。
-- Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。本轮 `npm test` 与 `npm run build` 均退出码 0；Playwright 1.61.1 已安装但 Chromium 二进制不可用，因此没有 Playwright 浏览器证据。
+- Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。本轮 `npm test` 与 `npm run build` 均退出码 0；按操作员决定改用 Windows 浏览器人工验收，不把 Playwright 作为交付前置条件。
 - Phase 9 部署检查点：Gateway/接口/部署回归本轮 `49 passed`，documentation gate `PASS`；Nginx 片段经临时完整配置包装后 `nginx -t` 成功。未启动任何产品服务，真实 `/opt/substation/current` release、Windows LAN、Foxglove 和演示验收仍待现场执行。
 - Phase 6 任务持久化检查点：`e73f60a`。`mission.sqlite3` 由任务管理器单写，保存任务队列、机器人模式、state/queue/latch revisions 和紧急停止锁存；同 run 恢复快照，新 run 不会隐式解除锁存。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器是 `/mission/execute_inspection` 客户端，巡检执行器是其 Action server 和标准 `/navigate_to_pose` 唯一项目客户端；真实 rclpy 集成测试覆盖完整队列、风险重排目标替换、不可达策略和紧停取消。
@@ -70,4 +70,4 @@
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
 - 占位结果只发布到 `/perception/development/detections` 和 `/perception/development/annotated_image`；正式聚合、数字孪生、风险、Gateway、报告和证据链不得消费它们。
-- 下一实现动作：完成 Phase 4 四模块 production ROS 管线、meter OpenCV 读数和 300 秒/15 FPS 验收；随后再进入真实相机帧、冷启动 IDLE→START 和 Playwright/Windows/Nginx/Foxglove 集成证据。当前本地 handoff 可回滚到旧 manifest 映射，严格 release 仍建议改用不可变 GitHub release 或固定 commit。
+- 下一实现动作：完成 Phase 4 四模块 production ROS 管线、meter OpenCV 读数和 300 秒/15 FPS 验收；随后补真实相机帧、冷启动 IDLE→START、Windows/Nginx/Foxglove 集成证据。浏览器部分由操作员人工验收；当前本地 handoff 可回滚到旧 manifest 映射，严格 release 仍建议改用不可变 GitHub release 或固定 commit。

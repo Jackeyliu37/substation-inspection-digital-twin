@@ -5,7 +5,7 @@
 - 当前阶段：Phase 9 集成前收口。Phase 1～3 已有 immutable live evidence；Phase 4 四个训练 artifact 已按用户授权导入并建立 production 映射，但 safety 的 `mAP50=0.69297` 低于文档硬门槛 `0.75`，本轮以显式 operator waiver 记录；Phase 5～9 的受限实现、契约和构建验证已完成，但尚不是严格生产交付。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence 为 `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。它在真实 Gazebo 场景中触发 `combined-risk-obstacle`，确认 transformer-01 风险为 68 分 / ALERT，任务队列重排到 transformer-01 首位，证据 SHA-256 全部通过且无残留进程。
 - Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接入权威 RunContext、数字孪生、风险、任务、地图/增量和 diagnostics；同 run/revision 校验、ROS-time→UTC、float32 Web 规范化、Web snapshot revision 幂等及 reporting readiness 均 fail-closed。mission POST 只有 `/mission/manage` 实际接受后才写 accepted；evidence metadata 与 200/206/304/400/416 Range 下载只经 reporting Service。生产入口会加载 ROS/colcon 环境，安装后进程 smoke 为 `/healthz=200`、缺权威 ROS 图时 `/readyz=503`。
-- Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。八工作区和 REST/WebSocket-only 边界已实现；本轮重新执行 `npm test`（`frontend contract: PASS (8 views, REST/WS boundary locked)`）和 `npm run build`（Next.js 16.2.11，退出码 0）。Playwright 1.61.1 可用，但 Chromium/Chrome 二进制仍未安装，因此没有伪造浏览器截图或端到端验收。
+- Phase 8 前端检查点：`ec927c1`（基于 `df30574`）。八工作区和 REST/WebSocket-only 边界已实现；本轮重新执行 `npm test`（`frontend contract: PASS (8 views, REST/WS boundary locked)`）和 `npm run build`（Next.js 16.2.11，退出码 0）。按操作员决定，本项目采用 Windows 浏览器人工验收，不把 Playwright 作为交付前置条件。
 - Phase 9 部署检查点：systemd、Nginx、Foxglove 和 safe-stop 契约已重新验证；Gateway/接口/部署回归为 `49 passed`，documentation gate 为 `PASS`。Nginx 片段通过临时 `events/http` 包装配置的 `nginx -t` 语法检查；产品服务未启动，`/opt/substation/current` release、Windows LAN、真实 Foxglove 和演示闭环仍待现场验收。
 - Phase 6 任务持久化检查点：`e73f60a`。`substation_mission` 现在以单写者方式把任务队列、机器人模式、全局 state revision 和紧急停止锁存写入 `/var/lib/substation/sqlite/mission.sqlite3`；同 run 恢复完整快照，新 run 保留锁存并推进 revision。包级重建与测试为 `11 tests, 0 errors, 0 failures, 0 skipped`；直接对安装后的 `task_manager` 发送 SIGTERM 的 smoke 得到 SQLite `state_revision=1`、`emergency_stop_latched=0`，日志无 `Traceback/ERROR/FATAL/RCLError` 且无残留节点进程。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器把同 revision 完整队列发到 `/mission/execute_inspection`，执行器顺序调用标准 `/navigate_to_pose`；风险重排会取消当前普通目标并提交新队首，紧停会取消活动 Nav2 goal，不可达任务按 `continue_on_unreachable` 跳过或失败。显式 launch 与无 Nav2 fail-closed smoke 已验证；`ExecuteInspection` goal 缺失的 `schema_version` 契约字段已补齐。
@@ -79,7 +79,7 @@
 | Phase 5 证据与报告 ROS 服务 | reporting Service、RunContext 时间映射、内容寻址证据、Range、HTML/PDF/evidence/diagnostic 生成、artifact 索引与 Gateway 下载已验证 | 补 rosbag2、告警/轨迹/模型完整快照与正式报告验收 |
 | Phase 6 Nav2 巡检执行 | 风险重排、SQLite 恢复、mission/task terminal、Nav2 执行及手动/自动速度仲裁已验证 | 补冷启动 IDLE→START、紧停复位完整 barrier 和正式 live acceptance |
 | Phase 7 Gateway 真实控制面 | 权威状态、mission/evidence/reporting、mode/manual/e-stop、精确 TF/odom pose、电量、命令终态、report/diagnostic 索引下载已接入 | 补真实相机帧 |
-| Phase 8 浏览器验收 | 八个工作区、契约测试和生产构建通过 | 安装/提供 Chromium 后执行 Playwright；真实 Gateway/ROS/Nginx 联调 |
+| Phase 8 浏览器验收 | 八个工作区、契约测试和生产构建通过 | 操作员人工执行 Windows 浏览器验收；真实 Gateway/ROS/Nginx 联调 |
 | Phase 9 部署、Windows、Foxglove、演示 | systemd/Nginx/Foxglove 配置和静态契约已提交 | 以 `/opt/substation` release 实测、Windows LAN 验收、只读 Foxglove、900 s 闭环、报告/截图/演示视频 |
 
 用户在 AutoDL 完成 safety、equipment、fault 和 meter 四个独立模型后，按已约定的精简交付把四个训练结果 ZIP 发布到不可变 GitHub release 或固定 commit。本仓库收到后校验权重、训练过程摘要、类别映射和指标，导入生产映射并继续正式模型、仪表 OpenCV 下游和全栈验收。

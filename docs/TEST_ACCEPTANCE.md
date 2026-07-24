@@ -154,7 +154,7 @@ checksum_cleanup
 | 导航/风险闭环 | 风险任务闭环创建后 | `bash tests/scenarios/run_navigation_risk_acceptance.sh --evidence-dir "$acceptance_root/05-navigation-risk" --normal-runs 20 --seed-first 4200 --run-timeout-s 900` | 固定 seed 4200～4219 的 20 次运行记录、逐 run 成功判定、风险与目标时间线、路径和任务差异 |
 | 模型 | 数据/模型就绪后 | `.venv/bin/python scripts/evaluate_models.py --dataset-manifest datasets/manifest.yaml --model-manifest models/manifest.yaml --evidence-dir "$acceptance_root/06-models"` | 指标 JSON、混淆矩阵、逐类指标、FPS、摘要 |
 | Gateway | Gateway 创建后 | `.venv-web/bin/python -m pytest tests/integration/gateway -q --junitxml="$acceptance_root/07-gateway/junit.xml" --log-file="$acceptance_root/07-gateway/pytest.log"` | JUnit、OpenAPI、REST/WS transcript、SQLite 检查 |
-| Web / Playwright | 前端创建后 | `bash tests/web-e2e/run.sh --base-url http://ros-server/ --evidence-dir "$acceptance_root/08-web-e2e"` | Playwright HTML/JUnit、trace、截图、视频、下载报告 |
+| Web / 人工浏览器 | 前端创建后 | 按第 12 节人工访问 `http://ros-server/` 并保存验收记录 | 八工作区、控制流程、断线恢复、下载和网络边界记录 |
 | 性能 | 全栈就绪后 | `.venv/bin/python scripts/run_performance_acceptance.py --base-url http://ros-server/ --duration-s 300 --evidence-dir "$acceptance_root/09-performance"` | 原始样本、分位数、FPS、资源曲线和结果 JSON |
 | 报告追溯 | 报告链就绪后 | `.venv/bin/python scripts/verify_report_traceability.py --acceptance-root "$acceptance_root" --evidence-dir "$acceptance_root/10-reports"` | 报告/证据包摘要、关联图、rosbag2 metadata |
 | 最终验收 | 全部交付完成后 | `bash scripts/run_acceptance.sh --profile final --base-url http://ros-server/ --evidence-dir "$acceptance_root/11-final"` | 汇总 JSON/Markdown、全部层摘要、签名清单 |
@@ -645,27 +645,24 @@ bash scripts/verify_foxglove_read_only.sh --evidence-dir "$acceptance_root/07-ga
 
 Foxglove 不可用不影响产品验收；但最终交付必须至少完成一次地图、TF、路径和 `/diagnostics` 的只读显示验证。任何通过 Foxglove 发布命令/Topic、浏览器直连 DDS 或把 Foxglove 当控制恢复路径的配置均为失败。
 
-## 12. Web 构建与 Playwright E2E（未来）
+## 12. Web 构建与人工浏览器验收
 
 ```bash
 npm --prefix web/frontend ci
 npm --prefix web/frontend run build
-bash tests/web-e2e/run.sh \
-  --base-url http://ros-server/ \
-  --evidence-dir "$acceptance_root/08-web-e2e"
 ```
 
-一台未安装 ROS、Gazebo、Python 和 Node.js 的 Windows 客户端必须只访问 `http://ros-server/` 完成日常功能。Playwright 至少覆盖：
+本项目由操作员在 Windows 浏览器中人工验收，不把 Playwright 作为本轮交付前置条件。客户端不安装 ROS、Gazebo、Python 或 Node.js，只访问 `http://ros-server/`。人工验收应逐项记录时间、浏览器、服务器 release commit 和截图/备注：
 
 - 综合驾驶舱、三维孪生、感知、任务、风险、场景、报告和系统状态八个页面打开且无致命 console/page error；
 - 启动、暂停、继续巡检，地图设点，场景触发，紧急停止、显式复位和报告下载；
 - 202 只显示 accepted/executing，随后依据 `/ws/events` 或命令查询显示 terminal；失败/超时可追溯；
 - WebSocket 断线超过 5 seconds 后普通控制禁用，REST 四快照恢复后再续流；紧急停止 HTTP 按钮不依赖 WebSocket；
 - 手动控制松键、窗口失焦或断线立即选择零速度；紧急停止取消 Nav2、最终 `/cmd_vel` 为零并保持锁存，复位后不自动恢复旧任务/速度；
-- camera 坏帧、连接重启、sequence 缺口、stale pose、依赖降级和报告 Range 下载；
+- camera 流、连接重启、sequence 缺口、stale pose、依赖降级和报告 Range 下载；
 - 浏览器只连接 Nginx 产品地址；不得直连 `127.0.0.1:8000`、`127.0.0.1:3000` 或 DDS。
 
-`npm --prefix web/frontend ci`、`npm --prefix web/frontend run build` 或任一 Playwright 用例失败，八页缺页，关键流程只用 mock 而未经过真实 Gateway/ROS 集成，或缺 trace/截图/下载文件摘要，均失败。单元组件测试可 mock；最终 E2E 不可用 mock 替代系统闭环。
+`npm --prefix web/frontend ci`、`npm --prefix web/frontend run build` 失败、八页缺页、关键流程只用 mock 而未经过真实 Gateway/ROS 集成，或人工记录缺少关键流程证据，均失败。Playwright 仍可作为开发辅助工具，但其浏览器报告不替代真实 Gateway/ROS 集成。
 
 ## 13. 性能与资源验收（未来）
 
