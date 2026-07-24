@@ -56,6 +56,15 @@ def test_runner_validates_the_live_active_run_not_bootstrap_environment() -> Non
     assert 'lifecycle != "active"' in source
 
 
+def test_runner_reports_the_exact_preflight_failure_instead_of_exiting_silently() -> None:
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "production-acceptance: FAIL:" in source
+    assert "evidence staging directory is not empty" in source
+    assert "meter evaluation source is missing" in source
+    assert "rosbag target already exists" in source
+
+
 def test_probe_contract_covers_real_frames_modules_and_safety_barriers() -> None:
     source = PROBE.read_text(encoding="utf-8")
 

@@ -6,6 +6,11 @@ usage() {
   exit 2
 }
 
+fail() {
+  echo "production-acceptance: FAIL: $*" >&2
+  exit 1
+}
+
 [[ $# -eq 4 && "$1" = "--run-id" && "$3" = "--evidence-dir" ]] || usage
 run_id="$2"
 evidence_dir="$4"
@@ -13,17 +18,22 @@ duration_s=300
 fps_threshold=15
 [[ "$run_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || usage
 expected="/var/lib/substation/evidence/acceptance/$run_id/09-production-integration.staging"
-[[ "$evidence_dir" = "$expected" && -d "$evidence_dir" && ! -L "$evidence_dir" ]] || usage
-[[ -z "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]
+[[ "$evidence_dir" = "$expected" ]] || usage
+[[ -d "$evidence_dir" ]] || fail "evidence staging directory is not accessible: $evidence_dir"
+[[ ! -L "$evidence_dir" ]] || fail "evidence staging directory must not be a symlink: $evidence_dir"
+if ! staging_entry="$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit)"; then
+  fail "evidence staging directory cannot be traversed: $evidence_dir"
+fi
+[[ -z "$staging_entry" ]] || fail "evidence staging directory is not empty: $staging_entry"
 final_dir="${evidence_dir%.staging}"
-[[ ! -e "$final_dir" ]]
+[[ ! -e "$final_dir" ]] || fail "sealed evidence directory already exists: $final_dir"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$repo_root"
 git_safe=(git -c "safe.directory=$repo_root")
-[[ -z "$("${git_safe[@]}" status --porcelain)" ]]
+[[ -z "$("${git_safe[@]}" status --porcelain)" ]] || fail "repository is not clean: $repo_root"
 release_root="$(readlink -f /opt/substation/current)"
-[[ "$release_root" = /opt/substation/releases/* && -d "$release_root" ]]
+[[ "$release_root" = /opt/substation/releases/* && -d "$release_root" ]] || fail "current release is not immutable: $release_root"
 release_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$release_root/release-manifest.json")"
 (
   cd "$release_root"
@@ -34,7 +44,7 @@ for logical_model in yolo11n_safety yolo11n_equipment yolo11n_fault meter_locato
 done
 
 meter_source="/var/lib/substation/evidence/acceptance/35900da2-0e41-4d98-802b-b7e36675e988/04-meter-reader-evaluation.staging/meter-evaluation.json"
-[[ -s "$meter_source" ]]
+[[ -s "$meter_source" ]] || fail "meter evaluation source is missing: $meter_source"
 install -m 0640 "$meter_source" "$evidence_dir/meter-evaluation.json"
 printf 'run_id=%s\nrelease_commit=%s\nharness_commit=%s\nduration_s=%s\nfps_threshold=%s\nstarted_at=%s\n' \
   "$run_id" "$release_commit" "$("${git_safe[@]}" rev-parse HEAD)" "$duration_s" \
@@ -70,7 +80,7 @@ PY
 ss -H -ltnp > "$evidence_dir/listeners.txt"
 
 bag_root="/var/lib/substation/rosbag2/$run_id"
-[[ ! -e "$bag_root" ]]
+[[ ! -e "$bag_root" ]] || fail "rosbag target already exists: $bag_root"
 capture_pid=""
 cleanup() {
   if [[ -n "$capture_pid" ]] && kill -0 -- "-$capture_pid" 2>/dev/null; then
