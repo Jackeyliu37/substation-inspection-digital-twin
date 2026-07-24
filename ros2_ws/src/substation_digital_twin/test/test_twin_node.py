@@ -55,3 +55,27 @@ def test_active_snapshot_contains_registered_assets_without_measurements() -> No
     assert breaker["category"] == "breaker"
     assert breaker["temperature_celsius"] == ""
     assert breaker["run_id"] == "run-1"
+
+
+def test_twin_merges_valid_meter_reading_and_unit() -> None:
+    twin = TwinTelemetry({"meter-pressure-01": ("analog_meter", (4.0, 3.0, 0.0))})
+    message = DiagnosticArray()
+    message.header.stamp.sec = 9
+    message.status = [DiagnosticStatus(
+        name="meter-pressure-01",
+        hardware_id="meter-pressure-sensor-01",
+        values=[
+            KeyValue(key="run_id", value="run-1"),
+            KeyValue(key="reading", value="1.25"),
+            KeyValue(key="unit", value="MPa"),
+            KeyValue(key="valid", value="true"),
+            KeyValue(key="evidence_id", value="11111111-1111-4111-8111-111111111111"),
+        ],
+    )]
+
+    twin.apply_meter(message, "run-1")
+    values = {item.key: item.value for item in twin.snapshot("run-1").status[0].values}
+
+    assert values["meter_reading"] == "1.25"
+    assert values["meter_unit"] == "MPa"
+    assert values["latest_evidence_id"] == "11111111-1111-4111-8111-111111111111"

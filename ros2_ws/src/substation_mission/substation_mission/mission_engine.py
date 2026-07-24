@@ -106,8 +106,10 @@ class MissionEngine:
             return True
         if self._last_normal_replan_s is not None and monotonic_s - self._last_normal_replan_s < self.policy.normal_replan_cooldown_s:
             return False
-        mutable = tuple(task for task in self.tasks if task.state in (TaskState.QUEUED, TaskState.ACTIVE))
-        terminal = tuple(task for task in self.tasks if task.state not in (TaskState.QUEUED, TaskState.ACTIVE))
+        mutable = tuple(
+            task for task in self.tasks
+            if task.state in (TaskState.QUEUED, TaskState.ACTIVE)
+        )
         updated = tuple(
             replace(
                 task,
@@ -118,8 +120,17 @@ class MissionEngine:
                 ),
             ) for task in mutable
         )
-        ordered = tuple(sorted(updated, key=lambda task: (-task.computed_priority, task.task_id)))
-        next_tasks = ordered + terminal
+        updated_by_id = {task.task_id: task for task in updated}
+        queued = iter(sorted(
+            (task for task in updated if task.state == TaskState.QUEUED),
+            key=lambda task: (-task.computed_priority, task.task_id),
+        ))
+        next_tasks = tuple(
+            next(queued)
+            if task.state == TaskState.QUEUED
+            else updated_by_id.get(task.task_id, task)
+            for task in self.tasks
+        )
         if next_tasks == self.tasks:
             return False
         self.tasks = next_tasks

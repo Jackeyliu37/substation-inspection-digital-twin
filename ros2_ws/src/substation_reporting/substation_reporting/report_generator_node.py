@@ -63,6 +63,7 @@ class ReportServiceRuntime:
         self._tasks: InspectionTaskArray | None = None
         self._alerts: list[dict[str, object]] = []
         self._trajectory: list[dict[str, object]] = []
+        self._automatic_reports: set[tuple[str, str]] = set()
 
     def observe_run_context(self, message: RunContext) -> None:
         if message.schema_version == SCHEMA_VERSION and message.run_id:
@@ -262,6 +263,40 @@ class ReportServiceRuntime:
         response.report_id = report_id
         return response
 
+    def generate_automatic_report(self):
+        if self._context is None or self._tasks is None or self._risks is None:
+            return None
+        key = (self._tasks.run_id, self._tasks.mission_id)
+        if key in self._automatic_reports:
+            return None
+        if (
+            self._tasks.mission_state != InspectionTaskArray.MISSION_SUCCEEDED
+            or not self._tasks.tasks
+        ):
+            return None
+        terminal_assets = {
+            item.asset_id
+            for item in self._tasks.tasks
+            if item.state in (item.STATE_SUCCEEDED, item.STATE_SKIPPED)
+        }
+        if len(terminal_assets) != self._tasks.total_tasks:
+            return None
+        evaluated_assets = {item.asset_id for item in self._risks.assets}
+        if not terminal_assets.issubset(evaluated_assets):
+            return None
+        request = GenerateReport.Request()
+        request.schema_version = SCHEMA_VERSION
+        request.command_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"automatic-report:{key[0]}:{key[1]}",
+        ))
+        request.run_id, request.mission_id = key
+        request.formats = ["evidence", "html", "pdf"]
+        response = self.generate_report(request, GenerateReport.Response())
+        if response.accepted:
+            self._automatic_reports.add(key)
+        return response
+
     def generate_diagnostic_bundle(self, request, response):
         self._prepare(response)
         if (
@@ -388,6 +423,7 @@ class ReportGeneratorNode(Node):
             self._runtime.observe_odometry,
             50,
         )
+        self.create_timer(0.5, self._generate_automatic_report)
         if COMMIT_PATTERN.fullmatch(implementation_commit):
             self.create_service(
                 GenerateReport,
@@ -418,12 +454,25 @@ class ReportGeneratorNode(Node):
         return parsed
 
     def _load_bundle_sources(self) -> tuple[str, str]:
-        payloads = []
-        for path in (self._model_manifest_path, self._rosbag_metadata_path):
-            if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+        if (
+            not self._model_manifest_path.is_file()
+            or self._model_manifest_path.stat().st_size > 16 * 1024 * 1024
+        ):
+            raise ValueError("REPORT_BUNDLE_SOURCE_INVALID")
+        model_manifest = self._model_manifest_path.read_text(encoding="utf-8")
+        if self._rosbag_metadata_path.is_file():
+            if self._rosbag_metadata_path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError("REPORT_BUNDLE_SOURCE_INVALID")
-            payloads.append(path.read_text(encoding="utf-8"))
-        return payloads[0], payloads[1]
+            rosbag_metadata = self._rosbag_metadata_path.read_text(encoding="utf-8")
+        else:
+            rosbag_metadata = (
+                "rosbag2_bagfile_information:\n"
+                "  version: 9\n"
+                "  capture_status: unavailable\n"
+                "  message_count: 0\n"
+                "  relative_file_paths: []\n"
+            )
+        return model_manifest, rosbag_metadata
 
     def _submit_artifact(
         self,
@@ -508,6 +557,19 @@ class ReportGeneratorNode(Node):
             code = "NO_RESPONSE" if response is None else response.error_code
             self.get_logger().error(
                 f"evidence store rejected report artifact: {code}"
+            )
+
+    def _generate_automatic_report(self) -> None:
+        response = self._runtime.generate_automatic_report()
+        if response is None:
+            return
+        if response.accepted:
+            self.get_logger().info(
+                f"automatic inspection report generated: {response.report_id}"
+            )
+        else:
+            self.get_logger().warning(
+                f"automatic inspection report deferred: {response.error_code}"
             )
 
 

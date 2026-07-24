@@ -353,7 +353,7 @@ def test_task_manager_dispatches_its_complete_snapshot_to_executor(tmp_path) -> 
             rclpy.shutdown()
 
 
-def test_risk_replan_cancels_current_goal_and_dispatches_new_queue_head(tmp_path) -> None:
+def test_emergency_risk_cancels_current_goal_and_dispatches_emergency_head(tmp_path) -> None:
     module = executor_module()
     database = tmp_path / "mission.sqlite3"
     rclpy.init(args=[
@@ -424,13 +424,13 @@ def test_risk_replan_cancels_current_goal_and_dispatches_new_queue_head(tmp_path
         message.risk_revision = 2
         message.assets = [
             AssetRisk(asset_id="arrester-01", score_0_100=0.0),
-            AssetRisk(asset_id="transformer-01", score_0_100=70.0),
+            AssetRisk(asset_id="transformer-01", score_0_100=85.0),
         ]
         risks.publish(message)
 
         assert wait_condition(
             lambda: (
-                len(visited) == 11
+                len(visited) == 12
                 and manager_node._inspection_goal_handle is None
                 and manager_node._inspection_send_future is None
                 and manager_node._inspection_cancel_future is None
@@ -439,7 +439,11 @@ def test_risk_replan_cancels_current_goal_and_dispatches_new_queue_head(tmp_path
             8.0,
         )
         assert visited[:2] == [(3.5, -2.5), (2.8, 3.0)]
-        assert inspection_node.received_goal_frames == ["map", "map"]
+        assert inspection_node.received_goal_frames == ["map"] * len(visited)
+        snapshot = manager_node._runtime.snapshot()
+        assert snapshot.total_tasks == 11
+        assert snapshot.completed_tasks == 11
+        assert snapshot.mission_state == snapshot.MISSION_SUCCEEDED
     finally:
         if not release_first_navigation.done():
             release_first_navigation.set_result(True)

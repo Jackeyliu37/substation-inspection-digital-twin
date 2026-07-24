@@ -96,6 +96,7 @@ class MissionRuntime:
         self.active_task_id = ""
         self.completed_tasks = 0
         self.progress_0_1 = 0.0
+        self.risk_update_requires_execution_replacement = False
 
     def activate(self, *, reason: str) -> bool:
         if (
@@ -200,6 +201,7 @@ class MissionRuntime:
         runtime.active_task_id = str(record.get("active_task_id", ""))
         runtime.completed_tasks = int(record.get("completed_tasks", 0))
         runtime.progress_0_1 = float(record.get("progress_0_1", 0.0))
+        runtime.risk_update_requires_execution_replacement = False
         return runtime
 
     def manage(
@@ -333,7 +335,7 @@ class MissionRuntime:
             return False
         self.engine.tasks = tuple(updated)
         self.active_task_id = task_id
-        self.progress_0_1 = max(self.progress_0_1, float(progress_0_1))
+        self.progress_0_1 = self.completed_tasks / max(1, len(self.engine.tasks))
         self.state_revision += 1
         self.transition_command_id = ""
         self.transition_reason_code = "TASK_ACTIVE"
@@ -350,43 +352,64 @@ class MissionRuntime:
     ) -> bool:
         if self.mission_state != InspectionTaskArray.MISSION_RUNNING:
             return False
-        task_count = len(self.engine.tasks)
         succeeded = result_state == ExecuteInspection.Result.RESULT_SUCCEEDED
         counts_valid = completed_tasks >= 0 and skipped_tasks >= 0 and (
-            completed_tasks + skipped_tasks == task_count
+            completed_tasks + skipped_tasks == 1
         )
+        active = next(
+            (item for item in self.engine.tasks if item.task_id == self.active_task_id),
+            None,
+        )
+        if active is None:
+            return False
         updated = []
-        for index, task in enumerate(self.engine.tasks):
+        for task in self.engine.tasks:
+            if task.task_id != active.task_id:
+                updated.append(task)
+                continue
             if succeeded and counts_valid:
-                state = TaskState.SUCCEEDED if index < completed_tasks else TaskState.SKIPPED
+                state = (
+                    TaskState.SUCCEEDED if completed_tasks == 1 else TaskState.SKIPPED
+                )
                 last_error = "" if state == TaskState.SUCCEEDED else "UNREACHABLE_SKIPPED"
             else:
-                state = TaskState.FAILED if task.state == TaskState.ACTIVE else TaskState.CANCELLED
+                state = TaskState.FAILED
                 last_error = error_code or "EXECUTION_RESULT_INVALID"
             updated.append(replace(task, state=state, last_error_code=last_error))
         self.engine.tasks = tuple(updated)
         self.active_task_id = ""
-        self.completed_tasks = completed_tasks if succeeded and counts_valid else sum(
-            item.state == TaskState.SUCCEEDED for item in updated
+        self.completed_tasks = sum(item.state == TaskState.SUCCEEDED for item in updated)
+        terminal_tasks = sum(
+            item.state in (TaskState.SUCCEEDED, TaskState.SKIPPED) for item in updated
         )
-        self.progress_0_1 = 1.0 if succeeded and counts_valid else self.progress_0_1
-        self.mission_state = (
-            InspectionTaskArray.MISSION_SUCCEEDED
-            if succeeded and counts_valid
-            else InspectionTaskArray.MISSION_FAILED
-        )
-        self.context_lifecycle = self.CONTEXT_ENDED
-        self.context_revision += 1
+        self.progress_0_1 = terminal_tasks / max(1, len(updated))
+        has_remaining = any(item.state == TaskState.QUEUED for item in updated)
+        if succeeded and counts_valid and has_remaining:
+            self.mission_state = InspectionTaskArray.MISSION_RUNNING
+            self.transition_reason_code = (
+                "TASK_SUCCEEDED" if completed_tasks == 1 else "TASK_SKIPPED"
+            )
+            self.transition_reason = active.asset_id
+        else:
+            self.mission_state = (
+                InspectionTaskArray.MISSION_SUCCEEDED
+                if succeeded and counts_valid
+                else InspectionTaskArray.MISSION_FAILED
+            )
+            self.context_lifecycle = self.CONTEXT_ENDED
+            self.context_revision += 1
+            self.transition_reason_code = (
+                "MISSION_SUCCEEDED"
+                if self.mission_state == InspectionTaskArray.MISSION_SUCCEEDED
+                else "MISSION_EXECUTION_FAILED"
+            )
+            self.transition_reason = error_code
         self.state_revision += 1
         self.transition_command_id = ""
-        self.transition_reason_code = (
-            "MISSION_SUCCEEDED" if self.mission_state == InspectionTaskArray.MISSION_SUCCEEDED
-            else "MISSION_EXECUTION_FAILED"
-        )
-        self.transition_reason = error_code
         return True
 
     def apply_risks(self, risks: AssetRiskArray, *, monotonic_s: float) -> bool:
+        self.risk_update_requires_execution_replacement = False
         if self.mission_state not in (
             InspectionTaskArray.MISSION_RUNNING,
             InspectionTaskArray.MISSION_PAUSED,
@@ -394,19 +417,34 @@ class MissionRuntime:
             return False
         if risks.run_id != self.engine.run_id:
             return False
+        active_task_id = self.active_task_id
+        previous_order = tuple(task.task_id for task in self.engine.tasks)
         changed = self.engine.apply_risk(
             {item.asset_id: float(item.score_0_100) for item in risks.assets},
             monotonic_s=monotonic_s,
         )
         if changed:
-            self.engine.tasks = tuple(
-                replace(task, state=TaskState.QUEUED)
-                if task.state == TaskState.ACTIVE else task
+            active_preserved = bool(active_task_id) and any(
+                task.task_id == active_task_id and task.state == TaskState.ACTIVE
                 for task in self.engine.tasks
             )
-            self.active_task_id = ""
+            emergency_preemption = bool(active_task_id) and (
+                bool(self.engine.tasks)
+                and self.engine.tasks[0].emergency
+                and self.engine.tasks[0].task_id != active_task_id
+            )
+            if emergency_preemption:
+                self.engine.tasks = tuple(
+                    replace(task, state=TaskState.QUEUED)
+                    if task.state == TaskState.ACTIVE else task
+                    for task in self.engine.tasks
+                )
+                self.active_task_id = ""
+                active_preserved = False
+            self.risk_update_requires_execution_replacement = not active_preserved
             self.state_revision += 1
-            self.queue_revision += 1
+            if tuple(task.task_id for task in self.engine.tasks) != previous_order:
+                self.queue_revision += 1
         return changed
 
     def snapshot(self) -> InspectionTaskArray:
@@ -542,7 +580,7 @@ class TaskManagerNode(Node):
         self._inspection_goal_handle = None
         self._inspection_send_future = None
         self._inspection_cancel_future = None
-        self._dispatched_execution_signature: tuple[int, int] | None = None
+        self._dispatched_execution_signature: tuple[int, int, int] | None = None
         self._replacement_requested = False
         self._motion_barrier_requested = False
         self._velocity_arbiter = SafeVelocityArbiter()
@@ -638,7 +676,11 @@ class TaskManagerNode(Node):
 
     def _on_risk(self, message: AssetRiskArray) -> None:
         if self._runtime.apply_risks(message, monotonic_s=time.monotonic()):
-            self._publish()
+            self._publish(
+                dispatch_execution=(
+                    self._runtime.risk_update_requires_execution_replacement
+                )
+            )
 
     def _manage_mission(self, request, response):
         actions = {
@@ -877,7 +919,11 @@ class TaskManagerNode(Node):
         ):
             self._cancel_execution_goal()
             return
-        signature = (self._runtime.context_revision, snapshot.queue_revision)
+        signature = (
+            self._runtime.context_revision,
+            snapshot.state_revision,
+            snapshot.queue_revision,
+        )
         if self._dispatched_execution_signature == signature:
             return
         if not self._inspection_client.server_is_ready():
@@ -895,19 +941,20 @@ class TaskManagerNode(Node):
         goal.header = snapshot.header
         goal.command_id = str(uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"{snapshot.run_id}:{snapshot.mission_id}:{signature[0]}:{signature[1]}",
+            f"{snapshot.run_id}:{snapshot.mission_id}:{signature[0]}:{signature[1]}:{signature[2]}",
         ))
         goal.run_id = snapshot.run_id
         goal.mission_id = snapshot.mission_id
         goal.route_id = snapshot.route_id
         goal.state_revision = snapshot.state_revision
         goal.queue_revision = snapshot.queue_revision
-        goal.tasks = [
+        queued_tasks = [
             task for task in snapshot.tasks
             if task.state == InspectionTaskMessage.STATE_QUEUED
         ]
-        if not goal.tasks:
+        if not queued_tasks:
             return
+        goal.tasks = queued_tasks[:1]
         goal.continue_on_unreachable = self._continue_on_unreachable
         self._dispatched_execution_signature = signature
         self._inspection_send_future = self._inspection_client.send_goal_async(
@@ -964,6 +1011,9 @@ class TaskManagerNode(Node):
             self._publish(dispatch_execution=False)
         if self._inspection_goal_handle is expected_goal_handle:
             self._inspection_goal_handle = None
+        self._dispatched_execution_signature = None
+        if self._runtime.mission_state == InspectionTaskArray.MISSION_RUNNING:
+            self._dispatch_execution_snapshot(self._current_stamped_snapshot())
 
     def _cancel_execution_goal(self) -> None:
         if (

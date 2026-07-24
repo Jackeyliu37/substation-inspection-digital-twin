@@ -57,6 +57,42 @@ def test_identical_risk_snapshot_does_not_replan_after_cooldown() -> None:
     assert repeated is False
 
 
+def test_normal_risk_update_preserves_active_task_and_only_reorders_queue() -> None:
+    module = load_module()
+    engine = module.MissionEngine(
+        module.MissionPolicy(normal_replan_cooldown_s=0.0)
+    )
+    engine.start(run_id="run-1", mission_id="mission-1", route_id="normal-route")
+    engine.replace_tasks((
+        module.InspectionTask(
+            "task-active",
+            "breaker-01",
+            10,
+            4.0,
+            state=module.TaskState.ACTIVE,
+        ),
+        module.InspectionTask("task-low", "arrester-01", 10, 2.0),
+        module.InspectionTask("task-high", "transformer-01", 10, 6.0),
+    ))
+
+    changed = engine.apply_risk(
+        {
+            "breaker-01": 5.0,
+            "arrester-01": 10.0,
+            "transformer-01": 70.0,
+        },
+        monotonic_s=20.0,
+    )
+
+    assert changed is True
+    assert [task.task_id for task in engine.tasks] == [
+        "task-active",
+        "task-high",
+        "task-low",
+    ]
+    assert engine.tasks[0].state == module.TaskState.ACTIVE
+
+
 def test_mission_policy_loads_ordering_values_from_versioned_config(tmp_path: Path) -> None:
     module = load_module()
     path = tmp_path / "mission_ordering.yaml"

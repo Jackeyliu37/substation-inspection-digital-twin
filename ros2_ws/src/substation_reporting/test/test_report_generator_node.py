@@ -160,6 +160,79 @@ def test_runtime_rejects_unsorted_or_duplicate_report_formats() -> None:
     assert rejected.error_code == "VALIDATION_FAILED"
 
 
+def test_runtime_automatically_generates_one_report_after_all_assets_are_evaluated() -> None:
+    module = node_module()
+    run_id = str(uuid4())
+    mission_id = str(uuid4())
+    submitted: list[tuple[str, str, bytes]] = []
+    runtime = module.ReportServiceRuntime(
+        ReportGenerator(),
+        implementation_commit="a" * 40,
+        model_versions={},
+        dataset_versions={},
+        submit_artifact=lambda artifact_id, format_name, _run, _mission, _revision, payload, _media: (
+            submitted.append((artifact_id, format_name, payload)) or True
+        ),
+        load_bundle_sources=lambda: (
+            "schema_version: 1\n",
+            "rosbag2_bagfile_information:\n  version: 9\n",
+        ),
+    )
+    runtime.observe_run_context(RunContext(
+        schema_version=1,
+        run_id=run_id,
+        context_revision=8,
+        lifecycle=RunContext.LIFECYCLE_ENDED,
+    ))
+    runtime.observe_tasks(InspectionTaskArray(
+        schema_version=1,
+        run_id=run_id,
+        mission_id=mission_id,
+        mission_state=InspectionTaskArray.MISSION_SUCCEEDED,
+        completed_tasks=1,
+        total_tasks=2,
+        tasks=[
+            InspectionTask(asset_id="breaker-01", state=InspectionTask.STATE_SUCCEEDED),
+            InspectionTask(asset_id="transformer-01", state=InspectionTask.STATE_SKIPPED),
+        ],
+    ))
+    runtime.observe_risks(AssetRiskArray(
+        schema_version=1,
+        run_id=run_id,
+        assets=[AssetRisk(asset_id="breaker-01", level=AssetRisk.LEVEL_NORMAL)],
+    ))
+    assert runtime.generate_automatic_report() is None
+
+    runtime.observe_risks(AssetRiskArray(
+        schema_version=1,
+        run_id=run_id,
+        assets=[
+            AssetRisk(asset_id="breaker-01", level=AssetRisk.LEVEL_NORMAL),
+            AssetRisk(asset_id="transformer-01", level=AssetRisk.LEVEL_NORMAL),
+        ],
+    ))
+    generated = runtime.generate_automatic_report()
+
+    assert generated is not None and generated.accepted is True
+    assert [item[1] for item in submitted] == ["evidence", "html", "pdf"]
+    assert runtime.generate_automatic_report() is None
+
+
+def test_bundle_sources_mark_missing_rosbag_as_unavailable(tmp_path) -> None:
+    module = node_module()
+    model_manifest = tmp_path / "models.yaml"
+    model_manifest.write_text("schema_version: 1\n", encoding="utf-8")
+    node = module.ReportGeneratorNode.__new__(module.ReportGeneratorNode)
+    node._model_manifest_path = model_manifest
+    node._rosbag_metadata_path = tmp_path / "missing-metadata.yaml"
+
+    manifest, metadata = node._load_bundle_sources()
+
+    assert manifest == "schema_version: 1\n"
+    assert "rosbag2_bagfile_information:" in metadata
+    assert "capture_status: unavailable" in metadata
+    assert "message_count: 0" in metadata
+
 def wait_future(future, timeout_s: float):
     deadline = time.monotonic() + timeout_s
     while not future.done() and time.monotonic() < deadline:

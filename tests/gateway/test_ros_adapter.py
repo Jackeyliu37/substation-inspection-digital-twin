@@ -445,6 +445,33 @@ def test_all_twin_assets_are_exposed_even_before_each_has_a_risk_sample() -> Non
     assert state.assets[1]["risk"]["level"] == "attention"
 
 
+def test_mission_and_risk_transitions_append_semantic_operator_events() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    projection.on_run_context(_run_context())
+    active = _mission()
+
+    assert projection.on_mission(active) is True
+    assert state.events[-1]["kind"] == "task.active"
+    assert state.events[-1]["asset_id"] == "transformer-01"
+    assert "开始检查" in state.events[-1]["description"]
+
+    completed = copy.deepcopy(active)
+    completed.state_revision += 1
+    completed.active_task_id = ""
+    completed.completed_tasks = 1
+    completed.tasks[0].state = InspectionTask.STATE_SUCCEEDED
+    assert projection.on_mission(completed) is True
+    assert state.events[-1]["kind"] == "task.succeeded"
+    assert state.events[-1]["result"] == "succeeded"
+    assert "检查完成" in state.events[-1]["description"]
+
+    assert projection.on_risk(_risk()) is True
+    assert state.events[-1]["kind"] == "risk.evaluated"
+    assert state.events[-1]["score_0_100"] == 48.2
+    assert "风险评分" in state.events[-1]["description"]
+
+
 def test_matching_mission_transition_notifies_command_terminal_observer() -> None:
     observed = []
     state = GatewayState()

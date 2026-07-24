@@ -10,7 +10,14 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from substation_description.asset_registry import load_asset_registry
-from substation_interfaces.msg import AssetRisk, AssetRiskArray, RiskAlert, RunContext
+from substation_interfaces.msg import (
+    AssetRisk,
+    AssetRiskArray,
+    InspectionTask,
+    InspectionTaskArray,
+    RiskAlert,
+    RunContext,
+)
 
 from .risk_engine import AlertEvent, RiskEngine, load_risk_policy
 
@@ -27,11 +34,17 @@ def components_from_twin_status(
     values = {item.key: item.value for item in status.values}
     if values.get("run_id") != active_run_id or not active_run_id:
         return None
+    def optional_number(name: str) -> float:
+        value = values.get(name, "")
+        if value == "":
+            return 0.0
+        return float(value)
+
     try:
-        temperature = float(values["temperature_celsius"])
-        smoke = float(values["smoke_0_1"])
-        gas = float(values["gas_ppm"])
-    except (KeyError, ValueError):
+        temperature = optional_number("temperature_celsius")
+        smoke = optional_number("smoke_0_1")
+        gas = optional_number("gas_ppm")
+    except ValueError:
         return None
     if not all(math.isfinite(value) for value in (temperature, smoke, gas)):
         return None
@@ -48,6 +61,27 @@ def components_from_twin_status(
     return components
 
 
+def completed_assets(
+    previous: InspectionTaskArray | None,
+    current: InspectionTaskArray,
+) -> set[str]:
+    if previous is not None and previous.run_id != current.run_id:
+        previous = None
+    previous_states = {
+        item.asset_id: item.state for item in previous.tasks
+    } if previous is not None else {}
+    terminal_states = {
+        InspectionTask.STATE_SUCCEEDED,
+        InspectionTask.STATE_SKIPPED,
+    }
+    return {
+        item.asset_id
+        for item in current.tasks
+        if item.state in terminal_states
+        and previous_states.get(item.asset_id) not in terminal_states
+    }
+
+
 class RiskNode(Node):
     def __init__(self) -> None:
         super().__init__("risk")
@@ -59,6 +93,8 @@ class RiskNode(Node):
         self._run_id = ""
         self._revision = 0
         self._latest: dict[str, tuple[object, dict[str, float]]] = {}
+        self._available_components: dict[str, tuple[int, dict[str, float]]] = {}
+        self._tasks: InspectionTaskArray | None = None
         self._alerts: dict[str, str] = {}
         q_state = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=1,
@@ -74,10 +110,24 @@ class RiskNode(Node):
         self._alert_pub = self.create_publisher(RiskAlert, "/risk/alerts", q_event)
         self.create_subscription(RunContext, "/system/run_context", self._on_context, q_state)
         self.create_subscription(DiagnosticArray, "/digital_twin/assets", self._on_twin, q_state)
+        self.create_subscription(
+            InspectionTaskArray,
+            "/mission/inspection_tasks",
+            self._on_tasks,
+            q_state,
+        )
         self.create_timer(0.2, self._publish)
 
     def _on_context(self, context: RunContext) -> None:
-        self._run_id = context.run_id if context.lifecycle == RunContext.LIFECYCLE_ACTIVE else ""
+        next_run_id = context.run_id if context.lifecycle in (
+            RunContext.LIFECYCLE_ACTIVE,
+            RunContext.LIFECYCLE_ENDED,
+        ) else ""
+        if next_run_id != self._run_id:
+            self._latest.clear()
+            self._available_components.clear()
+            self._tasks = None
+        self._run_id = next_run_id
 
     def _on_twin(self, message: DiagnosticArray) -> None:
         for status in message.status:
@@ -88,8 +138,29 @@ class RiskNode(Node):
             if components is None:
                 continue
             stamp_ns = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
-            observation = self._engine.observe(status.name, components, stamp_ns=stamp_ns)
-            self._latest[status.name] = (observation, components)
+            self._available_components[status.name] = (stamp_ns, components)
+        self._publish()
+
+    def _on_tasks(self, message: InspectionTaskArray) -> None:
+        if not self._run_id or message.run_id != self._run_id:
+            return
+        newly_completed = completed_assets(self._tasks, message)
+        self._tasks = message
+        for asset_id in sorted(newly_completed):
+            available = self._available_components.get(asset_id)
+            if available is None:
+                components = {
+                    "visual": 0.0,
+                    "temperature": 0.0,
+                    "smoke": 0.0,
+                    "gas": 0.0,
+                    "context": 0.0,
+                }
+                stamp = self.get_clock().now().nanoseconds
+            else:
+                stamp, components = available
+            observation = self._engine.observe(asset_id, components, stamp_ns=stamp)
+            self._latest[asset_id] = (observation, components)
             self._revision += 1
             if observation.alert_event is not None:
                 self._publish_alert(observation)

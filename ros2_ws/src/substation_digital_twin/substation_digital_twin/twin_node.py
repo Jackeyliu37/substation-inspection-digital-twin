@@ -18,6 +18,9 @@ class _Telemetry:
     temperature_celsius: float | None = None
     smoke_0_1: float | None = None
     gas_ppm: float | None = None
+    meter_reading: float | None = None
+    meter_unit: str = ""
+    latest_evidence_id: str = ""
     sec: int = 0
     nanosec: int = 0
 
@@ -67,10 +70,11 @@ class TwinTelemetry:
                 "temperature_celsius": "" if telemetry.temperature_celsius is None else telemetry.temperature_celsius,
                 "smoke_0_1": "" if telemetry.smoke_0_1 is None else telemetry.smoke_0_1,
                 "gas_ppm": "" if telemetry.gas_ppm is None else telemetry.gas_ppm,
-                "meter_reading": "", "meter_unit": "",
+                "meter_reading": "" if telemetry.meter_reading is None else telemetry.meter_reading,
+                "meter_unit": telemetry.meter_unit,
                 "last_observed_ros_sec": telemetry.sec,
                 "last_observed_ros_nanosec": telemetry.nanosec,
-                "latest_evidence_id": "",
+                "latest_evidence_id": telemetry.latest_evidence_id,
             }
             output.status.append(DiagnosticStatus(
                 level=DiagnosticStatus.OK,
@@ -80,6 +84,29 @@ class TwinTelemetry:
                 values=[KeyValue(key=key, value=str(value)) for key, value in values.items()],
             ))
         return output
+
+    def apply_meter(self, message: DiagnosticArray, active_run_id: str) -> None:
+        for status in message.status:
+            values = {item.key: item.value for item in status.values}
+            if (
+                status.name not in self._telemetry
+                or values.get("run_id") != active_run_id
+                or values.get("valid") != "true"
+            ):
+                continue
+            try:
+                reading = float(values["reading"])
+            except (KeyError, ValueError):
+                continue
+            unit = values.get("unit", "")
+            if not math.isfinite(reading) or not unit:
+                continue
+            telemetry = self._telemetry[status.name]
+            telemetry.meter_reading = reading
+            telemetry.meter_unit = unit
+            telemetry.latest_evidence_id = values.get("evidence_id", "")
+            telemetry.sec = message.header.stamp.sec
+            telemetry.nanosec = message.header.stamp.nanosec
 
 
 class DigitalTwinNode(Node):
@@ -116,6 +143,12 @@ class DigitalTwinNode(Node):
                 lambda message, f=field, k=key: self._on_measurement(message, f, k),
                 q_stream,
             )
+        self.create_subscription(
+            DiagnosticArray,
+            "/perception/meters/readings",
+            self._on_meter,
+            q_stream,
+        )
         self.create_timer(0.5, self._publish)
 
     def _on_context(self, context: RunContext) -> None:
@@ -123,6 +156,10 @@ class DigitalTwinNode(Node):
 
     def _on_measurement(self, message: DiagnosticArray, field: str, key: str) -> None:
         self._twin.apply(message, field, key, self._run_id)
+        self._publish()
+
+    def _on_meter(self, message: DiagnosticArray) -> None:
+        self._twin.apply_meter(message, self._run_id)
         self._publish()
 
     def _publish(self) -> None:

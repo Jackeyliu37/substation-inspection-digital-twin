@@ -76,6 +76,34 @@ def test_runtime_keeps_queue_revision_for_identical_risk_snapshot() -> None:
     assert runtime.queue_revision == queue_revision
 
 
+def test_runtime_normal_risk_update_does_not_interrupt_active_task() -> None:
+    runtime = MissionRuntime(
+        MissionPolicy(normal_replan_cooldown_s=0.0),
+        "run-1",
+        "mission-1",
+        (
+            AssetGoal("breaker-01", 0.5, 1.8, 1.57),
+            AssetGoal("transformer-01", 4.0, 1.0, 1.57),
+        ),
+    )
+    active_task_id = runtime.snapshot().tasks[0].task_id
+    assert runtime.apply_execution_feedback(active_task_id, progress_0_1=0.25)
+    queue_revision = runtime.queue_revision
+    risks = AssetRiskArray(run_id="run-1", assets=[
+        AssetRisk(asset_id="breaker-01", score_0_100=5.0),
+        AssetRisk(asset_id="transformer-01", score_0_100=70.0),
+    ])
+
+    changed = runtime.apply_risks(risks, monotonic_s=12.0)
+    snapshot = runtime.snapshot()
+
+    assert changed is True
+    assert snapshot.active_task_id == active_task_id
+    assert snapshot.tasks[0].task_id == active_task_id
+    assert snapshot.tasks[0].state == snapshot.tasks[0].STATE_ACTIVE
+    assert snapshot.queue_revision == queue_revision
+
+
 def test_runtime_restores_queue_and_emergency_latch_from_persisted_record() -> None:
     policy = MissionPolicy(normal_replan_cooldown_s=0.0)
     goals = (
@@ -99,6 +127,7 @@ def test_runtime_restores_queue_and_emergency_latch_from_persisted_record() -> N
     assert [item.task_id for item in snapshot.tasks] == [
         item.task_id for item in runtime.snapshot().tasks
     ]
+    assert restored.risk_update_requires_execution_replacement is False
 
 
 def test_runtime_persists_pause_resume_and_stop_lifecycle_transitions() -> None:
@@ -229,7 +258,26 @@ def test_runtime_persists_action_feedback_and_successful_task_terminal_states() 
 
     assert runtime.finish_execution(
         result_state=0,
-        completed_tasks=2,
+        completed_tasks=1,
+        skipped_tasks=0,
+        error_code="",
+    ) is True
+    advanced = runtime.snapshot()
+    assert advanced.mission_state == advanced.MISSION_RUNNING
+    assert advanced.active_task_id == ""
+    assert advanced.completed_tasks == 1
+    assert advanced.progress_0_1 == 0.5
+    assert [task.state for task in advanced.tasks] == [
+        advanced.tasks[0].STATE_SUCCEEDED,
+        advanced.tasks[0].STATE_QUEUED,
+    ]
+    assert advanced.transition_reason_code == "TASK_SUCCEEDED"
+
+    second_task_id = advanced.tasks[1].task_id
+    assert runtime.apply_execution_feedback(second_task_id, progress_0_1=0.0) is True
+    assert runtime.finish_execution(
+        result_state=0,
+        completed_tasks=1,
         skipped_tasks=0,
         error_code="",
     ) is True

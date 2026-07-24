@@ -52,3 +52,22 @@
 @media (max-width:1050px) { .model-showcase-grid { grid-template-columns:1fr; }.map-device-index { grid-template-columns:1fr 1fr; } }
 @media (max-width:680px) { .map-device-index { grid-template-columns:1fr; }.twin-toolbar { right:12px; }.model-showcase-grid { grid-template-columns:1fr; } }
 .safety-banner { display:flex; align-items:center; gap:14px; padding:13px 28px; background:#3d2916; border-bottom:1px solid #795628; color:#ffe5b0; font-size:15px; }.safety-banner strong { color:#ffd07b; white-space:nowrap; }.operator-guide { display:grid; gap:6px; margin-top:20px; padding:12px 14px; background:#0b2522; border-left:3px solid var(--accent); }.operator-guide strong { color:#82e4ca; font-size:15px; }.operator-guide span { color:#b9cbc6; font-size:14px; line-height:1.55; }.button-row .primary-action { background:#176958; border-color:#54d3b2; color:#f1fffb; font-weight:700; padding-left:16px; padding-right:16px; }
+
+/* Inspection closure: complete asset, event, sensor and risk presentation. */
+.asset-overview .asset-list,.event-panel { max-height:540px; overflow:auto; }
+.event div > span { display:block; color:#c5d0d6; font-size:14px; line-height:1.45; margin:3px 0; }
+.sensor-column { display:grid; gap:12px; align-content:start; }
+.sensor-panel,.risk-formula { min-height:0; }
+.sensor-grid { display:grid; grid-template-columns:minmax(120px,.8fr) minmax(0,1.2fr); gap:0; margin:0; }
+.sensor-grid dt,.sensor-grid dd { margin:0; padding:10px 0; border-bottom:1px solid rgba(38,51,62,.72); font-size:14px; }
+.sensor-grid dt { color:var(--muted); }
+.sensor-grid dd { color:var(--ink); text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.risk-formula .formula { padding:10px 12px; background:#0b2522; border-left:3px solid var(--accent); color:#cce9e1; font-size:14px; }
+.risk-formula ul { list-style:none; padding:0; margin:12px 0; }
+.risk-formula li { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid rgba(38,51,62,.72); color:var(--muted); font-size:14px; }
+.risk-formula li b { color:var(--ink); font-variant-numeric:tabular-nums; }
+.formula-result { color:var(--accent); font-size:15px; font-weight:700; }
+.model-status-wide { grid-column:1 / -1; min-height:0; }
+.model-status-wide .model-list { grid-template-columns:repeat(4,minmax(0,1fr)); }
+@media (max-width:1050px) { .model-status-wide .model-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:720px) { .model-status-wide .model-list { grid-template-columns:1fr; }.sensor-grid { grid-template-columns:1fr; }.sensor-grid dd { text-align:left; padding-top:0; } }

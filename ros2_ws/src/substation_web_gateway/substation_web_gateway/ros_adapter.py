@@ -157,6 +157,12 @@ class RosStateProjector:
     def _bump(self) -> None:
         self.state.snapshot_revision += 1
 
+    def _append_event(self, event: dict[str, Any]) -> None:
+        event.setdefault("occurred_at", _utc_now())
+        self.state.events.append(event)
+        if len(self.state.events) > 200:
+            del self.state.events[:-200]
+
     def on_annotated_image(self, message: Image) -> None:
         if (
             message.header.frame_id != "camera_optical_frame"
@@ -373,6 +379,10 @@ class RosStateProjector:
             and self.state.ready_dependencies["mission"]
         ):
             return True
+        previous_tasks = {
+            item.get("task_id"): item for item in self.state.mission.get("tasks", [])
+        }
+        previous_state = self.state.mission.get("state")
         self.state.mission = mission
         self.state.system["emergency_stop_latched"] = bool(message.emergency_stop_latched)
         self._robot_mode = int(message.robot_mode)
@@ -380,6 +390,45 @@ class RosStateProjector:
         self._latch_revision = int(message.emergency_stop_latch_revision)
         self._sync_robot_mission_fields(self._latch_revision)
         self.state.ready_dependencies["mission"] = True
+        for item in tasks:
+            previous = previous_tasks.get(item["task_id"])
+            if previous is not None and previous.get("state") == item["state"]:
+                continue
+            if item["state"] == "active":
+                self._append_event({
+                    "kind": "task.active",
+                    "asset_id": item["asset_id"],
+                    "task_id": item["task_id"],
+                    "result": "active",
+                    "description": f"开始检查设备 {item['asset_id']}",
+                })
+            elif item["state"] in {"succeeded", "skipped", "failed"}:
+                descriptions = {
+                    "succeeded": "检查完成",
+                    "skipped": "设备不可达，已跳过",
+                    "failed": "检查失败",
+                }
+                self._append_event({
+                    "kind": f"task.{item['state']}",
+                    "asset_id": item["asset_id"],
+                    "task_id": item["task_id"],
+                    "result": item["state"],
+                    "description": f"设备 {item['asset_id']} {descriptions[item['state']]}",
+                })
+        if mission["state"] != previous_state and mission["state"] in {
+            "succeeded", "failed", "stopped"
+        }:
+            descriptions = {
+                "succeeded": "自动巡检全部完成，正在生成报告",
+                "failed": "自动巡检失败",
+                "stopped": "自动巡检已停止",
+            }
+            self._append_event({
+                "kind": f"mission.{mission['state']}",
+                "mission_id": mission["mission_id"],
+                "result": mission["state"],
+                "description": descriptions[mission["state"]],
+            })
         if self._command_observer is not None and message.transition_command_id:
             observation = dict(mission)
             observation.update(
@@ -583,9 +632,24 @@ class RosStateProjector:
             }
         if int(message.risk_revision) == self._risk_revision and accepted == self._risk_by_asset:
             return True
+        previous_risks = self._risk_by_asset
         self._risk_by_asset = accepted
         self._risk_revision = int(message.risk_revision)
         self._render_assets()
+        for asset_id, risk in accepted.items():
+            previous = previous_risks.get(asset_id)
+            if previous == risk:
+                continue
+            self._append_event({
+                "kind": "risk.evaluated",
+                "asset_id": asset_id,
+                "result": risk["level"],
+                "score_0_100": risk["score_0_100"],
+                "description": (
+                    f"设备 {asset_id} 风险评分 {risk['score_0_100']:.1f}，"
+                    f"等级 {risk['level']}"
+                ),
+            })
         self._refresh_risk_ready()
         self._bump()
         return True
@@ -670,7 +734,7 @@ class RosStateProjector:
             return False
         if message.event_type >= 3 or message.previous_level >= 4 or message.current_level >= 4:
             return False
-        self.state.events.append({
+        self._append_event({
             "type": "risk.alert",
             "alert_id": message.alert_id,
             "asset_id": message.asset_id,

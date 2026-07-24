@@ -134,6 +134,32 @@ for (const acceptanceFeature of [
 if (page.includes("已按项目决策接受阈值豁免")) {
   throw new Error("threshold waiver wording must not be shown in the product UI");
 }
+if (page.includes("assets.slice(0, 5)")) {
+  throw new Error("dashboard must render all registered assets");
+}
+if (!page.includes("events.slice(-50).reverse()")) {
+  throw new Error("event stream must render the advertised latest 50 events");
+}
+for (const closureFeature of [
+  "机器人实时传感器",
+  "里程计位姿",
+  "线速度 / 角速度",
+  "电池电量",
+  "相机帧率",
+  "温度传感器",
+  "烟雾传感器",
+  "气体传感器",
+  "仪表读数",
+  "风险评分方法",
+  "视觉异常 × 30%",
+  "温度 × 25%",
+  "烟雾 × 20%",
+  "气体 × 10%",
+  "组合场景 × 15%",
+  "event.payload?.description",
+]) {
+  if (!page.includes(closureFeature)) throw new Error(`missing inspection closure UI: ${closureFeature}`);
+}
 if (page.includes('<text x={point.x + 4}')) {
   throw new Error("full asset labels must not clutter the occupancy map");
 }
