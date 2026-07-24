@@ -149,6 +149,7 @@ class CommandStore:
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self._lock = threading.Lock()
+        self._transition_observer = None
         self._connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA busy_timeout=5000")
@@ -169,6 +170,7 @@ class CommandStore:
                 completed_at TEXT,
                 result_json TEXT,
                 error_json TEXT,
+                expectation_json TEXT,
                 response_status INTEGER NOT NULL,
                 response_json TEXT NOT NULL,
                 UNIQUE(method, route, idempotency_key)
@@ -178,10 +180,36 @@ class CommandStore:
         columns = {
             row["name"] for row in self._connection.execute("PRAGMA table_info(commands)")
         }
-        for name in ("started_at", "completed_at", "result_json", "error_json"):
+        for name in (
+            "started_at", "completed_at", "result_json", "error_json", "expectation_json"
+        ):
             if name not in columns:
                 self._connection.execute(f"ALTER TABLE commands ADD COLUMN {name} TEXT")
         self._connection.commit()
+
+    def set_transition_observer(self, observer) -> None:
+        self._transition_observer = observer
+
+    def _notify_transition(
+        self,
+        *,
+        command_id: str,
+        kind: str,
+        status: str,
+        run_id: str | None,
+        result: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        if self._transition_observer is not None:
+            self._transition_observer({
+                "type": "command.status",
+                "command_id": command_id,
+                "kind": kind,
+                "status": status,
+                "run_id": run_id,
+                "result": result,
+                "error": error,
+            })
 
     def find_idempotency(self, method: str, route: str, key: str) -> sqlite3.Row | None:
         with self._lock:
@@ -202,14 +230,16 @@ class CommandStore:
         run_id: str | None,
         accepted_at: str,
         response: dict[str, Any],
+        expectation: dict[str, Any] | None = None,
     ) -> None:
         with self._lock:
             self._connection.execute(
                 """
                 INSERT INTO commands
                 (command_id, method, route, idempotency_key, body_sha256, kind,
-                 status, run_id, created_at, accepted_at, response_status, response_json)
-                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, 202, ?)
+                 status, run_id, created_at, accepted_at, expectation_json,
+                 response_status, response_json)
+                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, 202, ?)
                 """,
                 (
                     command_id,
@@ -221,14 +251,97 @@ class CommandStore:
                     run_id,
                     accepted_at,
                     accepted_at,
+                    json.dumps(
+                        expectation or {}, ensure_ascii=False, separators=(",", ":")
+                    ),
                     json.dumps(response, ensure_ascii=False, separators=(",", ":")),
                 ),
             )
             self._connection.commit()
+        self._notify_transition(
+            command_id=command_id,
+            kind=kind,
+            status="accepted",
+            run_id=run_id,
+        )
 
     def get(self, command_id: str) -> sqlite3.Row | None:
         with self._lock:
             return self._connection.execute("SELECT * FROM commands WHERE command_id=?", (command_id,)).fetchone()
+
+    def expire_due(
+        self, *, command_id: str | None = None, now_utc: str | None = None
+    ) -> int:
+        timeouts = {
+            "mission.start": 30.0,
+            "mission.pause": 10.0,
+            "mission.resume": 10.0,
+            "mission.stop": 10.0,
+            "mission.return_home": 300.0,
+            "robot.mode": 10.0,
+            "robot.manual_velocity": 1.0,
+            "robot.emergency_stop": 2.0,
+            "robot.emergency_stop_reset": 5.0,
+        }
+        now_text = now_utc or _utc_now()
+        try:
+            now = datetime.fromisoformat(now_text.replace("Z", "+00:00"))
+        except ValueError:
+            return 0
+        with self._lock:
+            query = "SELECT * FROM commands WHERE status IN ('accepted', 'executing')"
+            parameters: tuple[Any, ...] = ()
+            if command_id is not None:
+                query += " AND command_id=?"
+                parameters = (command_id,)
+            rows = self._connection.execute(query, parameters).fetchall()
+            expired = 0
+            expired_events: list[tuple[str, str, str | None, dict[str, Any]]] = []
+            error = json.dumps(
+                {
+                    "code": "COMMAND_TIMED_OUT",
+                    "message": "No matching authoritative terminal state arrived before the deadline.",
+                    "retryable": True,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            for row in rows:
+                timeout_s = timeouts.get(row["kind"])
+                if timeout_s is None:
+                    continue
+                try:
+                    accepted = datetime.fromisoformat(
+                        str(row["accepted_at"]).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+                if (now - accepted).total_seconds() < timeout_s:
+                    continue
+                cursor = self._connection.execute(
+                    """
+                    UPDATE commands
+                    SET status='timed_out', started_at=COALESCE(started_at, accepted_at),
+                        completed_at=?, error_json=?
+                    WHERE command_id=? AND status IN ('accepted', 'executing')
+                    """,
+                    (now_text, error, row["command_id"]),
+                )
+                expired += cursor.rowcount
+                if cursor.rowcount:
+                    expired_events.append(
+                        (row["command_id"], row["kind"], row["run_id"], json.loads(error))
+                    )
+            self._connection.commit()
+            for expired_command_id, kind, run_id, expired_error in expired_events:
+                self._notify_transition(
+                    command_id=expired_command_id,
+                    kind=kind,
+                    status="timed_out",
+                    run_id=run_id,
+                    error=expired_error,
+                )
+            return expired
 
     def complete_from_mission(
         self, command_id: str, mission: dict[str, Any], run_id: str | None
@@ -243,27 +356,68 @@ class CommandStore:
             row = self._connection.execute(
                 "SELECT * FROM commands WHERE command_id=?", (command_id,)
             ).fetchone()
-            if row is None or row["status"] != "accepted":
+            if row is None or row["status"] not in {"accepted", "executing"}:
                 return False
-            expected = expected_states.get(row["kind"])
-            if (
-                expected is None
-                or mission.get("transition_command_id") != command_id
-                or mission.get("state") != expected
-            ):
+            if mission.get("transition_command_id") != command_id:
                 return False
-            completed_at = _utc_now()
+            kind = row["kind"]
+            expected = expected_states.get(kind)
+            expectation = json.loads(row["expectation_json"] or "{}")
+            service = expectation.get("service") or {}
+            payload = expectation.get("payload") or {}
+            try:
+                state_revision = int(mission.get("state_revision", 0))
+                latch_revision = int(mission.get("emergency_stop_latch_revision", 0))
+                if state_revision < int(service.get("state_revision", 0)):
+                    return False
+                if kind.startswith("robot.") and latch_revision < int(
+                    service.get("latch_revision", 0)
+                ):
+                    return False
+            except (TypeError, ValueError):
+                return False
             result = {
                 "run_id": run_id,
-                "mission_id": mission.get("mission_id"),
-                "state_revision": str(mission.get("state_revision", "0")),
-                "queue_revision": str(mission.get("queue_revision", "0")),
+                "state_revision": str(state_revision),
             }
+            if expected is not None:
+                if mission.get("state") != expected:
+                    return False
+                result.update(
+                    mission_id=mission.get("mission_id"),
+                    queue_revision=str(mission.get("queue_revision", "0")),
+                )
+            elif kind == "robot.mode":
+                target_mode = payload.get("target_mode")
+                if (
+                    target_mode not in {"manual", "autonomous"}
+                    or mission.get("robot_mode") != target_mode
+                    or bool(mission.get("emergency_stop_latched"))
+                ):
+                    return False
+                result.update(mode=target_mode, latch_revision=str(latch_revision))
+            elif kind == "robot.emergency_stop":
+                if (
+                    mission.get("robot_mode") != "estop"
+                    or not bool(mission.get("emergency_stop_latched"))
+                ):
+                    return False
+                result.update(latch_revision=str(latch_revision))
+            elif kind == "robot.emergency_stop_reset":
+                if (
+                    mission.get("robot_mode") != "manual"
+                    or bool(mission.get("emergency_stop_latched"))
+                ):
+                    return False
+                result.update(mode="manual", latch_revision=str(latch_revision))
+            else:
+                return False
+            completed_at = _utc_now()
             self._connection.execute(
                 """
                 UPDATE commands
                 SET status='succeeded', started_at=accepted_at, completed_at=?, result_json=?
-                WHERE command_id=? AND status='accepted'
+                WHERE command_id=? AND status IN ('accepted', 'executing')
                 """,
                 (
                     completed_at,
@@ -272,6 +426,112 @@ class CommandStore:
                 ),
             )
             self._connection.commit()
+            self._notify_transition(
+                command_id=command_id,
+                kind=kind,
+                status="succeeded",
+                run_id=run_id,
+                result=result,
+            )
+            return True
+
+    def complete_from_manual_velocity(
+        self,
+        message,
+        *,
+        run_id: str | None,
+        context_revision: int,
+        applied_at: str | None,
+    ) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM commands WHERE command_id=?", (message.command_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["kind"] != "robot.manual_velocity"
+                or row["status"] not in {"accepted", "executing"}
+                or row["run_id"] != run_id
+            ):
+                return False
+            state = int(message.state)
+            if state == 0:
+                self._connection.execute(
+                    """
+                    UPDATE commands
+                    SET status='executing', started_at=COALESCE(started_at, accepted_at)
+                    WHERE command_id=? AND status='accepted'
+                    """,
+                    (message.command_id,),
+                )
+                self._connection.commit()
+                self._notify_transition(
+                    command_id=message.command_id,
+                    kind=row["kind"],
+                    status="executing",
+                    run_id=run_id,
+                )
+                return True
+            terminal_states = {1: "succeeded", 2: "failed", 3: "timed_out", 4: "cancelled"}
+            command_state = terminal_states.get(state)
+            if command_state is None:
+                return False
+            expectation = json.loads(row["expectation_json"] or "{}")
+            payload = expectation.get("payload") or {}
+            result_json = None
+            error_json = None
+            if command_state == "succeeded":
+                if applied_at is None:
+                    return False
+                result_json = json.dumps(
+                    {
+                        "run_id": run_id,
+                        "context_revision": str(context_revision),
+                        "applied_at": applied_at,
+                        "duration_s": payload.get("duration_s"),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                defaults = {
+                    "failed": "MANUAL_VELOCITY_REJECTED",
+                    "timed_out": "MANUAL_VELOCITY_EXPIRED",
+                    "cancelled": "MANUAL_VELOCITY_CANCELLED",
+                }
+                error_json = json.dumps(
+                    {
+                        "code": message.error_code or defaults[command_state],
+                        "message": message.error_message or defaults[command_state],
+                        "retryable": command_state == "timed_out",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            self._connection.execute(
+                """
+                UPDATE commands
+                SET status=?, started_at=COALESCE(started_at, accepted_at),
+                    completed_at=?, result_json=?, error_json=?
+                WHERE command_id=? AND status IN ('accepted', 'executing')
+                """,
+                (
+                    command_state,
+                    _utc_now(),
+                    result_json,
+                    error_json,
+                    message.command_id,
+                ),
+            )
+            self._connection.commit()
+            self._notify_transition(
+                command_id=message.command_id,
+                kind=row["kind"],
+                status=command_state,
+                run_id=run_id,
+                result=json.loads(result_json) if result_json else None,
+                error=json.loads(error_json) if error_json else None,
+            )
             return True
 
 
@@ -283,16 +543,28 @@ def create_app(
 ) -> FastAPI:
     state = state or GatewayState()
     store = CommandStore(db_path)
+    store.set_transition_observer(state.events.append)
     if adapter is not None and hasattr(adapter, "attach_command_store"):
         adapter.attach_command_store(store)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        async def expire_commands() -> None:
+            while True:
+                await asyncio.sleep(0.25)
+                store.expire_due()
+
+        expiry_task = asyncio.create_task(expire_commands())
         if adapter is not None:
             adapter.start()
         try:
             yield
         finally:
+            expiry_task.cancel()
+            try:
+                await expiry_task
+            except asyncio.CancelledError:
+                pass
             if adapter is not None:
                 adapter.stop()
 
@@ -440,7 +712,10 @@ def create_app(
             run_id=state.run_id,
             accepted_at=accepted_at,
             response=response,
+            expectation={"payload": payload, "service": service_result},
         )
+        if hasattr(adapter, "replay_terminal"):
+            adapter.replay_terminal(command_id)
         return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
 
     @app.get("/healthz")
@@ -617,6 +892,7 @@ def create_app(
     async def command_lookup(command_id: str, request: Request) -> Response:
         if not _strict_uuid(command_id):
             return _problem(request, 422, "VALIDATION_FAILED", "command_id must be a canonical UUID.")
+        store.expire_due(command_id=command_id)
         row = store.get(command_id)
         if row is None:
             return _problem(request, 404, "COMMAND_NOT_FOUND", "Command was not found.")
@@ -718,8 +994,11 @@ def create_app(
             run_id=state.run_id,
             accepted_at=accepted_at,
             response=response,
+            expectation={"payload": payload, "service": service_result},
         )
         store.complete_from_mission(command_id, state.mission, state.run_id)
+        if hasattr(adapter, "replay_terminal"):
+            adapter.replay_terminal(command_id)
         return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/v1/robot/emergency-stop")
@@ -792,7 +1071,10 @@ def create_app(
             run_id=state.run_id,
             accepted_at=accepted_at,
             response=response,
+            expectation={"payload": payload, "service": service_result},
         )
+        if hasattr(adapter, "replay_terminal"):
+            adapter.replay_terminal(command_id)
         return JSONResponse(response, status_code=202, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/v1/robot/mode")

@@ -11,8 +11,11 @@ import sys
 import uuid
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_gateway"))
-from substation_web_gateway.app import GatewayState, create_app
+from substation_interfaces.msg import ManualVelocityStatus
+from substation_web_gateway.app import CommandStore, GatewayState, create_app
 
 
 def _http(app, method, path, *, headers=(), body=b"", decode_json=True):
@@ -444,6 +447,191 @@ def test_mission_command_becomes_succeeded_only_after_matching_authoritative_sna
     }
 
 
+@pytest.mark.parametrize(
+    ("kind", "payload", "service", "observation", "expected_result"),
+    [
+        (
+            "robot.mode",
+            {"target_mode": "manual"},
+            {"state_revision": 64, "latch_revision": 12},
+            {"robot_mode": "manual", "emergency_stop_latched": False},
+            {"mode": "manual"},
+        ),
+        (
+            "robot.emergency_stop",
+            {},
+            {"state_revision": 65, "latch_revision": 13},
+            {"robot_mode": "estop", "emergency_stop_latched": True},
+            {},
+        ),
+        (
+            "robot.emergency_stop_reset",
+            {},
+            {"state_revision": 66, "latch_revision": 14},
+            {"robot_mode": "manual", "emergency_stop_latched": False},
+            {"mode": "manual"},
+        ),
+    ],
+)
+def test_robot_commands_require_matching_authoritative_terminal_snapshot(
+    kind, payload, service, observation, expected_result
+) -> None:
+    store = CommandStore()
+    command_id = str(uuid.uuid4())
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/robot/test",
+        key=str(uuid.uuid4()),
+        body_sha256="0" * 64,
+        kind=kind,
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        accepted_at="2026-07-24T10:00:00.000000Z",
+        response={"status": "accepted"},
+        expectation={"payload": payload, "service": service},
+    )
+    snapshot = {
+        "transition_command_id": command_id,
+        "state_revision": str(service["state_revision"] - 1),
+        "emergency_stop_latch_revision": str(service["latch_revision"]),
+        **observation,
+    }
+    assert store.complete_from_mission(command_id, snapshot, store.get(command_id)["run_id"]) is False
+    snapshot["state_revision"] = str(service["state_revision"])
+    assert store.complete_from_mission(command_id, snapshot, store.get(command_id)["run_id"]) is True
+    row = store.get(command_id)
+    assert row["status"] == "succeeded"
+    result = json.loads(row["result_json"])
+    assert result["state_revision"] == str(service["state_revision"])
+    assert result["latch_revision"] == str(service["latch_revision"])
+    for key, value in expected_result.items():
+        assert result[key] == value
+
+
+def test_manual_velocity_command_only_succeeds_after_applied_status() -> None:
+    store = CommandStore()
+    events = []
+    store.set_transition_observer(events.append)
+    command_id = str(uuid.uuid4())
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/robot/manual-velocity",
+        key=str(uuid.uuid4()),
+        body_sha256="0" * 64,
+        kind="robot.manual_velocity",
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        accepted_at="2026-07-24T10:00:00.000000Z",
+        response={"status": "accepted"},
+        expectation={"payload": {"duration_s": 0.15}, "service": {}},
+    )
+    status = ManualVelocityStatus()
+    status.schema_version = 1
+    status.header.frame_id = "base_link"
+    status.command_id = command_id
+    status.state = ManualVelocityStatus.STATE_ACCEPTED
+    assert store.complete_from_manual_velocity(
+        status,
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        context_revision=17,
+        applied_at="2026-07-24T10:00:00.100000Z",
+    ) is True
+    assert store.get(command_id)["status"] == "executing"
+
+    status.state = ManualVelocityStatus.STATE_APPLIED
+    assert store.complete_from_manual_velocity(
+        status,
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        context_revision=17,
+        applied_at="2026-07-24T10:00:00.120000Z",
+    ) is True
+    row = store.get(command_id)
+    assert row["status"] == "succeeded"
+    assert json.loads(row["result_json"]) == {
+        "run_id": "f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        "context_revision": "17",
+        "applied_at": "2026-07-24T10:00:00.120000Z",
+        "duration_s": 0.15,
+    }
+    assert [event["status"] for event in events] == ["accepted", "executing", "succeeded"]
+
+
+@pytest.mark.parametrize(
+    ("ros_state", "command_state"),
+    [
+        (ManualVelocityStatus.STATE_REJECTED, "failed"),
+        (ManualVelocityStatus.STATE_EXPIRED, "timed_out"),
+        (ManualVelocityStatus.STATE_CANCELLED, "cancelled"),
+    ],
+)
+def test_manual_velocity_negative_terminal_status_is_persisted(ros_state, command_state) -> None:
+    store = CommandStore()
+    command_id = str(uuid.uuid4())
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/robot/manual-velocity",
+        key=str(uuid.uuid4()),
+        body_sha256="0" * 64,
+        kind="robot.manual_velocity",
+        run_id=None,
+        accepted_at="2026-07-24T10:00:00.000000Z",
+        response={"status": "accepted"},
+    )
+    status = ManualVelocityStatus()
+    status.schema_version = 1
+    status.header.frame_id = "base_link"
+    status.command_id = command_id
+    status.state = ros_state
+    status.error_code = "MANUAL_MODE_REQUIRED"
+    status.error_message = "manual velocity command rejected"
+    assert store.complete_from_manual_velocity(
+        status, run_id=None, context_revision=0, applied_at=None
+    ) is True
+    row = store.get(command_id)
+    assert row["status"] == command_state
+    if command_state == "failed":
+        assert json.loads(row["error_json"])["code"] == "MANUAL_MODE_REQUIRED"
+
+
+def test_command_timeout_is_terminal_and_late_authoritative_result_is_ignored() -> None:
+    store = CommandStore()
+    command_id = str(uuid.uuid4())
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/robot/mode",
+        key=str(uuid.uuid4()),
+        body_sha256="0" * 64,
+        kind="robot.mode",
+        run_id=None,
+        accepted_at="2026-07-24T10:00:00.000000Z",
+        response={"status": "accepted"},
+        expectation={
+            "payload": {"target_mode": "manual"},
+            "service": {"state_revision": 2, "latch_revision": 1},
+        },
+    )
+
+    assert store.expire_due(
+        command_id=command_id, now_utc="2026-07-24T10:00:10.000001Z"
+    ) == 1
+    row = store.get(command_id)
+    assert row["status"] == "timed_out"
+    assert json.loads(row["error_json"])["code"] == "COMMAND_TIMED_OUT"
+    assert store.complete_from_mission(
+        command_id,
+        {
+            "transition_command_id": command_id,
+            "state_revision": "2",
+            "emergency_stop_latch_revision": "1",
+            "robot_mode": "manual",
+            "emergency_stop_latched": False,
+        },
+        None,
+    ) is False
+
+
 def test_evidence_metadata_and_single_range_download_use_reporting_adapter_only():
     evidence_id = "ea6992e2-4398-414d-a587-ce8b33932266"
     content = b"\xff\xd8gateway-evidence\xff\xd9"
@@ -564,15 +752,33 @@ def test_robot_mode_and_emergency_reset_dispatch_only_to_ros_services() -> None:
     class Adapter:
         def dispatch_robot_mode(self, *, command_id, payload):
             calls.append(("mode", command_id, payload))
-            return {"accepted": True, "error_code": "", "error_message": ""}
+            return {
+                "accepted": True,
+                "robot_mode": 1,
+                "state_revision": 64,
+                "latch_revision": 12,
+                "error_code": "",
+                "error_message": "",
+            }
 
         def dispatch_emergency_reset(self, *, command_id, payload):
             calls.append(("reset", command_id, payload))
-            return {"accepted": True, "error_code": "", "error_message": ""}
+            return {
+                "accepted": True,
+                "latched": False,
+                "state_revision": 65,
+                "latch_revision": 13,
+                "error_code": "",
+                "error_message": "",
+            }
 
-    app = create_app(adapter=Adapter())
+    state = GatewayState(
+        run_id="f93bf1d5-8bf6-4ad7-8f13-f6e3e148728f",
+        robot={"stale": False},
+    )
+    app = create_app(state=state, adapter=Adapter())
     mission_id = "0c5efce1-655b-413d-9847-da203fb5ca5e"
-    status, _, _ = _http(
+    status, _, mode_accepted = _http(
         app,
         "POST",
         "/api/v1/robot/mode",
@@ -586,8 +792,19 @@ def test_robot_mode_and_emergency_reset_dispatch_only_to_ros_services() -> None:
         }).encode(),
     )
     assert status == 202
+    assert app.state.commands.complete_from_mission(
+        mode_accepted["command_id"],
+        {
+            "transition_command_id": mode_accepted["command_id"],
+            "state_revision": "64",
+            "emergency_stop_latch_revision": "12",
+            "robot_mode": "manual",
+            "emergency_stop_latched": False,
+        },
+        state.run_id,
+    ) is True
 
-    status, _, _ = _http(
+    status, _, reset_accepted = _http(
         app,
         "POST",
         "/api/v1/robot/emergency-stop/reset",
@@ -599,6 +816,17 @@ def test_robot_mode_and_emergency_reset_dispatch_only_to_ros_services() -> None:
         }).encode(),
     )
     assert status == 202
+    assert app.state.commands.complete_from_mission(
+        reset_accepted["command_id"],
+        {
+            "transition_command_id": reset_accepted["command_id"],
+            "state_revision": "65",
+            "emergency_stop_latch_revision": "13",
+            "robot_mode": "manual",
+            "emergency_stop_latched": False,
+        },
+        state.run_id,
+    ) is True
     assert [call[0] for call in calls] == ["mode", "reset"]
 
 
@@ -626,6 +854,15 @@ def test_manual_velocity_dispatches_bounded_request_to_ros_adapter() -> None:
     assert status == 202
     assert accepted["status"] == "accepted"
     assert calls[0][1]["deadman"] is True
+    assert app.state.gateway.events[-1] == {
+        "type": "command.status",
+        "command_id": accepted["command_id"],
+        "kind": "robot.manual_velocity",
+        "status": "accepted",
+        "run_id": None,
+        "result": None,
+        "error": None,
+    }
 
     status, _, problem = _http(
         app,
@@ -687,6 +924,28 @@ def test_telemetry_requires_substation_v1_and_emits_open_envelope():
         "connection_timeout_s": 5.0,
         "replay_available": False,
     }
+
+
+def test_events_websocket_replays_persisted_command_status_events() -> None:
+    state = GatewayState()
+    state.events.append({
+        "type": "command.status",
+        "command_id": "8d0fa612-997d-430e-8dd0-9f35fc1e129b",
+        "kind": "robot.mode",
+        "status": "succeeded",
+        "run_id": None,
+        "result": {"mode": "manual"},
+        "error": None,
+    })
+    outgoing = _websocket_open(create_app(state=state), "/ws/events")
+    event = next(
+        json.loads(item["text"])
+        for item in outgoing
+        if item.get("type") == "websocket.send"
+        and json.loads(item["text"]).get("type") == "event"
+    )
+    assert event["payload"]["type"] == "command.status"
+    assert event["payload"]["status"] == "succeeded"
 
 
 def test_telemetry_rejects_missing_subprotocol_with_http_426():

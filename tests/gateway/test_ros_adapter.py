@@ -29,11 +29,12 @@ from substation_interfaces.msg import (
     AssetRiskArray,
     InspectionTask,
     InspectionTaskArray,
+    ManualVelocityStatus,
     RunContext,
 )
 from substation_interfaces.srv import GetReportingReadiness, ManageMission, QueryRunTimeMapping
 
-from substation_web_gateway.app import GatewayState, create_app
+from substation_web_gateway.app import CommandStore, GatewayState, create_app
 from substation_web_gateway.ros_adapter import RosGatewayAdapter, RosGatewayNode, RosStateProjector
 
 
@@ -214,7 +215,7 @@ def test_matching_mission_transition_notifies_command_terminal_observer() -> Non
     projection = RosStateProjector(
         state,
         command_observer=lambda command_id, mission, run_id: observed.append(
-            (command_id, mission["state"], run_id)
+            (command_id, mission, run_id)
         ),
     )
     projection.on_run_context(_run_context())
@@ -223,7 +224,12 @@ def test_matching_mission_transition_notifies_command_terminal_observer() -> Non
     mission.transition_command_id = "8d0fa612-997d-430e-8dd0-9f35fc1e129b"
 
     assert projection.on_mission(mission) is True
-    assert observed == [(mission.transition_command_id, "paused", RUN_ID)]
+    assert observed[0][0] == mission.transition_command_id
+    assert observed[0][1]["state"] == "paused"
+    assert observed[0][1]["robot_mode"] == "autonomous"
+    assert observed[0][1]["emergency_stop_latched"] is False
+    assert observed[0][1]["emergency_stop_latch_revision"] == "12"
+    assert observed[0][2] == RUN_ID
 
 
 def test_odom_requires_map_transform_and_battery_is_exposed_as_percent() -> None:
@@ -449,6 +455,79 @@ def test_ros_manual_velocity_rechecks_fresh_pose_at_publish_boundary() -> None:
     finally:
         gateway.destroy_node()
         context.shutdown()
+
+
+def test_manual_velocity_status_callback_uses_dispatch_context_and_ros_time_mapping() -> None:
+    context = Context()
+    rclpy.init(context=context)
+    observed = []
+    state = GatewayState()
+    gateway = RosGatewayNode(
+        state,
+        context=context,
+        manual_command_observer=lambda message, run_id, revision, applied_at: observed.append(
+            (message.command_id, message.state, run_id, revision, applied_at)
+        ),
+    )
+    gateway.projector.on_run_context(_run_context())
+    gateway.projector.set_time_mapping(
+        run_id=RUN_ID,
+        context_revision=17,
+        anchor_ros_sec=100,
+        anchor_ros_nanosec=250_000_000,
+        anchor_utc="2026-07-22T14:00:00.000000Z",
+    )
+    command_id = "8d0fa612-997d-430e-8dd0-9f35fc1e129b"
+    gateway._manual_command_context[command_id] = (RUN_ID, 17)
+    status = ManualVelocityStatus()
+    status.schema_version = 1
+    status.header.frame_id = "base_link"
+    status.header.stamp.sec = 100
+    status.header.stamp.nanosec = 350_000_000
+    status.command_id = command_id
+    status.state = ManualVelocityStatus.STATE_APPLIED
+    try:
+        gateway._on_manual_velocity_status(status)
+        assert observed == [
+            (command_id, ManualVelocityStatus.STATE_APPLIED, RUN_ID, 17, "2026-07-22T14:00:00.100000Z")
+        ]
+    finally:
+        gateway.destroy_node()
+        context.shutdown()
+
+
+def test_adapter_replays_terminal_snapshot_that_arrived_before_http_record() -> None:
+    state = GatewayState(run_id=RUN_ID)
+    adapter = RosGatewayAdapter(state)
+    store = CommandStore()
+    adapter.attach_command_store(store)
+    command_id = "8d0fa612-997d-430e-8dd0-9f35fc1e129b"
+    observation = {
+        "transition_command_id": command_id,
+        "state_revision": "64",
+        "emergency_stop_latch_revision": "12",
+        "robot_mode": "manual",
+        "emergency_stop_latched": False,
+    }
+
+    adapter._observe_mission_command(command_id, observation, RUN_ID)
+    store.insert_accepted(
+        command_id=command_id,
+        method="POST",
+        route="/api/v1/robot/mode",
+        key="b2adb26d-4f79-4a76-b858-a5dfd8f73670",
+        body_sha256="0" * 64,
+        kind="robot.mode",
+        run_id=RUN_ID,
+        accepted_at="2026-07-24T10:00:00.000000Z",
+        response={"status": "accepted"},
+        expectation={
+            "payload": {"target_mode": "manual"},
+            "service": {"state_revision": 64, "latch_revision": 12},
+        },
+    )
+    adapter.replay_terminal(command_id)
+    assert store.get(command_id)["status"] == "succeeded"
 
 
 def test_live_ros_node_reaches_ready_only_from_real_topics_and_services() -> None:

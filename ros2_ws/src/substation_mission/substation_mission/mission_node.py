@@ -504,11 +504,16 @@ class TaskManagerNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        q_event = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._context_pub = self.create_publisher(RunContext, "/system/run_context", q_state)
         self._tasks_pub = self.create_publisher(InspectionTaskArray, "/mission/inspection_tasks", q_state)
         self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", q_control)
         self._manual_status_pub = self.create_publisher(
-            ManualVelocityStatus, "/mission/manual_velocity_status", q_control
+            ManualVelocityStatus, "/mission/manual_velocity_status", q_event
         )
         self.create_subscription(AssetRiskArray, "/risk/assets", self._on_risk, q_state)
         self.create_subscription(Twist, "/cmd_vel_nav", self._on_nav_velocity, q_control)

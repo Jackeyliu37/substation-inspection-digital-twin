@@ -29,6 +29,7 @@ from substation_interfaces.msg import (
     AssetRiskArray,
     InspectionTaskArray,
     ManualVelocityCommand,
+    ManualVelocityStatus,
     RiskAlert,
     RunContext,
 )
@@ -328,7 +329,15 @@ class RosStateProjector:
         self._sync_robot_mission_fields(self._latch_revision)
         self.state.ready_dependencies["mission"] = True
         if self._command_observer is not None and message.transition_command_id:
-            self._command_observer(message.transition_command_id, mission, self.state.run_id)
+            observation = dict(mission)
+            observation.update(
+                robot_mode=_ROBOT_MODES[self._robot_mode],
+                emergency_stop_latched=self._emergency_stop_latched,
+                emergency_stop_latch_revision=str(self._latch_revision),
+            )
+            self._command_observer(
+                message.transition_command_id, observation, self.state.run_id
+            )
         self._refresh_overall()
         self._bump()
         return True
@@ -668,13 +677,22 @@ class RosStateProjector:
 class RosGatewayNode(Node):
     """Live ROS subscriptions and reporting-readiness clients."""
 
-    def __init__(self, state: GatewayState, *, context=None, command_observer=None) -> None:
+    def __init__(
+        self,
+        state: GatewayState,
+        *,
+        context=None,
+        command_observer=None,
+        manual_command_observer=None,
+    ) -> None:
         super().__init__(
             "web_gateway",
             context=context,
             parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
         )
         self.projector = RosStateProjector(state, command_observer=command_observer)
+        self._manual_command_observer = manual_command_observer
+        self._manual_command_context: dict[str, tuple[str, int]] = {}
         self._mapping_query_inflight = False
         self._mapping_record_inflight = False
         self._readiness_inflight = False
@@ -736,6 +754,12 @@ class RosGatewayNode(Node):
         self.create_subscription(DiagnosticArray, "/diagnostics", self.projector.on_diagnostics, q_event)
         self.create_subscription(Odometry, "/odom", self._on_odom, q_sensor)
         self.create_subscription(BatteryState, "/battery_state", self.projector.on_battery, q_stream)
+        self.create_subscription(
+            ManualVelocityStatus,
+            "/mission/manual_velocity_status",
+            self._on_manual_velocity_status,
+            q_event,
+        )
         self._query_mapping = self.create_client(
             QueryRunTimeMapping, "/reporting/query_run_time_mapping"
         )
@@ -953,6 +977,10 @@ class RosGatewayNode(Node):
         message.twist.linear.x = float(payload["linear_x_m_s"])
         message.twist.angular.z = float(payload["angular_z_rad_s"])
         message.duration_s = float(payload["duration_s"])
+        self._manual_command_context[command_id] = (
+            context.run_id,
+            int(context.context_revision),
+        )
         self._manual_velocity.publish(message)
         return {"accepted": True, "error_code": "", "error_message": ""}
 
@@ -1069,6 +1097,29 @@ class RosGatewayNode(Node):
             return
         self.projector.on_odom(message, transform)
 
+    def _on_manual_velocity_status(self, message: ManualVelocityStatus) -> None:
+        if (
+            message.schema_version != ManualVelocityStatus.SCHEMA_VERSION
+            or message.header.frame_id != "base_link"
+            or not message.command_id
+            or int(message.state) > ManualVelocityStatus.STATE_CANCELLED
+        ):
+            return
+        command_context = self._manual_command_context.get(message.command_id)
+        if command_context is None or self._manual_command_observer is None:
+            return
+        run_id, context_revision = command_context
+        applied_at = None
+        if message.state == ManualVelocityStatus.STATE_APPLIED:
+            applied_at = self.projector.ros_time_to_utc(
+                message.header.stamp.sec, message.header.stamp.nanosec
+            )
+        self._manual_command_observer(
+            message, run_id, context_revision, applied_at
+        )
+        if message.state != ManualVelocityStatus.STATE_ACCEPTED:
+            self._manual_command_context.pop(message.command_id, None)
+
     def _ensure_time_mapping(self, message: RunContext) -> None:
         if self._mapping_query_inflight or not self._query_mapping.service_is_ready():
             return
@@ -1179,6 +1230,7 @@ class RosGatewayAdapter:
         self._executor: MultiThreadedExecutor | None = None
         self._thread: threading.Thread | None = None
         self._command_store = None
+        self._terminal_observations: dict[str, tuple[Any, ...]] = {}
 
     def attach_command_store(self, store) -> None:
         self._command_store = store
@@ -1186,8 +1238,47 @@ class RosGatewayAdapter:
     def _observe_mission_command(
         self, command_id: str, mission: dict[str, Any], run_id: str | None
     ) -> None:
-        if self._command_store is not None:
-            self._command_store.complete_from_mission(command_id, mission, run_id)
+        if self._command_store is None:
+            return
+        if self._command_store.complete_from_mission(command_id, mission, run_id):
+            self._terminal_observations.pop(command_id, None)
+        elif self._command_store.get(command_id) is None:
+            self._terminal_observations[command_id] = ("mission", mission, run_id)
+
+    def _observe_manual_command(
+        self,
+        message: ManualVelocityStatus,
+        run_id: str | None,
+        context_revision: int,
+        applied_at: str | None,
+    ) -> None:
+        if self._command_store is None:
+            return
+        if self._command_store.complete_from_manual_velocity(
+            message,
+            run_id=run_id,
+            context_revision=context_revision,
+            applied_at=applied_at,
+        ):
+            if message.state != ManualVelocityStatus.STATE_ACCEPTED:
+                self._terminal_observations.pop(message.command_id, None)
+        elif self._command_store.get(message.command_id) is None:
+            self._terminal_observations[message.command_id] = (
+                "manual", message, run_id, context_revision, applied_at
+            )
+
+    def replay_terminal(self, command_id: str) -> None:
+        observation = self._terminal_observations.get(command_id)
+        if observation is None:
+            return
+        if observation[0] == "mission":
+            _, mission, run_id = observation
+            self._observe_mission_command(command_id, mission, run_id)
+        else:
+            _, message, run_id, context_revision, applied_at = observation
+            self._observe_manual_command(
+                message, run_id, context_revision, applied_at
+            )
 
     def start(self) -> None:
         if self._thread is not None:
@@ -1197,6 +1288,7 @@ class RosGatewayAdapter:
             self._state,
             context=self._context,
             command_observer=self._observe_mission_command,
+            manual_command_observer=self._observe_manual_command,
         )
         self._executor = MultiThreadedExecutor(num_threads=2, context=self._context)
         self._executor.add_node(self._node)
