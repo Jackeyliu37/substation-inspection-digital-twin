@@ -76,7 +76,7 @@ class ProductionProbe(Node):
     def __init__(self, run_id: str) -> None:
         super().__init__("production_acceptance_probe")
         self.run_id = run_id
-        self.context: RunContext | None = None
+        self.run_context: RunContext | None = None
         self.mission: InspectionTaskArray | None = None
         self.raw_count = 0
         self.annotated_count = 0
@@ -161,7 +161,7 @@ class ProductionProbe(Node):
 
     def _on_context(self, message: RunContext) -> None:
         if message.run_id == self.run_id:
-            self.context = message
+            self.run_context = message
 
     def _on_mission(self, message: InspectionTaskArray) -> None:
         if message.run_id == self.run_id:
@@ -225,8 +225,8 @@ class ProductionProbe(Node):
 
     def ready(self) -> bool:
         return bool(
-            self.context is not None
-            and self.context.lifecycle == RunContext.LIFECYCLE_ACTIVE
+            self.run_context is not None
+            and self.run_context.lifecycle == RunContext.LIFECYCLE_ACTIVE
             and self.mission is not None
             and self.raw_count > 0
             and self.annotated_count > 0

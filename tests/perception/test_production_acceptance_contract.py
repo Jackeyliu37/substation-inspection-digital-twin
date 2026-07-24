@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "tests/perception/run_production_acceptance.sh"
 PROBE = ROOT / "tests/perception/probe_production_pipeline.py"
+CAPTURE = ROOT / "scripts/reporting/run_evidence_capture.sh"
 
 
 def test_runner_locks_duration_fps_evidence_and_manual_web_boundary() -> None:
@@ -84,6 +85,13 @@ def test_probe_contract_covers_real_frames_modules_and_safety_barriers() -> None
         assert required in source
 
 
+def test_rosbag_capture_bootstraps_ros_before_invoking_ros2() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+
+    assert "source /opt/ros/jazzy/setup.bash" in source
+    assert source.index("source /opt/ros/jazzy/setup.bash") < source.index("ros2 bag record")
+
+
 def _probe_module():
     spec = importlib.util.spec_from_file_location("production_probe", PROBE)
     assert spec and spec.loader
@@ -100,3 +108,16 @@ def test_fps_gate_uses_measured_duration_and_rejects_below_threshold() -> None:
     module.require_fps(4500, 300.0, 15.0)
     with pytest.raises(RuntimeError, match="PRODUCTION_FPS_BELOW_THRESHOLD"):
         module.require_fps(4499, 300.0, 15.0)
+
+
+def test_production_probe_does_not_overwrite_rclpy_node_context_property() -> None:
+    module = _probe_module()
+    module.rclpy.init()
+    node = None
+    try:
+        node = module.ProductionProbe("1c8b12d5-bc53-441d-9e90-006fb1754676")
+        assert node.run_context is None
+    finally:
+        if node is not None:
+            node.destroy_node()
+        module.rclpy.shutdown()

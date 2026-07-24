@@ -26,6 +26,17 @@ if [[ -z "$output_dir" || ! "$duration_s" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+set +u
+source /opt/ros/jazzy/setup.bash
+if [[ -f /opt/substation/current/install/setup.bash ]]; then
+  source /opt/substation/current/install/setup.bash
+fi
+set -u
+if ! command -v ros2 >/dev/null 2>&1; then
+  echo "evidence-capture: ros2 command is unavailable" >&2
+  exit 1
+fi
+
 bag_dir="$output_dir/rosbag2"
 if [[ -e "$bag_dir" ]]; then
   echo "evidence-capture: target already exists: $bag_dir" >&2
