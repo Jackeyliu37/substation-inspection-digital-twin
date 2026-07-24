@@ -22,6 +22,13 @@ def test_product_services_bind_only_to_loopback_and_keep_ros_local() -> None:
     assert "--hostname 127.0.0.1" in frontend
 
 
+def test_gateway_sandbox_allows_rclpy_log_directory() -> None:
+    gateway = read("deploy/systemd/substation-web-gateway.service")
+
+    assert "ProtectSystem=strict" in gateway
+    assert "/var/lib/substation/.ros" in gateway
+
+
 def test_gateway_module_entrypoint_matches_the_systemd_command() -> None:
     unit = read("deploy/systemd/substation-web-gateway.service")
     entrypoint = ROOT / "ros2_ws/src/substation_web_gateway/substation_web_gateway/__main__.py"
@@ -102,6 +109,21 @@ def test_root_installer_grants_headless_render_device_groups() -> None:
 
     assert 'usermod -aG "render" substation' in script
     assert 'usermod -aG "video" substation' in script
+
+
+def test_root_installer_prepares_service_home_and_runtime_caches() -> None:
+    script = read("scripts/deployment/install_release.sh")
+
+    assert "chgrp substation /var/lib/substation" in script
+    assert "chmod 0750 /var/lib/substation" in script
+    for path in (
+        "/var/lib/substation/.ros",
+        "/var/lib/substation/.gz/rendering",
+        "/var/lib/substation/.gz/sim/log",
+        "/var/lib/substation/.cache",
+        "/var/lib/substation/.config",
+    ):
+        assert path in script
 
 
 def test_five_service_units_form_a_loopback_only_dependency_chain() -> None:

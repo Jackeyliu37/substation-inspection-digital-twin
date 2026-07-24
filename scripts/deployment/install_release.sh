@@ -52,7 +52,15 @@ if getent group video >/dev/null; then
   usermod -aG "video" substation
 fi
 install -d -m 0755 /opt/substation /opt/substation/releases /opt/substation/config
+install -d -m 0750 /var/lib/substation
+chgrp substation /var/lib/substation
+chmod 0750 /var/lib/substation
 install -d -m 0750 -o substation -g substation \
+  /var/lib/substation/.ros \
+  /var/lib/substation/.gz/rendering \
+  /var/lib/substation/.gz/sim/log \
+  /var/lib/substation/.cache \
+  /var/lib/substation/.config \
   /var/lib/substation/sqlite \
   /var/lib/substation/evidence \
   /var/lib/substation/reports \
