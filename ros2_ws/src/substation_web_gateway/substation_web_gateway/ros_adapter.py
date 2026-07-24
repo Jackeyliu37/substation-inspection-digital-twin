@@ -145,6 +145,7 @@ class RosStateProjector:
         self._twin_by_asset: dict[str, dict[str, Any]] = {}
         self._risk_by_asset: dict[str, dict[str, Any]] = {}
         self._risk_revision = 0
+        self._risk_snapshot_received = False
         self._robot_mode = InspectionTaskArray.MODE_AUTONOMOUS
         self._emergency_stop_latched = False
         self._latch_revision = 0
@@ -297,6 +298,7 @@ class RosStateProjector:
             self._twin_by_asset.clear()
             self._risk_by_asset.clear()
             self._risk_revision = 0
+            self._risk_snapshot_received = False
             self._time_mapping = None
             self.state.assets = []
             self.state.ready_dependencies.update(mission=False, risk=False, time_mapping=False)
@@ -630,7 +632,13 @@ class RosStateProjector:
                 "gas_0_1": _float32(item.gas_0_1),
                 "context_0_1": _float32(item.context_0_1),
             }
-        if int(message.risk_revision) == self._risk_revision and accepted == self._risk_by_asset:
+        first_snapshot = not self._risk_snapshot_received
+        self._risk_snapshot_received = True
+        if (
+            not first_snapshot
+            and int(message.risk_revision) == self._risk_revision
+            and accepted == self._risk_by_asset
+        ):
             return True
         previous_risks = self._risk_by_asset
         self._risk_by_asset = accepted
@@ -656,7 +664,7 @@ class RosStateProjector:
 
     def _refresh_risk_ready(self) -> None:
         self.state.ready_dependencies["risk"] = bool(
-            self.state.run_id and self._twin_by_asset and self._risk_by_asset
+            self.state.run_id and self._twin_by_asset and self._risk_snapshot_received
         )
         self._refresh_overall()
 

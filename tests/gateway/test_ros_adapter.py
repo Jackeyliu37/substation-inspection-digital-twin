@@ -445,6 +445,30 @@ def test_all_twin_assets_are_exposed_even_before_each_has_a_risk_sample() -> Non
     assert state.assets[1]["risk"]["level"] == "attention"
 
 
+def test_empty_current_run_risk_snapshot_marks_service_ready_without_inventing_scores() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    projection.on_run_context(_run_context())
+    projection.on_twin(_twin())
+    message = AssetRiskArray()
+    message.schema_version = AssetRiskArray.SCHEMA_VERSION
+    message.run_id = RUN_ID
+    message.risk_revision = 0
+    message.assets = []
+
+    assert projection.on_risk(message) is True
+    assert state.ready_dependencies["risk"] is True
+    assert state.assets[0]["risk"] == {
+        "score_0_100": 0.0,
+        "level": "unknown",
+        "visual_0_1": 0.0,
+        "temperature_0_1": 0.0,
+        "smoke_0_1": 0.0,
+        "gas_0_1": 0.0,
+        "context_0_1": 0.0,
+    }
+
+
 def test_mission_and_risk_transitions_append_semantic_operator_events() -> None:
     state = GatewayState()
     projection = RosStateProjector(state)
