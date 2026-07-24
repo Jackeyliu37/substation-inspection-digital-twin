@@ -9,6 +9,7 @@ import uuid
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from substation_description.asset_registry import load_asset_registry
@@ -16,7 +17,14 @@ from substation_interfaces.msg import AssetRiskArray, InspectionTask as Inspecti
 from substation_interfaces.msg import InspectionTaskArray, RunContext
 from substation_interfaces.srv import EmergencyStop, ResetEmergencyStop
 
-from .mission_engine import InspectionTask, MissionEngine, MissionPolicy, load_mission_policy
+from .mission_engine import (
+    InspectionTask,
+    MissionEngine,
+    MissionPolicy,
+    RobotMode,
+    load_mission_policy,
+)
+from .mission_store import MissionSnapshotStore
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,57 @@ class MissionRuntime:
         ))
         self.state_revision = 1
         self.queue_revision = 1
+
+    def persistence_record(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "run_id": self.engine.run_id,
+            "mission_id": self.engine.mission_id,
+            "state_revision": self.state_revision,
+            "queue_revision": self.queue_revision,
+            "robot_mode": int(self.engine.robot_mode),
+            "emergency_stop_latched": self.engine.emergency_stop_latched,
+            "emergency_stop_latch_revision": self.engine.latch_revision,
+            "tasks": [
+                {
+                    "task_id": task.task_id,
+                    "asset_id": task.asset_id,
+                    "base_priority": task.base_priority,
+                    "path_length_m": task.path_length_m,
+                    "risk_score_0_100": task.risk_score_0_100,
+                    "computed_priority": task.computed_priority,
+                    "safety_standoff_m": task.safety_standoff_m,
+                    "emergency": task.emergency,
+                }
+                for task in self.engine.tasks
+            ],
+        }
+
+    @classmethod
+    def restore(
+        cls,
+        policy: MissionPolicy,
+        goals: tuple[AssetGoal, ...],
+        record: dict[str, object],
+    ) -> "MissionRuntime":
+        runtime = cls.__new__(cls)
+        runtime.engine = MissionEngine(policy)
+        runtime.engine.start(
+            run_id=str(record["run_id"]),
+            mission_id=str(record["mission_id"]),
+            route_id="default-route",
+        )
+        tasks = record.get("tasks")
+        if not isinstance(tasks, list):
+            raise ValueError("MISSION_SNAPSHOT_TASKS_INVALID")
+        runtime.engine.replace_tasks(tuple(InspectionTask(**item) for item in tasks))
+        runtime.engine.robot_mode = RobotMode(int(record["robot_mode"]))
+        runtime.engine.emergency_stop_latched = bool(record["emergency_stop_latched"])
+        runtime.engine.latch_revision = int(record["emergency_stop_latch_revision"])
+        runtime.goals = {goal.asset_id: goal for goal in goals}
+        runtime.state_revision = int(record["state_revision"])
+        runtime.queue_revision = int(record["queue_revision"])
+        return runtime
 
     def apply_risks(self, risks: AssetRiskArray, *, monotonic_s: float) -> bool:
         if risks.run_id != self.engine.run_id:
@@ -102,6 +161,31 @@ class MissionRuntime:
         return output
 
 
+def load_or_create_runtime(
+    policy: MissionPolicy,
+    goals: tuple[AssetGoal, ...],
+    run_id: str,
+    mission_id: str,
+    store: MissionSnapshotStore,
+) -> MissionRuntime:
+    latest = store.load_latest()
+    if (
+        latest is not None
+        and latest["run_id"] == run_id
+        and latest["mission_id"] == mission_id
+    ):
+        return MissionRuntime.restore(policy, goals, latest)
+    runtime = MissionRuntime(policy, run_id, mission_id, goals)
+    if latest is not None:
+        runtime.state_revision = int(latest["state_revision"]) + 1
+        if latest["emergency_stop_latched"]:
+            runtime.engine.emergency_stop_latched = True
+            runtime.engine.latch_revision = int(latest["emergency_stop_latch_revision"])
+            runtime.engine.robot_mode = RobotMode.ESTOP
+    store.save(runtime.persistence_record())
+    return runtime
+
+
 class TaskManagerNode(Node):
     def __init__(self) -> None:
         super().__init__("task_manager")
@@ -113,11 +197,15 @@ class TaskManagerNode(Node):
         goals = tuple(AssetGoal(
             item.asset_id, item.inspection_x, item.inspection_y, item.inspection_yaw
         ) for item in registry.assets)
-        self._runtime = MissionRuntime(
-            load_mission_policy(mission_share / "config/mission_ordering.yaml"),
+        mission_db_path = str(self.declare_parameter(
+            "mission_db_path", "/var/lib/substation/sqlite/mission.sqlite3"
+        ).value)
+        self._store = MissionSnapshotStore(mission_db_path)
+        self._runtime = load_or_create_runtime(
+            load_mission_policy(mission_share / "config/mission_ordering.yaml"), goals,
             run_id,
             mission_id,
-            goals,
+            self._store,
         )
         self._context_revision = 1
         q_state = QoSProfile(
@@ -174,6 +262,7 @@ class TaskManagerNode(Node):
         return response
 
     def _publish(self) -> None:
+        self._store.save(self._runtime.persistence_record())
         stamp = self.get_clock().now().to_msg()
         context = RunContext()
         context.schema_version = 1
@@ -196,6 +285,9 @@ def main(args=None) -> None:
     node = TaskManagerNode()
     try:
         rclpy.spin(node)
+    except ExternalShutdownException:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
