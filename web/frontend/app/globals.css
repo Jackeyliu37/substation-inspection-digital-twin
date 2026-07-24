@@ -55,6 +55,11 @@
 
 /* Inspection closure: complete asset, event, sensor and risk presentation. */
 .asset-overview .asset-list,.event-panel { max-height:540px; overflow:auto; }
+.asset-overview .asset-list { scrollbar-width:thin; scrollbar-color:#252b30 #020304; }
+.asset-overview .asset-list::-webkit-scrollbar { width:9px; }
+.asset-overview .asset-list::-webkit-scrollbar-track { background:#020304; }
+.asset-overview .asset-list::-webkit-scrollbar-thumb { background:#252b30; border:2px solid #020304; border-radius:8px; }
+.asset-overview .asset-list::-webkit-scrollbar-thumb:hover { background:#353d43; }
 .event div > span { display:block; color:#c5d0d6; font-size:14px; line-height:1.45; margin:3px 0; }
 .sensor-column { display:grid; gap:12px; align-content:start; }
 .sensor-panel,.risk-formula { min-height:0; }
@@ -71,3 +76,14 @@
 .model-status-wide .model-list { grid-template-columns:repeat(4,minmax(0,1fr)); }
 @media (max-width:1050px) { .model-status-wide .model-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:720px) { .model-status-wide .model-list { grid-template-columns:1fr; }.sensor-grid { grid-template-columns:1fr; }.sensor-grid dd { text-align:left; padding-top:0; } }
+
+/* Truthful navigation overlay: live Nav2 plan, driven trail and all asset footprints. */
+.planned-route-line { fill:none; stroke:#67bdf6; stroke-width:2.1; vector-effect:non-scaling-stroke; filter:drop-shadow(0 0 2px #173f59); }
+.actual-trail-line { fill:none; stroke:#42c3a1; stroke-width:1.7; stroke-dasharray:3 2; vector-effect:non-scaling-stroke; opacity:.9; }
+.asset-footprint { fill:rgba(66,195,161,.22); stroke:#58d7b7; stroke-width:1.2; vector-effect:non-scaling-stroke; }
+.asset-footprint.attention { fill:rgba(226,174,75,.3); stroke:#e2ae4b; }
+.asset-footprint.alert,.asset-footprint.emergency { fill:rgba(238,92,83,.32); stroke:#ef6b62; }
+.asset-label-leader { stroke:#c5d7df; stroke-width:.8; vector-effect:non-scaling-stroke; opacity:.75; }
+.asset-number-badge { fill:#081117; stroke:#d8fff4; stroke-width:1.2; vector-effect:non-scaling-stroke; }
+.asset-map-marker text { fill:#f0fbff; font-size:8px; font-weight:900; text-shadow:0 1px 2px #000; pointer-events:none; }
+.key-trail { background:#42c3a1; height:2px !important; }

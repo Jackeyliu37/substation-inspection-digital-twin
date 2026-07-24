@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { newCommandId } from "./command-id.mjs";
 import { decodeOccupancyData, worldToMapPixel } from "./map-utils.mjs";
+import { buildAssetMarkers, mapPathPoints } from "./map-presentation.mjs";
 import {
   DEFAULT_VIEWPORT,
   panViewport,
@@ -376,7 +377,7 @@ export default function HomePage() {
   const renderView = useMemo(() => ({
     dashboard: <Dashboard robot={robot} mission={mission} assets={assetItems} alerts={alertItems} events={events} onCommand={sendCommand} onRecover={recoverAutonomousInspection} disabled={controlsDisabled} />,
     twin: <TwinView assets={assetItems} robot={robot} routeGoals={routeGoals} trail={trail} scenario={scenario} />,
-    map: <MapView robot={robot} map={map} assets={assetItems} mission={mission} />,
+    map: <MapView robot={robot} map={map} assets={assetItems} mission={mission} trail={trail} />,
     risk: <RiskView assets={assetItems} alerts={alertItems} />,
     perception: <PerceptionView cameraUrl={cameraUrl} cameraMeta={cameraMeta} cameraFps={cameraFps} models={modelItems} robot={robot} assets={assetItems} mission={mission} />,
     scenario: <ScenarioView scenario={scenario} system={system} onCommand={sendCommand} disabled={controlsDisabled} />,
@@ -530,12 +531,12 @@ function RouteMarker({ goal, index }) {
   return <group position={[goal.x_m, .06, -goal.y_m]}><mesh><cylinderGeometry args={[.16, .16, .05, 20]} /><meshStandardMaterial color="#58aef0" emissive="#174a70" /></mesh><mesh position={[0, .3, 0]}><coneGeometry args={[.09, .25, 12]} /><meshStandardMaterial color={index === 0 ? "#ffffff" : "#8dcbf7"} /></mesh></group>;
 }
 
-function MapView({ robot, map, assets, mission }) {
+function MapView({ robot, map, assets, mission, trail }) {
   const activeTask = Array.isArray(mission?.tasks) ? mission.tasks.find((task) => task.task_id === mission.active_task_id) : null;
-  return <div className="map-layout"><section className="panel map-canvas"><PanelTitle title="占据地图与任务路线" action={map ? `地图版本 ${map.map_revision}` : "等待地图"} />{map ? <OccupancyMap map={map} robot={robot} assets={assets} mission={mission} /> : <EmptyState title="地图尚未到达">正在等待二维地图数据。</EmptyState>}</section><section className="panel navigation-panel"><PanelTitle title="导航状态" action={robot?.stale ? "位姿过期" : "实时位姿"} /><p>当前坐标：{robot?.pose ? `${robot.pose.x_m.toFixed(2)}, ${robot.pose.y_m.toFixed(2)} 米` : "--"}</p><p>线速度：{robot?.twist ? `${robot.twist.linear_x_m_s.toFixed(2)} 米/秒` : "--"}</p><p>机器人模式：{robotModeLabel(robot?.mode)}</p><p>当前目标：{activeTask ? assetLabel(activeTask.asset_id) : "等待任务"}</p><div className="map-key"><span><i className="key-free" />可通行</span><span><i className="key-wall" />障碍/围栏</span><span><i className="key-asset" />设备编号</span><span><i className="key-route" />巡检路线</span></div><div className="map-device-index">{assets.map((asset, index) => <span key={asset.asset_id} className={asset.asset_id === activeTask?.asset_id ? "active" : ""}><b>{index + 1}</b>{assetLabel(asset.asset_id)}</span>)}</div></section></div>;
+  return <div className="map-layout"><section className="panel map-canvas"><PanelTitle title="占据地图与实时导航" action={map ? `地图版本 ${map.map_revision}` : "等待地图"} />{map ? <OccupancyMap map={map} robot={robot} assets={assets} mission={mission} trail={trail} /> : <EmptyState title="地图尚未到达">正在等待二维地图数据。</EmptyState>}</section><section className="panel navigation-panel"><PanelTitle title="导航状态" action={robot?.stale ? "位姿过期" : "实时位姿"} /><p>当前坐标：{robot?.pose ? `${robot.pose.x_m.toFixed(2)}, ${robot.pose.y_m.toFixed(2)} 米` : "--"}</p><p>线速度：{robot?.twist ? `${robot.twist.linear_x_m_s.toFixed(2)} 米/秒` : "--"}</p><p>机器人模式：{robotModeLabel(robot?.mode)}</p><p>当前目标：{activeTask ? assetLabel(activeTask.asset_id) : "等待任务"}</p><div className="map-key"><span><i className="key-free" />可通行</span><span><i className="key-wall" />障碍/围栏</span><span><i className="key-asset" />设备轮廓与编号</span><span><i className="key-route" />Nav2 实时规划</span><span><i className="key-trail" />机器人实际轨迹</span></div><div className="map-device-index">{assets.map((asset, index) => <span key={asset.asset_id} className={asset.asset_id === activeTask?.asset_id ? "active" : ""}><b>{index + 1}</b>{assetLabel(asset.asset_id)}</span>)}</div></section></div>;
 }
 
-function OccupancyMap({ map, robot, assets, mission }) {
+function OccupancyMap({ map, robot, assets, mission, trail }) {
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
   const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
@@ -559,8 +560,9 @@ function OccupancyMap({ map, robot, assets, mission }) {
     context.putImageData(image, 0, 0);
   }, [height, map.data, map.data_encoding, width]);
   const robotPixel = robot?.pose ? worldToMapPixel(robot.pose, map) : null;
-  const goals = Array.isArray(mission?.tasks) ? mission.tasks.map((task) => worldToMapPixel(task.goal, map)).filter(Boolean) : [];
-  const route = [robotPixel, ...goals].filter(Boolean).map((point) => `${point.x},${point.y}`).join(" ");
+  const plannedRoute = mapPathPoints(map.planned_path, map).map((point) => `${point.x},${point.y}`).join(" ");
+  const actualTrail = mapPathPoints(trail, map).map((point) => `${point.x},${point.y}`).join(" ");
+  const assetMarkers = buildAssetMarkers(assets, map);
   const activeTask = Array.isArray(mission?.tasks) ? mission.tasks.find((task) => task.task_id === mission.active_task_id) : null;
   const activeGoal = activeTask?.goal ? worldToMapPixel(activeTask.goal, map) : null;
   const handleWheel = (event) => {
@@ -582,7 +584,7 @@ function OccupancyMap({ map, robot, assets, mission }) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const stopToolbarPointer = (event) => event.stopPropagation();
-  return <div className="occupancy-wrap" style={{ aspectRatio: `${width}/${height}` }} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onDoubleClick={() => setViewport(DEFAULT_VIEWPORT)}><div className="map-transform-layer" style={{ transform: viewportTransform(viewport) }}><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-label="机器人、设备和任务路线叠加层">{route && <polyline points={route} className="route-line" />}{assets.map((asset, index) => { const point = asset.pose ? worldToMapPixel(asset.pose, map) : null; return point ? <g key={asset.asset_id} className="asset-map-marker"><title>{`${index + 1}. ${assetLabel(asset.asset_id)}`}</title><circle cx={point.x} cy={point.y} r="5" className={`asset-point ${asset.risk?.level ?? "unknown"}`} /><text x={point.x} y={point.y + 2.3} textAnchor="middle">{index + 1}</text></g> : null; })}{activeGoal && <g className="active-goal-marker"><circle cx={activeGoal.x} cy={activeGoal.y} r="7" className="goal-point" /><circle cx={activeGoal.x} cy={activeGoal.y} r="10" className="goal-pulse" /></g>}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg></div><div className="map-toolbar" onPointerDown={stopToolbarPointer}><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 1.25))}>放大</button><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 0.8))}>缩小</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, -15))}>向左旋转</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, 15))}>向右旋转</button><button type="button" onClick={() => setViewport(DEFAULT_VIEWPORT)}>复位地图</button></div><span className="map-origin">每格 {map.resolution_m.toFixed(2)} 米 · {width}×{height} · {viewport.scale.toFixed(2)} 倍 · {viewport.rotation}°</span><span className="map-help">滚轮缩放 · 拖拽移动 · 双击复位</span></div>;
+  return <div className="occupancy-wrap" style={{ aspectRatio: `${width}/${height}` }} onWheel={handleWheel} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onDoubleClick={() => setViewport(DEFAULT_VIEWPORT)}><div className="map-transform-layer" style={{ transform: viewportTransform(viewport) }}><canvas ref={canvasRef} width={width} height={height} /><svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-label="机器人、设备和实时导航路径叠加层">{actualTrail && <polyline points={actualTrail} className="actual-trail-line" />}{plannedRoute && <polyline points={plannedRoute} className="planned-route-line" />}{assetMarkers.map(({ asset, index, x, y, width: markerWidth, height: markerHeight, labelX, labelY }) => <g key={asset.asset_id} className="asset-map-marker"><title>{`${index + 1}. ${assetLabel(asset.asset_id)}`}</title><rect x={x - markerWidth / 2} y={y - markerHeight / 2} width={markerWidth} height={markerHeight} rx="2" className={`asset-footprint ${asset.risk?.level ?? "unknown"}`} /><line x1={x} y1={y} x2={labelX} y2={labelY} className="asset-label-leader" /><circle cx={labelX} cy={labelY} r="6" className="asset-number-badge" /><text x={labelX} y={labelY + 2.5} textAnchor="middle">{index + 1}</text></g>)}{activeGoal && <g className="active-goal-marker"><circle cx={activeGoal.x} cy={activeGoal.y} r="7" className="goal-point" /><circle cx={activeGoal.x} cy={activeGoal.y} r="10" className="goal-pulse" /></g>}{robotPixel && <g transform={`translate(${robotPixel.x} ${robotPixel.y})`}><circle r="6" className="robot-map-marker" /><path d="M0 -5 L3 3 L0 2 L-3 3 Z" /></g>}</svg></div><div className="map-toolbar" onPointerDown={stopToolbarPointer}><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 1.25))}>放大</button><button type="button" onClick={() => setViewport((current) => zoomViewport(current, 0.8))}>缩小</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, -15))}>向左旋转</button><button type="button" onClick={() => setViewport((current) => rotateViewport(current, 15))}>向右旋转</button><button type="button" onClick={() => setViewport(DEFAULT_VIEWPORT)}>复位地图</button></div><span className="map-origin">每格 {map.resolution_m.toFixed(2)} 米 · {width}×{height} · {viewport.scale.toFixed(2)} 倍 · {viewport.rotation}°</span><span className="map-help">滚轮缩放 · 拖拽移动 · 双击复位</span></div>;
 }
 
 function RiskView({ assets, alerts }) {

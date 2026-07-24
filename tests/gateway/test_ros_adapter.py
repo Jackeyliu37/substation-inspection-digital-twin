@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_g
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import OccupancyGrid
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path as NavigationPath
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
@@ -25,7 +25,7 @@ from rcl_interfaces.srv import SetParametersAtomically
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import String
 import pytest
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
 from substation_interfaces.msg import (
     AssetRisk,
@@ -692,6 +692,8 @@ def test_projection_validates_and_encodes_standard_occupancy_grid() -> None:
         "origin": {"x_m": -10.0, "y_m": -7.5, "yaw_rad": 0.0},
         "data_encoding": "base64-int8-row-major-v1",
         "data": base64.b64encode(bytes((255, 0, 50, 100))).decode("ascii"),
+        "planned_path": [],
+        "plan_source_ros_time": None,
     }
 
     invalid = OccupancyGrid()
@@ -701,6 +703,60 @@ def test_projection_validates_and_encodes_standard_occupancy_grid() -> None:
     invalid.data = [0]
     assert projection.on_map(invalid) is False
     assert state.map_snapshot is None
+
+
+def test_projection_exposes_only_map_frame_nav2_plan_points() -> None:
+    state = GatewayState()
+    projection = RosStateProjector(state)
+    grid = OccupancyGrid()
+    grid.header.frame_id = "map"
+    grid.info.resolution = 0.05
+    grid.info.width = 2
+    grid.info.height = 2
+    grid.info.origin.orientation.w = 1.0
+    grid.data = [0, 0, 0, 0]
+    assert projection.on_map(grid) is True
+
+    path = NavigationPath()
+    path.header.frame_id = "map"
+    path.header.stamp.sec = 42
+    first = PoseStamped()
+    first.header.frame_id = "map"
+    first.pose.position.x = -4.8
+    first.pose.position.y = -4.1
+    first.pose.orientation.w = 1.0
+    second = PoseStamped()
+    second.header.frame_id = "map"
+    second.pose.position.x = -4.2
+    second.pose.position.y = -3.6
+    second.pose.orientation.w = 1.0
+    path.poses = [first, second]
+
+    assert projection.on_plan(path) is True
+    assert state.map_snapshot["planned_path"] == [
+        {"x_m": -4.8, "y_m": -4.1},
+        {"x_m": -4.2, "y_m": -3.6},
+    ]
+    assert state.map_snapshot["plan_source_ros_time"] == {
+        "sec": 42,
+        "nanosec": 0,
+    }
+
+    invalid = NavigationPath()
+    invalid.header.frame_id = "odom"
+    invalid.poses = [first]
+    assert projection.on_plan(invalid) is False
+    assert len(state.map_snapshot["planned_path"]) == 2
+
+    non_finite = NavigationPath()
+    non_finite.header.frame_id = "map"
+    bad_point = PoseStamped()
+    bad_point.header.frame_id = "map"
+    bad_point.pose.position.x = float("nan")
+    bad_point.pose.orientation.w = 1.0
+    non_finite.poses = [bad_point]
+    assert projection.on_plan(non_finite) is False
+    assert len(state.map_snapshot["planned_path"]) == 2
 
 
 def test_adapter_source_does_not_consume_forbidden_development_or_truth_topics() -> None:

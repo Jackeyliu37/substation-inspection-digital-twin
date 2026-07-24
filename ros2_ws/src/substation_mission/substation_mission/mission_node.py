@@ -179,7 +179,12 @@ class MissionRuntime:
         tasks = record.get("tasks")
         if not isinstance(tasks, list):
             raise ValueError("MISSION_SNAPSHOT_TASKS_INVALID")
-        runtime.engine.replace_tasks(tuple(InspectionTask(**item) for item in tasks))
+        restored_tasks = tuple(InspectionTask(**item) for item in tasks)
+        runtime.engine.replace_tasks(tuple(
+            replace(task, state=TaskState.QUEUED)
+            if task.state == TaskState.ACTIVE else task
+            for task in restored_tasks
+        ))
         runtime.engine.robot_mode = RobotMode(int(record["robot_mode"]))
         runtime.engine.emergency_stop_latched = bool(record["emergency_stop_latched"])
         runtime.engine.latch_revision = int(record["emergency_stop_latch_revision"])
@@ -198,7 +203,7 @@ class MissionRuntime:
             "transition_reason_code", "MISSION_RECOVERED"
         ))
         runtime.transition_reason = str(record.get("transition_reason", ""))
-        runtime.active_task_id = str(record.get("active_task_id", ""))
+        runtime.active_task_id = ""
         runtime.completed_tasks = int(record.get("completed_tasks", 0))
         runtime.progress_0_1 = float(record.get("progress_0_1", 0.0))
         runtime.risk_update_requires_execution_replacement = False
@@ -329,6 +334,9 @@ class MissionRuntime:
                 )
                 changed = changed or next_task != task
                 updated.append(next_task)
+            elif task.state == TaskState.ACTIVE:
+                updated.append(replace(task, state=TaskState.QUEUED))
+                changed = True
             else:
                 updated.append(task)
         if not changed:
@@ -676,11 +684,17 @@ class TaskManagerNode(Node):
 
     def _on_risk(self, message: AssetRiskArray) -> None:
         if self._runtime.apply_risks(message, monotonic_s=time.monotonic()):
-            self._publish(
-                dispatch_execution=(
-                    self._runtime.risk_update_requires_execution_replacement
-                )
+            replace_execution = self._runtime.risk_update_requires_execution_replacement
+            execution_inflight = (
+                self._inspection_send_future is not None
+                or self._inspection_goal_handle is not None
             )
+            if replace_execution and execution_inflight:
+                self._replacement_requested = True
+                self._cancel_execution_goal()
+                self._publish(dispatch_execution=False)
+            else:
+                self._publish(dispatch_execution=replace_execution)
 
     def _manage_mission(self, request, response):
         actions = {
@@ -929,11 +943,8 @@ class TaskManagerNode(Node):
         if not self._inspection_client.server_is_ready():
             return
         if self._inspection_send_future is not None:
-            self._replacement_requested = True
             return
         if self._inspection_goal_handle is not None:
-            self._replacement_requested = True
-            self._cancel_execution_goal()
             return
 
         goal = ExecuteInspection.Goal()

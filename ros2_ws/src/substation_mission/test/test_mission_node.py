@@ -104,6 +104,44 @@ def test_runtime_normal_risk_update_does_not_interrupt_active_task() -> None:
     assert snapshot.queue_revision == queue_revision
 
 
+def test_runtime_feedback_keeps_exactly_one_task_active() -> None:
+    runtime = MissionRuntime(
+        MissionPolicy(),
+        "run-1",
+        "mission-1",
+        (
+            AssetGoal("breaker-01", 0.5, 1.8, 1.57),
+            AssetGoal("transformer-01", 4.0, 1.0, 1.57),
+        ),
+    )
+    first_task_id, second_task_id = [item.task_id for item in runtime.snapshot().tasks]
+
+    assert runtime.apply_execution_feedback(first_task_id, progress_0_1=0.0) is True
+    assert runtime.apply_execution_feedback(second_task_id, progress_0_1=0.0) is True
+
+    snapshot = runtime.snapshot()
+    active = [item for item in snapshot.tasks if item.state == item.STATE_ACTIVE]
+    assert [item.task_id for item in active] == [second_task_id]
+    assert next(item for item in snapshot.tasks if item.task_id == first_task_id).state == snapshot.tasks[0].STATE_QUEUED
+
+
+def test_runtime_restore_requeues_process_local_active_task() -> None:
+    policy = MissionPolicy()
+    goals = (
+        AssetGoal("breaker-01", 0.5, 1.8, 1.57),
+        AssetGoal("transformer-01", 4.0, 1.0, 1.57),
+    )
+    runtime = MissionRuntime(policy, "run-1", "mission-1", goals)
+    active_task_id = runtime.snapshot().tasks[0].task_id
+    assert runtime.apply_execution_feedback(active_task_id, progress_0_1=0.0) is True
+
+    restored = MissionRuntime.restore(policy, goals, runtime.persistence_record())
+    snapshot = restored.snapshot()
+
+    assert snapshot.active_task_id == ""
+    assert all(item.state == item.STATE_QUEUED for item in snapshot.tasks)
+
+
 def test_runtime_restores_queue_and_emergency_latch_from_persisted_record() -> None:
     policy = MissionPolicy(normal_replan_cooldown_s=0.0)
     goals = (
@@ -601,6 +639,44 @@ def test_dispatch_rejects_running_snapshot_until_context_is_active(tmp_path) -> 
         task_manager._dispatch_execution_snapshot(task_manager._current_stamped_snapshot())
         assert client.calls == 0
     finally:
+        task_manager.destroy_node()
+        context.shutdown()
+
+
+def test_periodic_dispatch_does_not_replace_an_active_execution_goal(tmp_path) -> None:
+    context = Context()
+    rclpy.init(context=context)
+    task_manager = TaskManagerNode(
+        context=context,
+        parameter_overrides=[
+            Parameter("run_id", value="run-active"),
+            Parameter("mission_id", value="mission-active"),
+            Parameter("mission_db_path", value=str(tmp_path / "mission.sqlite3")),
+        ],
+    )
+
+    class ReadyClient:
+        def server_is_ready(self) -> bool:
+            return True
+
+    class ActiveGoal:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+
+        def cancel_goal_async(self):
+            self.cancel_calls += 1
+            raise AssertionError("periodic state publication must not cancel navigation")
+
+    goal = ActiveGoal()
+    task_manager._inspection_client = ReadyClient()
+    task_manager._inspection_goal_handle = goal
+    task_manager._runtime.state_revision += 1
+    try:
+        task_manager._dispatch_execution_snapshot(task_manager._current_stamped_snapshot())
+        assert goal.cancel_calls == 0
+        assert task_manager._replacement_requested is False
+    finally:
+        task_manager._inspection_goal_handle = None
         task_manager.destroy_node()
         context.shutdown()
 

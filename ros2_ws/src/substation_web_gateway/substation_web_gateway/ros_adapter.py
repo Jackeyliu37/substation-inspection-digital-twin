@@ -18,7 +18,7 @@ from typing import Any
 import cv2
 from diagnostic_msgs.msg import DiagnosticArray
 from map_msgs.msg import OccupancyGridUpdate
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavigationPath
 import numpy as np
 import rclpy
 from rcl_interfaces.srv import SetParametersAtomically
@@ -153,6 +153,8 @@ class RosStateProjector:
         self._map_bytes: bytearray | None = None
         self._map_width = 0
         self._map_height = 0
+        self._planned_path: list[dict[str, float]] = []
+        self._plan_source_ros_time: dict[str, int] | None = None
         self._battery_percent: float | None = None
 
     def _bump(self) -> None:
@@ -300,6 +302,8 @@ class RosStateProjector:
             self._risk_revision = 0
             self._risk_snapshot_received = False
             self._time_mapping = None
+            self._planned_path = []
+            self._plan_source_ros_time = None
             self.state.assets = []
             self.state.ready_dependencies.update(mission=False, risk=False, time_mapping=False)
         self._context = message
@@ -791,7 +795,44 @@ class RosStateProjector:
             },
             "data_encoding": "base64-int8-row-major-v1",
             "data": base64.b64encode(self._map_bytes).decode("ascii"),
+            "planned_path": list(self._planned_path),
+            "plan_source_ros_time": self._plan_source_ros_time,
         }
+        self._bump()
+        return True
+
+    def on_plan(self, message: NavigationPath) -> bool:
+        if message.header.frame_id != "map":
+            return False
+        points: list[dict[str, float]] = []
+        for stamped in message.poses:
+            if stamped.header.frame_id not in ("", "map"):
+                return False
+            x = float(stamped.pose.position.x)
+            y = float(stamped.pose.position.y)
+            if not math.isfinite(x) or not math.isfinite(y):
+                return False
+            points.append({"x_m": x, "y_m": y})
+        if len(points) > 400:
+            stride = math.ceil(len(points) / 400)
+            points = points[::stride]
+            final = message.poses[-1].pose.position
+            endpoint = {"x_m": float(final.x), "y_m": float(final.y)}
+            if points[-1] != endpoint:
+                points.append(endpoint)
+        source_time = {
+            "sec": int(message.header.stamp.sec),
+            "nanosec": int(message.header.stamp.nanosec),
+        }
+        if points == self._planned_path and source_time == self._plan_source_ros_time:
+            return True
+        self._planned_path = points
+        self._plan_source_ros_time = source_time
+        if self.state.map_snapshot is not None:
+            snapshot = dict(self.state.map_snapshot)
+            snapshot["planned_path"] = list(points)
+            snapshot["plan_source_ros_time"] = source_time
+            self.state.map_snapshot = snapshot
         self._bump()
         return True
 
@@ -926,6 +967,7 @@ class RosGatewayNode(Node):
             InspectionTaskArray, "/mission/inspection_tasks", self.projector.on_mission, q_state
         )
         self.create_subscription(OccupancyGrid, "/map", self.projector.on_map, q_state)
+        self.create_subscription(NavigationPath, "/plan", self.projector.on_plan, q_stream)
         self.create_subscription(
             OccupancyGridUpdate, "/map_updates", self.projector.on_map_update, q_event
         )

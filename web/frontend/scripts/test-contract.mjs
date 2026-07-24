@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { newCommandId } from "../app/command-id.mjs";
 import { decodeOccupancyData, worldToMapPixel } from "../app/map-utils.mjs";
+import { buildAssetMarkers, mapPathPoints } from "../app/map-presentation.mjs";
 import {
   DEFAULT_VIEWPORT,
   panViewport,
@@ -166,6 +167,19 @@ if (page.includes('<text x={point.x + 4}')) {
 for (const visualStyle of ["aspect-ratio:", "rotate(-90deg)", ".model-showcase-grid", ".twin-toolbar"]) {
   if (!css.includes(visualStyle)) throw new Error(`missing acceptance visual style: ${visualStyle}`);
 }
+for (const mapFeature of [
+  "map.planned_path",
+  "planned-route-line",
+  "actual-trail-line",
+  "asset-footprint",
+  "asset-label-leader",
+  "trail={trail}",
+]) {
+  if (!page.includes(mapFeature)) throw new Error(`missing truthful map feature: ${mapFeature}`);
+}
+for (const mapStyle of ["scrollbar-color:#252b30 #020304", ".asset-footprint", ".planned-route-line", ".actual-trail-line"]) {
+  if (!css.includes(mapStyle)) throw new Error(`missing map/scrollbar style: ${mapStyle}`);
+}
 
 const decoded = decodeOccupancyData("/wAyZA==", 4, 1);
 if (decoded.length !== 4 || decoded[0] !== -1 || decoded[1] !== 0 || decoded[2] !== 50 || decoded[3] !== 100) {
@@ -175,6 +189,24 @@ const pixel = worldToMapPixel({ x_m: 1, y_m: 2 }, {
   origin: { x_m: -1, y_m: -2 }, resolution_m: 0.5, width_cells: 10, height_cells: 12,
 });
 if (pixel.x !== 4 || pixel.y !== 3) throw new Error(`world/map transform failed: ${JSON.stringify(pixel)}`);
+const presentationMap = {
+  origin: { x_m: -10, y_m: -10 }, resolution_m: 0.05, width_cells: 400, height_cells: 400,
+};
+const clusteredAssets = Array.from({ length: 10 }, (_, index) => ({
+  asset_id: `asset-${index + 1}`,
+  category: index === 0 ? "power_transformer" : "analog_meter",
+  pose: { x_m: 4 + (index % 3) * 0.25, y_m: 3 + Math.floor(index / 3) * 0.2 },
+  risk: { level: "unknown" },
+}));
+const markers = buildAssetMarkers(clusteredAssets, presentationMap);
+if (markers.length !== 10 || markers.some((marker) => marker.width <= 0 || marker.height <= 0)) {
+  throw new Error(`all assets must receive a footprint: ${JSON.stringify(markers)}`);
+}
+if (new Set(markers.map((marker) => `${marker.labelX.toFixed(2)},${marker.labelY.toFixed(2)}`)).size !== 10) {
+  throw new Error("clustered asset labels were not separated");
+}
+const livePath = mapPathPoints([{ x_m: -5, y_m: -4 }, { x_m: -4.5, y_m: -3.5 }], presentationMap);
+if (livePath.length !== 2 || livePath[0].x === livePath[1].x) throw new Error("live navigation path projection failed");
 
 const expectedLabels = [
   [assetLabel("transformer-01"), "主变压器"],
