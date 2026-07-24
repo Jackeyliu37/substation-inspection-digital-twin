@@ -232,12 +232,14 @@ class MissionRuntime:
                 return MissionTransitionResult(
                     False, command_id, "EMERGENCY_STOP_LATCHED", "emergency stop is latched"
                 )
+            selected_robot_mode = self.engine.robot_mode
             self.engine = MissionEngine(self.engine.policy)
             self.engine.start(
                 run_id=str(uuid.uuid4()),
                 mission_id=str(uuid.uuid4()),
                 route_id=route_id,
             )
+            self.engine.robot_mode = selected_robot_mode
             self.engine.replace_tasks(self._initial_tasks())
             self.mission_state = InspectionTaskArray.MISSION_READY
             self.context_lifecycle = self.CONTEXT_STARTING

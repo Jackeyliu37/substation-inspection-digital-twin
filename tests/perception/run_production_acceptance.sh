@@ -22,7 +22,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$repo_root"
 git_safe=(git -c "safe.directory=$repo_root")
 [[ -z "$("${git_safe[@]}" status --porcelain)" ]]
-grep -Fxq "SUBSTATION_RUN_ID=$run_id" /opt/substation/config/runtime.env
 release_root="$(readlink -f /opt/substation/current)"
 [[ "$release_root" = /opt/substation/releases/* && -d "$release_root" ]]
 release_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_commit"])' "$release_root/release-manifest.json")"
@@ -50,6 +49,24 @@ systemctl is-active \
   nginx.service \
   > "$evidence_dir/systemd-active.txt"
 curl -fsS http://127.0.0.1:8000/healthz > "$evidence_dir/gateway-health.json"
+curl -fsS http://127.0.0.1:8000/api/v1/system/status \
+  > "$evidence_dir/live-system-status.json"
+python3 - "$evidence_dir/live-system-status.json" "$run_id" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected_run_id = sys.argv[2]
+context = payload.get("data", {}).get("run_context", {})
+actual_run_id = payload.get("run_id")
+lifecycle = context.get("lifecycle")
+if actual_run_id != expected_run_id or lifecycle != "active":
+    raise SystemExit(
+        f"live run mismatch: expected={expected_run_id} actual={actual_run_id} "
+        f"lifecycle={lifecycle}"
+    )
+PY
 ss -H -ltnp > "$evidence_dir/listeners.txt"
 
 bag_root="/var/lib/substation/rosbag2/$run_id"

@@ -735,6 +735,7 @@ class RosGatewayNode(Node):
         self._manual_command_context: dict[str, tuple[str, int]] = {}
         self._mapping_query_inflight = False
         self._mapping_record_inflight = False
+        self._mapping_creation_runs: set[str] = set()
         self._readiness_inflight = False
         self._pending_mapping: dict[str, Any] | None = None
         q_state = QoSProfile(
@@ -1185,8 +1186,16 @@ class RosGatewayNode(Node):
     def _on_context(self, message: RunContext) -> None:
         if not self.projector.on_run_context(message):
             return
+        if message.lifecycle == RunContext.LIFECYCLE_STARTING:
+            self._mapping_creation_runs.add(message.run_id)
+            return
         if message.lifecycle == RunContext.LIFECYCLE_ACTIVE:
             self._ensure_time_mapping(message)
+        elif message.lifecycle in (
+            RunContext.LIFECYCLE_IDLE,
+            RunContext.LIFECYCLE_ENDED,
+        ):
+            self._mapping_creation_runs.discard(message.run_id)
 
     def _on_odom(self, message: Odometry) -> None:
         if message.header.frame_id != "odom" or message.child_frame_id != "base_footprint":
@@ -1239,6 +1248,7 @@ class RosGatewayNode(Node):
         except Exception:
             return
         if response.found:
+            self._mapping_creation_runs.discard(context.run_id)
             self.projector.set_time_mapping(
                 run_id=context.run_id,
                 context_revision=response.context_revision,
@@ -1247,7 +1257,12 @@ class RosGatewayNode(Node):
                 anchor_utc=response.anchor_utc,
             )
             return
-        if response.error_code or self._mapping_record_inflight or not self._record_mapping.service_is_ready():
+        if (
+            response.error_code != "TIME_MAPPING_UNAVAILABLE"
+            or context.run_id not in self._mapping_creation_runs
+            or self._mapping_record_inflight
+            or not self._record_mapping.service_is_ready()
+        ):
             return
         request = RecordRunTimeMapping.Request()
         request.schema_version = 1
@@ -1275,6 +1290,7 @@ class RosGatewayNode(Node):
         except Exception:
             return
         if response.accepted and pending is not None:
+            self._mapping_creation_runs.discard(pending["run_id"])
             self.projector.set_time_mapping(**pending)
 
     def _poll(self) -> None:

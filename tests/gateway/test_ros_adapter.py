@@ -32,7 +32,12 @@ from substation_interfaces.msg import (
     ManualVelocityStatus,
     RunContext,
 )
-from substation_interfaces.srv import GetReportingReadiness, ManageMission, QueryRunTimeMapping
+from substation_interfaces.srv import (
+    GetReportingReadiness,
+    ManageMission,
+    QueryRunTimeMapping,
+    RecordRunTimeMapping,
+)
 
 from substation_web_gateway.app import CommandStore, GatewayState, create_app
 from substation_web_gateway.ros_adapter import RosGatewayAdapter, RosGatewayNode, RosStateProjector
@@ -139,6 +144,91 @@ def _run_context(run_id: str = RUN_ID) -> RunContext:
     message.reason_code = "MISSION_STARTED"
     message.reason = "operator start"
     return message
+
+
+class _CompletedFuture:
+    def __init__(self, response) -> None:
+        self._response = response
+
+    def result(self):
+        return self._response
+
+    def add_done_callback(self, callback) -> None:
+        callback(self)
+
+
+class _ReadyServiceClient:
+    def __init__(self, response) -> None:
+        self.response = response
+        self.requests = []
+
+    def service_is_ready(self) -> bool:
+        return True
+
+    def call_async(self, request):
+        self.requests.append(request)
+        return _CompletedFuture(self.response)
+
+
+def _missing_mapping_response() -> QueryRunTimeMapping.Response:
+    response = QueryRunTimeMapping.Response()
+    response.schema_version = 1
+    response.found = False
+    response.error_code = "TIME_MAPPING_UNAVAILABLE"
+    response.error_message = response.error_code
+    return response
+
+
+def test_gateway_records_mapping_only_after_observing_starting_to_active_transition() -> None:
+    context = Context()
+    rclpy.init(context=context)
+    gateway = RosGatewayNode(GatewayState(), context=context)
+    query = _ReadyServiceClient(_missing_mapping_response())
+    recorded = RecordRunTimeMapping.Response()
+    recorded.schema_version = 1
+    recorded.accepted = True
+    record = _ReadyServiceClient(recorded)
+    gateway._query_mapping = query
+    gateway._record_mapping = record
+    starting = _run_context()
+    starting.lifecycle = RunContext.LIFECYCLE_STARTING
+    starting.context_revision = 16
+    active = _run_context()
+
+    try:
+        gateway._on_context(starting)
+        gateway._on_context(active)
+
+        assert len(query.requests) == 1
+        assert len(record.requests) == 1
+        assert record.requests[0].run_id == RUN_ID
+        assert gateway.projector._time_mapping is not None
+    finally:
+        gateway.destroy_node()
+        context.shutdown()
+
+
+def test_gateway_restart_does_not_recreate_missing_active_run_mapping() -> None:
+    context = Context()
+    rclpy.init(context=context)
+    gateway = RosGatewayNode(GatewayState(), context=context)
+    query = _ReadyServiceClient(_missing_mapping_response())
+    recorded = RecordRunTimeMapping.Response()
+    recorded.schema_version = 1
+    recorded.accepted = True
+    record = _ReadyServiceClient(recorded)
+    gateway._query_mapping = query
+    gateway._record_mapping = record
+
+    try:
+        gateway._on_context(_run_context())
+
+        assert len(query.requests) == 1
+        assert record.requests == []
+        assert gateway.projector._time_mapping is None
+    finally:
+        gateway.destroy_node()
+        context.shutdown()
 
 
 def _mission(run_id: str = RUN_ID) -> InspectionTaskArray:

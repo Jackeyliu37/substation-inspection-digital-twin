@@ -19,7 +19,7 @@ import time
 import sqlite3
 
 from substation_mission import mission_node
-from substation_mission.mission_engine import MissionPolicy
+from substation_mission.mission_engine import MissionPolicy, RobotMode
 from substation_mission.mission_node import (
     AssetGoal,
     MissionRuntime,
@@ -165,6 +165,30 @@ def test_runtime_rejects_wrong_mission_transition_without_advancing_revision() -
     assert result.accepted is False
     assert result.error_code == "MISSION_NOT_FOUND"
     assert runtime.state_revision == 1
+
+
+def test_starting_new_run_preserves_operator_selected_manual_mode() -> None:
+    runtime = MissionRuntime(
+        MissionPolicy(),
+        "run-1",
+        "mission-1",
+        (AssetGoal("transformer-01", 4.0, 1.0, 1.57),),
+    )
+    runtime.mission_state = InspectionTaskArray.MISSION_SUCCEEDED
+    runtime.context_lifecycle = RunContext.LIFECYCLE_ENDED
+    runtime.engine.robot_mode = RobotMode.MANUAL
+
+    started = runtime.manage(
+        action="start",
+        command_id="315ca78b-39ab-4234-bf19-d56d081358c5",
+        mission_id="",
+        route_id="default-route",
+        reason="operator starts acceptance run",
+    )
+
+    assert started.accepted is True
+    assert runtime.engine.robot_mode == RobotMode.MANUAL
+    assert runtime.context_lifecycle == RunContext.LIFECYCLE_STARTING
 
 
 def test_runtime_persists_action_feedback_and_successful_task_terminal_states() -> None:

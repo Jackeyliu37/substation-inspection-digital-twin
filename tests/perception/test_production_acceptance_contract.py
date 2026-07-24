@@ -48,6 +48,14 @@ def test_runner_requires_all_four_models_and_cleans_owned_processes() -> None:
     assert "residual" in source
 
 
+def test_runner_validates_the_live_active_run_not_bootstrap_environment() -> None:
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "SUBSTATION_RUN_ID" not in source
+    assert "/api/v1/system/status" in source
+    assert 'lifecycle != "active"' in source
+
+
 def test_probe_contract_covers_real_frames_modules_and_safety_barriers() -> None:
     source = PROBE.read_text(encoding="utf-8")
 
