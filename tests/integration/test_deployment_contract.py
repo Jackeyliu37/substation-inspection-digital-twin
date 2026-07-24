@@ -97,6 +97,13 @@ def test_root_installer_verifies_then_atomically_switches_current() -> None:
     assert "/opt/substation/current" in script
 
 
+def test_root_installer_grants_headless_render_device_groups() -> None:
+    script = read("scripts/deployment/install_release.sh")
+
+    assert 'usermod -aG "render" substation' in script
+    assert 'usermod -aG "video" substation' in script
+
+
 def test_five_service_units_form_a_loopback_only_dependency_chain() -> None:
     units = {
         name: read(f"deploy/systemd/{name}.service")

@@ -22,6 +22,7 @@ def test_capture_script_records_required_run_scoped_topics() -> None:
         "/odom",
         "/perception/detections",
         "metadata.yaml",
+        '"$output_dir/metadata.yaml"',
     ):
         assert required in source
 

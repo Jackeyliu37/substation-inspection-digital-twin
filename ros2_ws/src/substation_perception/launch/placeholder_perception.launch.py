@@ -18,6 +18,8 @@ PACKAGE_SHARE = Path(get_package_share_directory("substation_perception"))
 
 
 def repository_root_from_share(package_share: Path) -> Path:
+    if package_share.parents[1].name == "install":
+        return package_share.parents[2]
     install_root = package_share.parents[2]
     candidate = install_root.parent
     return candidate.parent if candidate.name == "ros2_ws" else candidate

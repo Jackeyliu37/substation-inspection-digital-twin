@@ -74,6 +74,9 @@ def test_repository_root_handles_root_and_ros_workspace_install_layouts() -> Non
     assert module.repository_root_from_share(
         Path("/work/project/ros2_ws/install/substation_perception/share/substation_perception")
     ) == Path("/work/project")
+    assert module.repository_root_from_share(
+        Path("/opt/substation/releases/commit/install/share/substation_perception")
+    ) == Path("/opt/substation/releases/commit")
 
 
 def test_package_declares_runtime_and_launch_dependencies() -> None:

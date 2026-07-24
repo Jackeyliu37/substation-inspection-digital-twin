@@ -7,6 +7,34 @@ from typing import Any
 
 import numpy as np
 
+
+_RUNTIME_CONFIGURED = False
+
+
+def configure_inference_runtime() -> None:
+    """Avoid CPU thread oversubscription across the independent GPU workers."""
+    global _RUNTIME_CONFIGURED
+    if _RUNTIME_CONFIGURED:
+        return
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            # Torch only permits changing inter-op threads before parallel work.
+            pass
+    except (ImportError, RuntimeError):
+        pass
+    try:
+        import cv2
+
+        cv2.setNumThreads(1)
+    except (ImportError, AttributeError):
+        pass
+    _RUNTIME_CONFIGURED = True
+
 from .model_identity import VerifiedModel
 
 
@@ -93,6 +121,7 @@ class YoloBackend:
         identity: VerifiedModel,
         model_factory: Callable[[str], object] | None = None,
     ) -> None:
+        configure_inference_runtime()
         self._identity = identity
         self._model_factory = model_factory
         self._loaded_model: object | None = None

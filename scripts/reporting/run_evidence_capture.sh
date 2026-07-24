@@ -66,6 +66,7 @@ if [[ ! "$message_count" =~ ^[1-9][0-9]*$ ]]; then
   echo "evidence-capture: rosbag2 contains no messages" >&2
   exit 1
 fi
+install -m 0644 "$bag_dir/metadata.yaml" "$output_dir/metadata.yaml"
 printf 'run_id=%s\nduration_s=%s\nrosbag_metadata=%s\n' \
   "$run_id" "$duration_s" "$bag_dir/metadata.yaml" \
   > "$output_dir/capture.env"

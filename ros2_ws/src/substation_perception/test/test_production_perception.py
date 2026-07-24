@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 from pathlib import Path
 import uuid
 
@@ -21,6 +22,34 @@ from substation_perception.production_nodes import (
     classify_equipment_crops,
 )
 from substation_perception.yolo_backend import RawDetection
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_LAUNCH = PACKAGE_ROOT / "launch/production_perception.launch.py"
+
+
+def _load_production_launch():
+    spec = importlib.util.spec_from_file_location(
+        "production_perception_launch", PRODUCTION_LAUNCH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_production_launch_resolves_isolated_and_merged_release_roots() -> None:
+    module = _load_production_launch()
+
+    assert module.repository_root_from_share(
+        Path("/work/project/ros2_ws/install/substation_perception/share/substation_perception")
+    ) == Path("/work/project")
+    assert module.repository_root_from_share(
+        Path("/opt/substation/releases/commit/install/share/substation_perception")
+    ) == Path("/opt/substation/releases/commit")
+    assert module.repository_root_from_share(
+        Path("/opt/substation/current/install/share/substation_perception")
+    ) == Path("/opt/substation/current")
 
 
 def _write_manifest(path: Path, sha256: str, size_bytes: int) -> None:

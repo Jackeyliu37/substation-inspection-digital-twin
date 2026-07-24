@@ -42,6 +42,15 @@ candidate="$(readlink -f -- "$candidate")"
 if ! getent passwd substation >/dev/null; then
   useradd --system --home-dir /var/lib/substation --shell /usr/sbin/nologin substation
 fi
+# Gazebo OGRE2/EGL needs direct access to the NVIDIA render nodes.  Keep this
+# limited to the existing device groups; no display session or X server is
+# introduced by the production service.
+if getent group render >/dev/null; then
+  usermod -aG "render" substation
+fi
+if getent group video >/dev/null; then
+  usermod -aG "video" substation
+fi
 install -d -m 0755 /opt/substation /opt/substation/releases /opt/substation/config
 install -d -m 0750 -o substation -g substation \
   /var/lib/substation/sqlite \

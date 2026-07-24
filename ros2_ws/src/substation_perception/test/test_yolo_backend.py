@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from substation_perception.model_identity import VerifiedModel
 from substation_perception.yolo_backend import BackendError, RawDetection, YoloBackend
+import substation_perception.yolo_backend as yolo_backend
 
 
 class FakeTensor:
@@ -73,6 +76,24 @@ def _backend(
         return model
 
     return YoloBackend(verified_model, model_factory=factory), constructed_paths, model
+
+
+def test_inference_runtime_limits_cpu_thread_fanout(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch_calls: list[tuple[str, int]] = []
+    cv2_calls: list[int] = []
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda value: torch_calls.append(("intra", value)),
+        set_num_interop_threads=lambda value: torch_calls.append(("interop", value)),
+    )
+    fake_cv2 = SimpleNamespace(setNumThreads=lambda value: cv2_calls.append(value))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    monkeypatch.setattr(yolo_backend, "_RUNTIME_CONFIGURED", False)
+
+    yolo_backend.configure_inference_runtime()
+
+    assert torch_calls == [("intra", 1), ("interop", 1)]
+    assert cv2_calls == [1]
 
 
 def test_backend_loads_once_and_returns_framework_neutral_boxes(
