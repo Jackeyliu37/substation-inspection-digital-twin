@@ -76,7 +76,13 @@ class MissionSnapshotStore:
             or not 0.0 <= value["progress_0_1"] <= 1.0
         ):
             raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
-        if not value["run_id"] or not value["mission_id"] or not isinstance(value["tasks"], list):
+        if not isinstance(value["tasks"], list):
+            raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
+        idle = value["context_lifecycle"] == 0 and value["mission_state"] == 0
+        if idle:
+            if value["run_id"] or value["mission_id"] or value["queue_revision"] != 0 or value["tasks"]:
+                raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
+        elif not value["run_id"] or not value["mission_id"]:
             raise ValueError("MISSION_SNAPSHOT_VALUE_INVALID")
         encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         return json.loads(encoded), encoded

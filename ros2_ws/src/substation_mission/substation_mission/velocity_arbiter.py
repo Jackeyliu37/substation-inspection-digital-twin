@@ -36,7 +36,31 @@ class SafeVelocityArbiter:
         self._latched = False
         self._manual_deadline: float | None = None
         self._output_active = False
+        self._zero_since: float | None = None
         self._terminal: dict[str, VelocityStatus] = {}
+
+    def record_published(
+        self,
+        velocity: tuple[float, float, float],
+        *,
+        monotonic_s: float,
+    ) -> None:
+        """Record the velocity actually published by the single writer."""
+        if any(value != 0.0 for value in velocity):
+            self._zero_since = None
+        elif self._zero_since is None:
+            self._zero_since = float(monotonic_s)
+
+    def zero_barrier_satisfied(
+        self,
+        *,
+        monotonic_s: float,
+        minimum_s: float = 0.5,
+    ) -> bool:
+        return (
+            self._zero_since is not None
+            and float(monotonic_s) - self._zero_since >= minimum_s
+        )
 
     def update_context(self, *, run_id: str, context_revision: int, active: bool) -> tuple[float, float, float] | None:
         changed = (

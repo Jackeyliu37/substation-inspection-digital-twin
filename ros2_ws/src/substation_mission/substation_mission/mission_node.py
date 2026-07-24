@@ -58,6 +58,7 @@ class MissionTransitionResult:
 
 
 class MissionRuntime:
+    CONTEXT_STARTING = RunContext.LIFECYCLE_STARTING
     CONTEXT_ACTIVE = RunContext.LIFECYCLE_ACTIVE
     CONTEXT_ENDED = RunContext.LIFECYCLE_ENDED
 
@@ -67,6 +68,8 @@ class MissionRuntime:
         run_id: str,
         mission_id: str,
         goals: tuple[AssetGoal, ...],
+        *,
+        start_active: bool = True,
     ) -> None:
         self.engine = MissionEngine(policy)
         self.engine.start(run_id=run_id, mission_id=mission_id, route_id="default-route")
@@ -74,15 +77,41 @@ class MissionRuntime:
         self.engine.replace_tasks(self._initial_tasks())
         self.state_revision = 1
         self.queue_revision = 1
-        self.mission_state = InspectionTaskArray.MISSION_RUNNING
-        self.context_lifecycle = self.CONTEXT_ACTIVE
+        self.mission_state = (
+            InspectionTaskArray.MISSION_RUNNING
+            if start_active else InspectionTaskArray.MISSION_READY
+        )
+        self.context_lifecycle = (
+            self.CONTEXT_ACTIVE if start_active else self.CONTEXT_STARTING
+        )
         self.context_revision = 1
         self.transition_command_id = ""
-        self.transition_reason_code = "MISSION_STARTED"
-        self.transition_reason = "risk-driven inspection runtime"
+        self.transition_reason_code = (
+            "MISSION_STARTED" if start_active else "MISSION_STARTING"
+        )
+        self.transition_reason = (
+            "risk-driven inspection runtime"
+            if start_active else "runtime readiness barriers in progress"
+        )
         self.active_task_id = ""
         self.completed_tasks = 0
         self.progress_0_1 = 0.0
+
+    def activate(self, *, reason: str) -> bool:
+        if (
+            self.context_lifecycle != self.CONTEXT_STARTING
+            or self.mission_state != InspectionTaskArray.MISSION_READY
+            or not reason
+        ):
+            return False
+        self.context_lifecycle = self.CONTEXT_ACTIVE
+        self.mission_state = InspectionTaskArray.MISSION_RUNNING
+        self.context_revision += 1
+        self.state_revision += 1
+        self.transition_command_id = ""
+        self.transition_reason_code = "MISSION_STARTED"
+        self.transition_reason = reason
+        return True
 
     def _initial_tasks(self) -> tuple[InspectionTask, ...]:
         return tuple(
@@ -210,13 +239,13 @@ class MissionRuntime:
                 route_id=route_id,
             )
             self.engine.replace_tasks(self._initial_tasks())
-            self.mission_state = InspectionTaskArray.MISSION_RUNNING
-            self.context_lifecycle = self.CONTEXT_ACTIVE
+            self.mission_state = InspectionTaskArray.MISSION_READY
+            self.context_lifecycle = self.CONTEXT_STARTING
             self.context_revision += 1
             self.state_revision += 1
             self.queue_revision = 1
             self.transition_command_id = command_id
-            self.transition_reason_code = "MISSION_STARTED"
+            self.transition_reason_code = "MISSION_STARTING"
             self.transition_reason = reason
             self.active_task_id = ""
             self.completed_tasks = 0
@@ -439,9 +468,37 @@ def load_or_create_runtime(
         and latest["mission_id"] == mission_id
     ):
         return MissionRuntime.restore(policy, goals, latest)
-    runtime = MissionRuntime(policy, run_id, mission_id, goals)
+
+    idle_state_revision = int(latest["state_revision"]) + 1 if latest is not None else 1
+    idle_context_revision = int(latest["context_revision"]) + 1 if latest is not None else 1
+    idle_record = {
+        "schema_version": 1,
+        "run_id": "",
+        "mission_id": "",
+        "state_revision": idle_state_revision,
+        "queue_revision": 0,
+        "mission_state": InspectionTaskArray.MISSION_IDLE,
+        "context_lifecycle": RunContext.LIFECYCLE_IDLE,
+        "context_revision": idle_context_revision,
+        "transition_command_id": "",
+        "transition_reason_code": "NO_ACTIVE_RUN",
+        "transition_reason": "cold-start safety baseline",
+        "active_task_id": "",
+        "completed_tasks": 0,
+        "progress_0_1": 0.0,
+        "robot_mode": int(latest["robot_mode"]) if latest is not None else int(RobotMode.AUTONOMOUS),
+        "emergency_stop_latched": bool(latest["emergency_stop_latched"]) if latest is not None else False,
+        "emergency_stop_latch_revision": int(latest["emergency_stop_latch_revision"]) if latest is not None else 0,
+        "tasks": [],
+    }
+    store.save(idle_record)
+
+    runtime = MissionRuntime(
+        policy, run_id, mission_id, goals, start_active=False
+    )
+    runtime.state_revision = idle_state_revision + 1
+    runtime.context_revision = idle_context_revision + 1
     if latest is not None:
-        runtime.state_revision = int(latest["state_revision"]) + 1
         if latest["emergency_stop_latched"]:
             runtime.engine.emergency_stop_latched = True
             runtime.engine.latch_revision = int(latest["emergency_stop_latch_revision"])
@@ -484,6 +541,7 @@ class TaskManagerNode(Node):
         self._inspection_cancel_future = None
         self._dispatched_execution_signature: tuple[int, int] | None = None
         self._replacement_requested = False
+        self._motion_barrier_requested = False
         self._velocity_arbiter = SafeVelocityArbiter()
         self._velocity_arbiter.update_context(
             run_id=self._runtime.engine.run_id,
@@ -526,8 +584,15 @@ class TaskManagerNode(Node):
         self.create_service(ResetEmergencyStop, "/mission/emergency_stop_reset", self._reset_stop)
         self.create_timer(0.5, self._publish)
         self.create_timer(0.02, self._velocity_tick)
+        if self._runtime.context_lifecycle == RunContext.LIFECYCLE_STARTING:
+            self._publish(dispatch_execution=False)
+            self._runtime.activate(reason="task manager runtime ready")
+            self._publish()
 
     def _publish_velocity(self, values: tuple[float, float, float]) -> None:
+        self._velocity_arbiter.record_published(
+            values, monotonic_s=time.monotonic()
+        )
         message = Twist()
         message.linear.x, message.linear.y, message.angular.z = values
         self._cmd_vel_pub.publish(message)
@@ -600,9 +665,16 @@ class TaskManagerNode(Node):
         if result.accepted and action in {"pause", "stop"}:
             self._replacement_requested = False
             self._cancel_execution_goal()
-            self._cmd_vel_pub.publish(Twist())
-        elif result.accepted and action in {"resume", "start"}:
+            self._publish_velocity((0.0, 0.0, 0.0))
+        elif result.accepted and action == "start":
+            self._publish(dispatch_execution=False)
+            self._runtime.activate(reason="task manager runtime ready")
             self._dispatched_execution_signature = None
+        elif result.accepted and action == "resume":
+            self._dispatched_execution_signature = None
+        response.run_context_revision = self._runtime.context_revision
+        response.state_revision = self._runtime.state_revision
+        response.queue_revision = self._runtime.queue_revision
         self._publish()
         return response
 
@@ -645,13 +717,15 @@ class TaskManagerNode(Node):
         ):
             response.error_code = "INVALID_STATE_TRANSITION"
             return response
-        if target == RobotMode.MANUAL:
-            self._replacement_requested = False
-            self._cancel_execution_goal()
-            self._publish_velocity((0.0, 0.0, 0.0))
-        else:
+        self._arm_motion_safety_barrier()
+        if self._motion_safety_barrier_pending():
+            response.error_code = "MOTION_SAFETY_BARRIER_PENDING"
+            response.error_message = "wait for no active goal and 0.5 seconds of zero velocity"
+            return response
+        if target == RobotMode.AUTONOMOUS:
             self._dispatched_execution_signature = None
         self._runtime.engine.robot_mode = target
+        self._motion_barrier_requested = False
         self._runtime.state_revision += 1
         self._runtime.transition_command_id = request.command_id
         self._runtime.transition_reason_code = (
@@ -676,9 +750,13 @@ class TaskManagerNode(Node):
             self._runtime.transition_command_id = request.command_id
             self._runtime.transition_reason_code = "EMERGENCY_STOP_LATCHED"
             self._runtime.transition_reason = request.reason
-            self._replacement_requested = False
+            self._replacement_requested = (
+                self._inspection_send_future is not None
+                or self._inspection_goal_handle is not None
+            )
+            self._motion_barrier_requested = True
             self._cancel_execution_goal()
-            self._cmd_vel_pub.publish(Twist())
+            self._publish_velocity((0.0, 0.0, 0.0))
         else:
             response.error_code = "VALIDATION_FAILED"
         response.state_revision = self._runtime.state_revision
@@ -686,15 +764,40 @@ class TaskManagerNode(Node):
         return response
 
     def _reset_stop(self, request, response):
+        response.schema_version = 1
+        response.accepted = False
+        response.latched = self._runtime.engine.emergency_stop_latched
+        response.latch_revision = self._runtime.engine.latch_revision
+        response.state_revision = self._runtime.state_revision
+        if (
+            request.schema_version != ResetEmergencyStop.Request.SCHEMA_VERSION
+            or not request.command_id
+            or not request.reason
+            or not request.confirm
+        ):
+            response.error_code = "VALIDATION_FAILED"
+            response.error_message = "schema, command_id, reason, and confirm are required"
+            return response
+        if (
+            not self._runtime.engine.emergency_stop_latched
+            or request.observed_latch_revision != self._runtime.engine.latch_revision
+        ):
+            response.error_code = "LATCH_REVISION_MISMATCH"
+            return response
+        self._arm_motion_safety_barrier()
+        if self._motion_safety_barrier_pending():
+            response.error_code = "MOTION_SAFETY_BARRIER_PENDING"
+            response.error_message = "wait for no active goal and 0.5 seconds of zero velocity"
+            return response
         result = self._runtime.engine.reset_emergency_stop(
             request.observed_latch_revision,
             confirm=request.confirm,
         )
-        response.schema_version = 1
         response.accepted = result.accepted
         response.latched = result.latched
         response.latch_revision = result.latch_revision
         if result.accepted:
+            self._motion_barrier_requested = False
             self._runtime.state_revision += 1
             self._runtime.transition_command_id = request.command_id
             self._runtime.transition_reason_code = "EMERGENCY_STOP_RESET"
@@ -704,6 +807,25 @@ class TaskManagerNode(Node):
         response.state_revision = self._runtime.state_revision
         self._publish()
         return response
+
+    def _arm_motion_safety_barrier(self) -> None:
+        self._motion_barrier_requested = True
+        self._replacement_requested = (
+            self._inspection_send_future is not None
+            or self._inspection_goal_handle is not None
+        )
+        self._cancel_execution_goal()
+        self._publish_velocity((0.0, 0.0, 0.0))
+
+    def _motion_safety_barrier_pending(self) -> bool:
+        execution_pending = any((
+            self._inspection_send_future is not None,
+            self._inspection_goal_handle is not None,
+            self._inspection_cancel_future is not None,
+        ))
+        return execution_pending or not self._velocity_arbiter.zero_barrier_satisfied(
+            monotonic_s=time.monotonic(), minimum_s=0.5
+        )
 
     def _publish(self, *, dispatch_execution: bool = True) -> None:
         context_stop = self._velocity_arbiter.update_context(
@@ -748,6 +870,7 @@ class TaskManagerNode(Node):
             snapshot.emergency_stop_latched
             or snapshot.robot_mode != InspectionTaskArray.MODE_AUTONOMOUS
             or snapshot.mission_state != InspectionTaskArray.MISSION_RUNNING
+            or self._runtime.context_lifecycle != RunContext.LIFECYCLE_ACTIVE
         ):
             self._cancel_execution_goal()
             return
@@ -820,7 +943,8 @@ class TaskManagerNode(Node):
             self._replacement_requested = False
             if self._inspection_goal_handle is expected_goal_handle:
                 self._inspection_goal_handle = None
-            self._dispatch_execution_snapshot(self._current_stamped_snapshot())
+            if not self._motion_barrier_requested:
+                self._dispatch_execution_snapshot(self._current_stamped_snapshot())
             return
         if self._runtime.engine.emergency_stop_latched:
             if self._inspection_goal_handle is expected_goal_handle:

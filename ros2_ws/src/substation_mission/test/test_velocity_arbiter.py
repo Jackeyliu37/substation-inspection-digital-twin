@@ -85,3 +85,22 @@ def test_nav_velocity_passes_only_in_active_autonomous_non_latched_state() -> No
 
     arbiter.update_mission(robot_mode=0, emergency_stop_latched=True)
     assert arbiter.accept_nav((0.3, 0.0, 0.4)) is None
+
+
+def test_zero_velocity_barrier_requires_a_continuous_half_second() -> None:
+    arbiter = SafeVelocityArbiter()
+
+    arbiter.record_published((0.0, 0.0, 0.0), monotonic_s=10.0)
+    assert arbiter.zero_barrier_satisfied(monotonic_s=10.499) is False
+    assert arbiter.zero_barrier_satisfied(monotonic_s=10.5) is True
+
+
+def test_nonzero_velocity_resets_the_zero_velocity_barrier() -> None:
+    arbiter = SafeVelocityArbiter()
+
+    arbiter.record_published((0.0, 0.0, 0.0), monotonic_s=10.0)
+    arbiter.record_published((0.1, 0.0, 0.0), monotonic_s=10.4)
+    assert arbiter.zero_barrier_satisfied(monotonic_s=11.0) is False
+
+    arbiter.record_published((0.0, 0.0, 0.0), monotonic_s=11.0)
+    assert arbiter.zero_barrier_satisfied(monotonic_s=11.5) is True

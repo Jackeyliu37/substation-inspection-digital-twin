@@ -5,15 +5,18 @@ from substation_interfaces.msg import (
     InspectionTaskArray,
     ManualVelocityCommand,
     ManualVelocityStatus,
+    RunContext,
 )
-from substation_interfaces.srv import ManageMission, SetRobotMode
+from substation_interfaces.srv import ManageMission, ResetEmergencyStop, SetRobotMode
 from rclpy.executors import ExternalShutdownException
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+import json
 import time
+import sqlite3
 
 from substation_mission import mission_node
 from substation_mission.mission_engine import MissionPolicy
@@ -131,12 +134,18 @@ def test_runtime_persists_pause_resume_and_stop_lifecycle_transitions() -> None:
     )
     assert started.accepted is True
     assert restored.engine.run_id != previous_run_id
-    assert restored.snapshot().mission_state == restored.snapshot().MISSION_RUNNING
-    assert restored.context_lifecycle == restored.CONTEXT_ACTIVE
+    assert restored.snapshot().mission_state == restored.snapshot().MISSION_READY
+    assert restored.context_lifecycle == RunContext.LIFECYCLE_STARTING
     assert restored.context_revision == 3
     assert restored.state_revision == 5
     assert restored.queue_revision == 1
     assert len(restored.snapshot().tasks) == 1
+
+    assert restored.activate(reason="runtime ready") is True
+    assert restored.snapshot().mission_state == restored.snapshot().MISSION_RUNNING
+    assert restored.context_lifecycle == restored.CONTEXT_ACTIVE
+    assert restored.context_revision == 4
+    assert restored.state_revision == 6
 
 
 def test_runtime_rejects_wrong_mission_transition_without_advancing_revision() -> None:
@@ -240,6 +249,7 @@ def test_task_manager_exposes_manage_service_and_publishes_pause_transition(tmp_
     executor.add_node(task_manager)
     executor.add_node(client_node)
     try:
+        initial_revision = task_manager._runtime.state_revision
         assert client.wait_for_service(timeout_sec=2.0)
         request = ManageMission.Request()
         request.schema_version = 1
@@ -254,7 +264,7 @@ def test_task_manager_exposes_manage_service_and_publishes_pause_transition(tmp_
         assert response.accepted is True
         assert response.run_id == "run-service"
         assert response.mission_id == "mission-service"
-        assert response.state_revision == 2
+        assert response.state_revision == initial_revision + 1
         assert task_manager._runtime.snapshot().mission_state == InspectionTaskArray.MISSION_PAUSED
         assert task_manager._runtime.snapshot().transition_command_id == request.command_id
     finally:
@@ -304,7 +314,7 @@ def test_task_manager_arbitrates_manual_velocity_and_stops_at_deadline(tmp_path)
     message.header.frame_id = "base_link"
     message.command_id = "3b514885-bb10-448b-92fd-ef9ec7ce9c74"
     message.run_id = "run-manual"
-    message.context_revision = 1
+    message.context_revision = task_manager._runtime.context_revision
     message.twist.linear.x = 0.2
     message.duration_s = 0.05
     try:
@@ -337,7 +347,9 @@ def test_task_manager_arbitrates_manual_velocity_and_stops_at_deadline(tmp_path)
         context.shutdown()
 
 
-def test_task_manager_changes_robot_mode_with_revision_compare_and_set(tmp_path) -> None:
+def test_task_manager_changes_robot_mode_with_revision_compare_and_set(
+    tmp_path, monkeypatch
+) -> None:
     context = Context()
     rclpy.init(context=context)
     task_manager = TaskManagerNode(
@@ -354,28 +366,38 @@ def test_task_manager_changes_robot_mode_with_revision_compare_and_set(tmp_path)
     executor.add_node(task_manager)
     executor.add_node(client_node)
     try:
+        initial_revision = task_manager._runtime.state_revision
+        now = [10.0]
+        monkeypatch.setattr(mission_node.time, "monotonic", lambda: now[0])
         assert client.wait_for_service(timeout_sec=2.0)
         request = SetRobotMode.Request()
         request.schema_version = 1
         request.command_id = "a999dd00-5db0-487e-9078-9c11fb9cc51d"
         request.mission_id = "mission-mode"
         request.target_mode = SetRobotMode.Request.MODE_MANUAL
-        request.observed_state_revision = 1
+        request.observed_state_revision = initial_revision
         request.observed_latch_revision = 0
         request.reason = "operator handoff"
         future = client.call_async(request)
         executor.spin_until_future_complete(future, timeout_sec=2.0)
         response = future.result()
+        assert response.accepted is False
+        assert response.error_code == "MOTION_SAFETY_BARRIER_PENDING"
+
+        now[0] = 10.5
+        future = client.call_async(request)
+        executor.spin_until_future_complete(future, timeout_sec=2.0)
+        response = future.result()
         assert response.accepted is True
         assert response.robot_mode == InspectionTaskArray.MODE_MANUAL
-        assert response.state_revision == 2
+        assert response.state_revision == initial_revision + 1
 
         stale = SetRobotMode.Request()
         stale.schema_version = 1
         stale.command_id = "cccb15dd-36ef-4bdf-be29-301053a2169b"
         stale.mission_id = "mission-mode"
         stale.target_mode = SetRobotMode.Request.MODE_AUTONOMOUS
-        stale.observed_state_revision = 1
+        stale.observed_state_revision = initial_revision
         stale.observed_latch_revision = 0
         stale.reason = "stale page"
         future = client.call_async(stale)
@@ -404,11 +426,146 @@ def test_new_run_inherits_latched_stop_and_advances_global_revision(tmp_path) ->
 
     current = load_or_create_runtime(policy, goals, "run-2", "mission-2", store)
 
-    assert current.state_revision == 9
+    assert current.state_revision == 10
     assert current.engine.emergency_stop_latched is True
     assert current.engine.latch_revision == 1
     assert current.engine.robot_mode == current.engine.robot_mode.ESTOP
     assert store.load_latest()["run_id"] == "run-2"
+
+
+def test_new_run_persists_idle_then_starting_before_activation(tmp_path) -> None:
+    policy = MissionPolicy()
+    goals = (AssetGoal("transformer-01", 4.0, 1.0, 1.57),)
+    store = MissionSnapshotStore(tmp_path / "mission.sqlite3")
+
+    runtime = load_or_create_runtime(policy, goals, "run-2", "mission-2", store)
+
+    with sqlite3.connect(store.path) as connection:
+        records = [
+            json.loads(row[0])
+            for row in connection.execute(
+                "SELECT snapshot_json FROM mission_snapshots ORDER BY state_revision"
+            )
+        ]
+    assert [record["context_lifecycle"] for record in records] == [
+        RunContext.LIFECYCLE_IDLE,
+        RunContext.LIFECYCLE_STARTING,
+    ]
+    assert records[0]["run_id"] == ""
+    assert records[0]["mission_state"] == InspectionTaskArray.MISSION_IDLE
+    assert runtime.context_lifecycle == RunContext.LIFECYCLE_STARTING
+    assert runtime.mission_state == InspectionTaskArray.MISSION_READY
+
+    assert runtime.activate(reason="runtime ready") is True
+    store.save(runtime.persistence_record())
+    assert runtime.context_lifecycle == RunContext.LIFECYCLE_ACTIVE
+    assert runtime.mission_state == InspectionTaskArray.MISSION_RUNNING
+
+
+def test_dispatch_rejects_running_snapshot_until_context_is_active(tmp_path) -> None:
+    context = Context()
+    rclpy.init(context=context)
+    task_manager = TaskManagerNode(
+        context=context,
+        parameter_overrides=[
+            Parameter("run_id", value="run-gated"),
+            Parameter("mission_id", value="mission-gated"),
+            Parameter("mission_db_path", value=str(tmp_path / "mission.sqlite3")),
+        ],
+    )
+
+    class ReadyClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def server_is_ready(self) -> bool:
+            return True
+
+        def send_goal_async(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("goal dispatch must remain gated")
+
+    client = ReadyClient()
+    task_manager._inspection_client = client
+    task_manager._runtime.context_lifecycle = RunContext.LIFECYCLE_STARTING
+    try:
+        task_manager._dispatch_execution_snapshot(task_manager._current_stamped_snapshot())
+        assert client.calls == 0
+    finally:
+        task_manager.destroy_node()
+        context.shutdown()
+
+
+def test_emergency_reset_waits_for_no_goal_and_half_second_zero_barrier(
+    tmp_path, monkeypatch
+) -> None:
+    context = Context()
+    rclpy.init(context=context)
+    task_manager = TaskManagerNode(
+        context=context,
+        parameter_overrides=[
+            Parameter("run_id", value="run-reset"),
+            Parameter("mission_id", value="mission-reset"),
+            Parameter("mission_db_path", value=str(tmp_path / "mission.sqlite3")),
+        ],
+    )
+    task_manager._runtime.engine.emergency_stop("operator stop")
+    now = [10.0]
+    monkeypatch.setattr(mission_node.time, "monotonic", lambda: now[0])
+    request = ResetEmergencyStop.Request(
+        schema_version=1,
+        command_id="4b383cd1-80ae-464b-a712-b493cd4c5bd2",
+        observed_latch_revision=1,
+        confirm=True,
+        reason="area inspected",
+    )
+    try:
+        task_manager._inspection_send_future = object()
+        response = task_manager._reset_stop(request, ResetEmergencyStop.Response())
+        assert response.accepted is False
+        assert response.error_code == "MOTION_SAFETY_BARRIER_PENDING"
+
+        task_manager._inspection_send_future = None
+        now[0] = 10.499
+        response = task_manager._reset_stop(request, ResetEmergencyStop.Response())
+        assert response.accepted is False
+        assert response.error_code == "MOTION_SAFETY_BARRIER_PENDING"
+
+        now[0] = 10.5
+        response = task_manager._reset_stop(request, ResetEmergencyStop.Response())
+        assert response.accepted is True
+        assert response.latched is False
+    finally:
+        task_manager.destroy_node()
+        context.shutdown()
+
+
+def test_motion_barrier_cancellation_never_redispatches_replacement_goal(
+    tmp_path,
+) -> None:
+    context = Context()
+    rclpy.init(context=context)
+    task_manager = TaskManagerNode(
+        context=context,
+        parameter_overrides=[
+            Parameter("run_id", value="run-cancel-barrier"),
+            Parameter("mission_id", value="mission-cancel-barrier"),
+            Parameter("mission_db_path", value=str(tmp_path / "mission.sqlite3")),
+        ],
+    )
+    goal_handle = object()
+    dispatches = []
+    task_manager._inspection_goal_handle = goal_handle
+    task_manager._replacement_requested = True
+    task_manager._motion_barrier_requested = True
+    task_manager._dispatch_execution_snapshot = lambda snapshot: dispatches.append(snapshot)
+    try:
+        task_manager._on_execution_result(object(), goal_handle)
+        assert task_manager._inspection_goal_handle is None
+        assert dispatches == []
+    finally:
+        task_manager.destroy_node()
+        context.shutdown()
 
 
 def test_main_does_not_shutdown_twice_after_signal_driven_shutdown(monkeypatch) -> None:
