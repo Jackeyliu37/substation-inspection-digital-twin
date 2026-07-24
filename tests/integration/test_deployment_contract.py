@@ -155,6 +155,28 @@ def test_release_activator_performs_safe_ordered_health_checked_deployment() -> 
     assert "journalctl" in script
 
 
+def test_release_activation_repairs_the_controlled_start_time_mapping_race() -> None:
+    activator = read("scripts/deployment/activate_release.sh")
+    repair = read("scripts/deployment/repair_current_readiness.sh")
+    helper = read("scripts/deployment/ensure_time_mapping.py")
+
+    assert "repair_current_readiness.sh" in activator
+    assert "EUID" in repair
+    assert "/opt/substation/config/runtime.env" in repair
+    assert "runuser -u substation" in repair
+    assert "source /opt/ros/jazzy/setup.bash" in repair
+    assert "source /opt/substation/current/install/setup.bash" in repair
+    assert "ensure_time_mapping.py" in repair
+    assert "http://127.0.0.1:8000/readyz" in repair
+    assert "RunContext" in helper
+    assert "QueryRunTimeMapping" in helper
+    assert "RecordRunTimeMapping" in helper
+    assert "DurabilityPolicy.TRANSIENT_LOCAL" in helper
+    assert "context_revision" in helper
+    assert "self.run_context" in helper
+    assert "self.context:" not in helper
+
+
 def test_five_service_units_form_a_loopback_only_dependency_chain() -> None:
     units = {
         name: read(f"deploy/systemd/{name}.service")

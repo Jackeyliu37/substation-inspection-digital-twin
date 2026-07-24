@@ -109,6 +109,7 @@ echo "activate-release: starting services"
 systemctl start substation-gazebo.service
 systemctl start substation-core.service substation-web-gateway.service substation-web-frontend.service
 systemctl reload nginx.service
+bash "$repo_root/scripts/deployment/repair_current_readiness.sh"
 
 echo "activate-release: waiting for health and readiness (up to ${health_timeout_s}s)"
 deadline=$((SECONDS + health_timeout_s))
