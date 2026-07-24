@@ -1203,6 +1203,9 @@ class RosGatewayNode(Node):
                 "error_code": "SCENARIO_PARAMETER_INVALID",
                 "error_message": "Scenario parameters must be scalar values.",
             }
+        baseline_revision = int(
+            self.projector.state.scenario.get("scenario_revision", "0")
+        )
         request = SetParametersAtomically.Request()
         request.parameters = [
             Parameter("command_id", value=command_id).to_parameter_msg(),
@@ -1227,7 +1230,7 @@ class RosGatewayNode(Node):
             return {"accepted": False, "error_code": code, "error_message": code}
         return {
             "accepted": True,
-            "scenario_revision": int(self.projector.state.scenario.get("scenario_revision", "0")),
+            "scenario_revision": baseline_revision,
             "error_code": "",
             "error_message": "",
         }

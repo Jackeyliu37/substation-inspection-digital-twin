@@ -35,6 +35,28 @@ def test_alert_risk_reorders_queued_tasks_by_contract_priority() -> None:
     assert engine.tasks[0].computed_priority == 79.0
 
 
+def test_identical_risk_snapshot_does_not_replan_after_cooldown() -> None:
+    module = load_module()
+    engine = module.MissionEngine(
+        module.MissionPolicy(normal_replan_cooldown_s=10.0)
+    )
+    engine.start(run_id="run-1", mission_id="mission-1", route_id="normal-route")
+    engine.replace_tasks((
+        module.InspectionTask("task-a", "breaker-01", 10, 4.0),
+        module.InspectionTask("task-b", "transformer-01", 10, 4.0),
+    ))
+
+    first = engine.apply_risk(
+        {"breaker-01": 0.0, "transformer-01": 0.0}, monotonic_s=20.0
+    )
+    repeated = engine.apply_risk(
+        {"breaker-01": 0.0, "transformer-01": 0.0}, monotonic_s=31.0
+    )
+
+    assert first is True
+    assert repeated is False
+
+
 def test_mission_policy_loads_ordering_values_from_versioned_config(tmp_path: Path) -> None:
     module = load_module()
     path = tmp_path / "mission_ordering.yaml"

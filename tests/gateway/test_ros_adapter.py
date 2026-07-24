@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "ros2_ws/src/substation_web_gateway"))
 
@@ -20,6 +21,7 @@ from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rcl_interfaces.srv import SetParametersAtomically
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import String
 import pytest
@@ -169,6 +171,35 @@ class _ReadyServiceClient:
     def call_async(self, request):
         self.requests.append(request)
         return _CompletedFuture(self.response)
+
+
+def test_scenario_dispatch_returns_revision_captured_before_service_call() -> None:
+    state = GatewayState()
+    state.scenario["scenario_revision"] = "7"
+    node = object.__new__(RosGatewayNode)
+    node.projector = SimpleNamespace(state=state)
+    response = SetParametersAtomically.Response()
+    response.result.successful = True
+
+    class ApplyingScenarioClient(_ReadyServiceClient):
+        def call_async(self, request):
+            state.scenario["scenario_revision"] = "8"
+            return super().call_async(request)
+
+    node._set_scenario_parameters = ApplyingScenarioClient(response)
+
+    result = node.dispatch_scenario(
+        command_id="8d0fa612-997d-430e-8dd0-9f35fc1e129b",
+        payload={
+            "scenario_id": "fire-smoke",
+            "action": "trigger",
+            "parameters": {"asset_id": "transformer-01", "smoke_0_1": 0.8},
+            "reason": "operator acceptance",
+        },
+    )
+
+    assert result["accepted"] is True
+    assert result["scenario_revision"] == 7
 
 
 def _missing_mapping_response() -> QueryRunTimeMapping.Response:

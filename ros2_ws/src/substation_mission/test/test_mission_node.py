@@ -54,6 +54,28 @@ def test_runtime_reorders_queue_when_asset_risk_changes() -> None:
     assert snapshot.queue_revision == 2
 
 
+def test_runtime_keeps_queue_revision_for_identical_risk_snapshot() -> None:
+    runtime = MissionRuntime(
+        MissionPolicy(normal_replan_cooldown_s=0.0),
+        "run-1",
+        "mission-1",
+        (
+            AssetGoal("breaker-01", 0.5, 1.8, 1.57),
+            AssetGoal("transformer-01", 4.0, 1.0, 1.57),
+        ),
+    )
+    risks = AssetRiskArray(run_id="run-1", assets=[
+        AssetRisk(asset_id="breaker-01", score_0_100=0.0),
+        AssetRisk(asset_id="transformer-01", score_0_100=0.0),
+    ])
+
+    assert runtime.apply_risks(risks, monotonic_s=12.0) is True
+    queue_revision = runtime.queue_revision
+
+    assert runtime.apply_risks(risks, monotonic_s=13.0) is False
+    assert runtime.queue_revision == queue_revision
+
+
 def test_runtime_restores_queue_and_emergency_latch_from_persisted_record() -> None:
     policy = MissionPolicy(normal_replan_cooldown_s=0.0)
     goals = (

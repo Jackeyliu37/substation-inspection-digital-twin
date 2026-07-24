@@ -119,7 +119,10 @@ class MissionEngine:
             ) for task in mutable
         )
         ordered = tuple(sorted(updated, key=lambda task: (-task.computed_priority, task.task_id)))
-        self.tasks = ordered + terminal
+        next_tasks = ordered + terminal
+        if next_tasks == self.tasks:
+            return False
+        self.tasks = next_tasks
         self._last_normal_replan_s = monotonic_s
         return True
 
