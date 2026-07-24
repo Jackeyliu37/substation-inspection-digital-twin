@@ -6,12 +6,12 @@
 - Branch：`main`。
 - 当前阶段：Phase 9 集成前收口。Phase 4 官方 `yolo11n.pt` 开发占位运行时已通过 live smoke；生产集成仍等待用户在 AutoDL 训练的 safety、equipment、fault 和 meter 四个独立 artifact。
 - Phase 5～6 live acceptance：`passed`；实现提交 `7b7ffc4`，run ID `2f9e16bc-0ce8-4025-a50c-195998fac49f`，immutable evidence `/var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission`。复核命令为 `(cd /var/lib/substation/evidence/acceptance/2f9e16bc-0ce8-4025-a50c-195998fac49f/05-risk-mission && sha256sum -c SHA256SUMS)`。
-- Phase 7 Gateway 开发检查点：`d61a7fb`，Gateway 契约测试和部署契约共 13 passed；`python -m substation_web_gateway --host 127.0.0.1 --port 8001` 已 loopback 冒烟。它仍是 state seam，未连接真实 rclpy 控制面，因而 `/readyz` fail-closed。
+- Phase 7 Gateway ROS 适配检查点：`82d70fc`。独立 rclpy executor 已接权威 RunContext、数字孪生、风险、任务、地图/增量、diagnostics 和 reporting readiness；严格同 run/revision gate、时间映射、幂等 Web revision、mission Service 受理 gate 及 evidence metadata/Range 下载已通过真实 rclpy 与 ASGI 测试。安装后进程 smoke 为 `/healthz=200`、缺 ROS 图 `/readyz=503`，SIGINT 正常退出且无残留。机器人 pose/电池、其余控制 endpoint/终态、report/diagnostic 索引和真实相机帧尚未接入。
 - Phase 8 前端开发检查点：`df30574`，`npm test` 与 `npm run build` 已通过；没有 Chrome，因此没有 Playwright 浏览器证据。
 - Phase 6 任务持久化检查点：`e73f60a`。`mission.sqlite3` 由任务管理器单写，保存任务队列、机器人模式、state/queue/latch revisions 和紧急停止锁存；同 run 恢复快照，新 run 不会隐式解除锁存。
 - Phase 6 Nav2 执行链检查点：`bea53a7`。任务管理器是 `/mission/execute_inspection` 客户端，巡检执行器是其 Action server 和标准 `/navigate_to_pose` 唯一项目客户端；真实 rclpy 集成测试覆盖完整队列、风险重排目标替换、不可达策略和紧停取消。pause/resume/stop 生命周期、任务 terminal 状态及速度仲裁尚未收口。
 - reporting ROS 检查点：`2f8847a`。9 个 Service 类型及 evidence_store/report_generator 节点已接入；时间映射、证据写入/冻结/查询/Range、readiness、HTML/PDF/evidence ZIP/diagnostic ZIP 经真实 rclpy 服务链通过。report generator 不写 `evidence.sqlite3` 或最终目录，缺 implementation commit 时保持 Service 不可用；report/diagnostic 独立索引与 Gateway 下载映射尚未接入。
-- 当前软件验证：ROS workspace `164 tests, 0 errors, 0 failures, 0 skipped`；Phase 5～6 顶层 interface contract `2 passed`；documentation gate、world/navigation/perception/synthetic/Gateway/deployment 的既有检查点均已通过。
+- 当前软件验证：ROS workspace `164 tests, 0 errors, 0 failures, 0 skipped`；Gateway、部署及 Phase 5～6 顶层 contract `26 passed`；documentation gate、world/navigation/perception/synthetic 的既有检查点均已通过。
 - Phase 2 已验证实现提交：`eeffd2e6ad26247987c9b3f9c922979089a90f41`。
 - Phase 3 已验证实现提交：`5044ce56f66288beb0bd20563261c44bc1778996`。
 - 已验证环境实现提交：`993213026fef37f7e77741fd757caf8f684e0fd9`。
@@ -46,6 +46,7 @@
 - 任务持久化验证命令：`source /opt/ros/jazzy/setup.bash && colcon build --symlink-install --packages-select substation_mission && colcon test --packages-select substation_mission --event-handlers console_direct+ && colcon test-result --test-result-base build/substation_mission --all --verbose`，结果为 `11 tests, 0 errors, 0 failures, 0 skipped`。SIGTERM smoke 必须直接 timeout `install/substation_mission/lib/substation_mission/task_manager`；不要 timeout `ros2 run` 包装进程，否则包装层退出后可能短暂留下子节点。
 - Nav2 执行链最新验证命令：`source /opt/ros/jazzy/setup.bash && colcon build --symlink-install && colcon test --event-handlers console_direct+ && colcon test-result --all --verbose && python3 -m pytest tests/phase5_6/test_interfaces_contract.py -q`，结果为 ROS workspace `153 tests, 0 errors, 0 failures, 0 skipped` 和顶层 `2 passed`。`inspection_executor` 单节点 smoke 还确认 Action 类型为 `substation_interfaces/action/ExecuteInspection`、日志无 `Traceback/ERROR/FATAL/RCLError` 且无残留进程。
 - reporting 最新验证命令：`source /opt/ros/jazzy/setup.bash && colcon build --symlink-install && colcon test --event-handlers console_direct+ && colcon test-result --all --verbose && python3 -m pytest tests/phase5_6/test_interfaces_contract.py -q && bash scripts/verify_documentation_gate.sh`，结果为 ROS workspace `164 tests, 0 errors, 0 failures, 0 skipped`、顶层 `2 passed` 和 documentation gate `PASS`。直接启动两个安装后节点的 smoke 确认 9 个 `/reporting/*` Service 全部出现、日志无 `Traceback/ERROR/FATAL/RCLError` 且无残留进程；不要用外层 `ros2 launch` PID 代替两个节点 PID 做 smoke 清理。
+- Gateway ROS 适配验证命令：`source /opt/ros/jazzy/setup.bash && source install/setup.bash && colcon build --symlink-install && colcon test --event-handlers console_direct+ && colcon test-result --all --verbose && .venv-web/bin/python -m pytest tests/gateway tests/integration/test_deployment_contract.py tests/phase5_6/test_interfaces_contract.py -q && bash scripts/verify_documentation_gate.sh`，结果为 ROS workspace `164 tests, 0 errors, 0 failures, 0 skipped`、顶层 `26 passed` 和 documentation gate `PASS`。安装后 Gateway smoke 另确认私有 executor 启动、health 200、无权威图 ready 503、正常 shutdown 且无残留。
 - 当前 ROS 恢复命令：`cd /home/jackeyliu37/substation-inspection-digital-twin && set +u && source /opt/ros/jazzy/setup.bash && source install/setup.bash && set -u && export ROS_LOCALHOST_ONLY=1 && colcon build --symlink-install && colcon test --event-handlers console_direct+ && colcon test-result --all --verbose`。源代码在 `ros2_ws/src`，但本仓库从根目录执行 colcon，当前产物在根 `build/`、`install/`；不要 source 旧的 `ros2_ws/install/setup.bash`。
 
 ## 本地状态
@@ -61,4 +62,4 @@
 - 不启动或宣称已部署 Nginx、Gateway、前端、Gazebo 或 ROS 应用服务。
 - 公开训练数据下载和模型微调由用户在仓库外完成；仓库中的官方 YOLO11n 仅为非生产占位。
 - 占位结果只发布到 `/perception/development/detections` 和 `/perception/development/annotated_image`；正式聚合、数字孪生、风险、Gateway、报告和证据链不得消费它们。
-- 下一实现动作：接真实 Gateway ROS adapter，把权威 RunContext/数字孪生/风险/任务/reporting readiness 与 Service/Action 控制接入现有 fail-closed REST/WS；随后补 mission terminal 状态/速度仲裁、report 索引与 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。
+- 下一实现动作：先补 mission start/pause/resume/stop terminal 状态及安全速度仲裁，使 Gateway 已接入的 `/mission/manage` 真正可用；随后补 Gateway 机器人 pose/电池、其余控制 endpoint、report/diagnostic 索引、相机帧与 Playwright/Windows/Nginx/Foxglove 集成证据。用户四个训练结果 ZIP 到达后再按不可变 GitHub release 或固定 commit 导入校验。Phase 4 占位运行时已经通过，但 Phase 4 与最终交付尚未完成。
